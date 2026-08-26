@@ -145,3 +145,27 @@ prerequisites and how to test it locally (`claude --plugin-dir
 ./plugins/ticket-microservice-toolkit`). The two currently duplicate content on purpose —
 `.claude/` isn't wired to reference the plugin instead, since that wasn't verified to
 auto-load without an explicit `/plugin install` step.
+
+## Recommended Claude Code workflow for this repo
+
+These are built-in Claude Code features, not project config — noted here so the right one
+gets reached for instead of skipped:
+
+- **Plan mode** (`/plan`, or `Shift+Tab` to cycle modes) — use before `/new-go-service`,
+  `/new-rust-service`, or `/add-go-saga-step`/`/add-rust-saga-step`: they each touch multiple
+  files across layers in one action, so reviewing the plan first is cheaper than reviewing the
+  diff after. Not needed for a single `/new-*-api-endpoint` on an existing, well-understood
+  service.
+- **Extended thinking** (`/effort high`, or the word "ultrathink" in a prompt) — worth reaching
+  for on the genuinely hard design calls in this domain: the seat-reservation locking strategy
+  in `booking-service` (see `/review-concurrency`), or working out a new saga's event sequence
+  and compensation path before wiring it with `/add-*-saga-step`. Not needed for routine CRUD
+  endpoints.
+- **Background tasks** — once services exist, run each service's test suite as a background
+  task when working across more than one service at a time (e.g. verifying `booking-service`
+  and `event-service` both still pass after a saga change), instead of blocking on one before
+  starting the next.
+- **Checkpoints** (`Esc` `Esc`, or `/rewind`) — useful for backing out of an exploratory
+  scaffold that went the wrong direction, but they don't replace git and don't capture
+  filesystem changes made outside Claude Code (`rm`/`mv`/`cp` in a terminal, edits in another
+  editor). Commit to git once a change is actually good, the same as always.
