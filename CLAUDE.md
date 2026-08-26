@@ -107,6 +107,12 @@ Subagents (`.claude/agents/`, invoked via the Agent tool or by name):
 |---|---|
 | `security-reviewer` | Read-only audit: injection, secrets, JWT/IDOR, log leakage |
 | `api-contract-reviewer` | Read-only, whole-repo audit: routes vs `kong.yml` drift |
+| `api-doc-sync` | Writer: generates/updates `docs/openapi/*.yaml` and the Postman collection from actual handler code |
+
+`api-doc-sync` is the only writing agent — it keeps `docs/openapi/<service>.yaml` and
+`docs/postman/ticket-platform.postman_collection.json` in sync with implemented handlers,
+code always wins over the spec. It doesn't overlap with `api-contract-reviewer`, which checks
+code against `kong.yml`, not against API docs.
 
 There is deliberately no "service builder" subagent — `new-go-service`/`new-rust-service` and
 the `new-*-api-endpoint` skills already cover guided code generation with the repo's
