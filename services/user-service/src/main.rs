@@ -7,8 +7,10 @@ use std::env;
 use std::sync::Arc;
 
 use chrono::Duration;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
-use adapter::http::{build_router, AppState};
+use adapter::http::{build_router, ApiDoc, AppState};
 use adapter::repository::postgres::PostgresUserRepository;
 use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
 use domain::{PasswordHasher, TokenIssuer, UserRepository};
@@ -53,7 +55,8 @@ async fn main() {
         db_pool: pool,
     });
 
-    let app = build_router(state);
+    let app = build_router(state)
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let port: u16 = env::var("PORT")
         .ok()
