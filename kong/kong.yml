@@ -92,6 +92,21 @@ services:
                 - exp
 
 # ==============================================================================
+# CONSUMERS (JWT verification identities)
+# ==============================================================================
+# Kong's jwt plugin picks the verification secret by matching the token's `iss`
+# claim to a consumer's jwt_secrets `key` below — it does not map `sub` to a
+# consumer. Every JWT-issuing service therefore needs exactly one consumer here,
+# with `key` matching that service's JWT_ISSUER env var and `secret` matching
+# its JWT_SECRET. Rotate `secret` for anything beyond local dev.
+consumers:
+  - username: user-service-issuer
+    jwt_secrets:
+      - key: user-service
+        algorithm: HS256
+        secret: dev-secret-change-me
+
+# ==============================================================================
 # GLOBAL PLUGINS (CORS, Security)
 # ==============================================================================
 plugins:

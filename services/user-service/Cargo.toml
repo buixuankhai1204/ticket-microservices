@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "macros"] }
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "macros", "migrate"] }
 async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
