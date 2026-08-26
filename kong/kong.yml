@@ -1,0 +1,119 @@
+_format_version: "3.0"
+_transform: true
+
+# ==============================================================================
+# SERVICES & ROUTES DEFINITION
+# ==============================================================================
+services:
+  # ----------------------------------------------------------------------------
+  # 1. USER SERVICE
+  # ----------------------------------------------------------------------------
+  - name: user-service
+    url: http://user-service:8081
+    routes:
+      - name: auth-routes
+        paths:
+          - /api/v1/auth
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+
+      - name: user-profile-routes
+        paths:
+          - /api/v1/users
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 100
+              policy: local
+          - name: jwt
+            config:
+              claims_to_verify:
+                - exp
+
+  # ----------------------------------------------------------------------------
+  # 2. EVENT SERVICE
+  # ----------------------------------------------------------------------------
+  - name: event-service
+    url: http://event-service:8082
+    routes:
+      - name: event-routes
+        paths:
+          - /api/v1/events
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 1000
+              policy: local
+
+  # ----------------------------------------------------------------------------
+  # 3. BOOKING SERVICE
+  # ----------------------------------------------------------------------------
+  - name: booking-service
+    url: http://booking-service:8083
+    routes:
+      - name: booking-routes
+        paths:
+          - /api/v1/bookings
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 300
+              policy: local
+          - name: jwt
+            config:
+              claims_to_verify:
+                - exp
+
+  # ----------------------------------------------------------------------------
+  # 4. ANALYTICS SERVICE
+  # ----------------------------------------------------------------------------
+  - name: analytics-service
+    url: http://analytics-service:8084
+    routes:
+      - name: analytics-routes
+        paths:
+          - /api/v1/analytics
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+          - name: jwt
+            config:
+              claims_to_verify:
+                - exp
+
+# ==============================================================================
+# GLOBAL PLUGINS (CORS, Security)
+# ==============================================================================
+plugins:
+  - name: cors
+    config:
+      origins:
+        - "*"
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+      headers:
+        - Accept
+        - Accept-Version
+        - Content-Length
+        - Content-MD5
+        - Content-Type
+        - Date
+        - Authorization
+      exposed_headers:
+        - Authorization
+      credentials: true
+      max_age: 3600
