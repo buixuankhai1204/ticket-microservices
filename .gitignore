@@ -8,6 +8,7 @@ services/**/*.exe
 
 # Rust
 services/**/target/
+services/**/Cargo.lock
 
 # Env
 .env

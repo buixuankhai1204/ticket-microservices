@@ -7,6 +7,7 @@ use crate::domain::{TokenIssuer, UserError};
 
 #[derive(Serialize)]
 struct Claims {
+    iss: String,
     sub: String,
     email: String,
     exp: usize,
@@ -15,13 +16,18 @@ struct Claims {
 pub struct JwtTokenIssuer {
     encoding_key: EncodingKey,
     ttl: Duration,
+    /// Must match the `key` of a `jwt_secrets` credential on a Kong consumer
+    /// (see `kong/kong.yml`) — Kong's jwt plugin looks up the verification
+    /// secret by this claim, not by `sub`.
+    issuer: String,
 }
 
 impl JwtTokenIssuer {
-    pub fn new(secret: &str, ttl: Duration) -> Self {
+    pub fn new(secret: &str, ttl: Duration, issuer: String) -> Self {
         Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             ttl,
+            issuer,
         }
     }
 }
@@ -29,6 +35,7 @@ impl JwtTokenIssuer {
 impl TokenIssuer for JwtTokenIssuer {
     fn issue(&self, user_id: Uuid, email: &str) -> Result<String, UserError> {
         let claims = Claims {
+            iss: self.issuer.clone(),
             sub: user_id.to_string(),
             email: email.to_string(),
             exp: (Utc::now() + self.ttl).timestamp() as usize,

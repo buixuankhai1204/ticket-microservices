@@ -1,0 +1,64 @@
+services:
+  postgres-user:
+    image: postgres:16-alpine
+    container_name: postgres-user
+    environment:
+      POSTGRES_USER: ${USER_DB_USER:-user_service}
+      POSTGRES_PASSWORD: ${USER_DB_PASSWORD:-user_service}
+      POSTGRES_DB: ${USER_DB_NAME:-user_service}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_user_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USER_DB_USER:-user_service}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ticket-network
+
+  user-service:
+    build:
+      context: ./services/user-service
+    container_name: user-service
+    environment:
+      DATABASE_URL: postgres://${USER_DB_USER:-user_service}:${USER_DB_PASSWORD:-user_service}@postgres-user:5432/${USER_DB_NAME:-user_service}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-user-service}
+      DB_MAX_CONNECTIONS: ${USER_DB_MAX_CONNECTIONS:-10}
+      PORT: 8081
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
+  kong:
+    image: kong:3.6
+    container_name: kong
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    depends_on:
+      - user-service
+    networks:
+      - ticket-network
+
+volumes:
+  postgres_user_data:
+
+networks:
+  ticket-network:
+    driver: bridge

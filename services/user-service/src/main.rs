@@ -29,13 +29,22 @@ async fn main() {
         .await
         .expect("failed to connect to postgres");
 
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("failed to run database migrations");
+
     let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let jwt_issuer_key = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
 
     let user_repository: Arc<dyn UserRepository> =
         Arc::new(PostgresUserRepository::new(pool.clone()));
     let password_hasher: Arc<dyn PasswordHasher> = Arc::new(Argon2PasswordHasher::new());
-    let token_issuer: Arc<dyn TokenIssuer> =
-        Arc::new(JwtTokenIssuer::new(&jwt_secret, Duration::hours(1)));
+    let token_issuer: Arc<dyn TokenIssuer> = Arc::new(JwtTokenIssuer::new(
+        &jwt_secret,
+        Duration::hours(1),
+        jwt_issuer_key,
+    ));
 
     let state = Arc::new(AppState {
         register_user: RegisterUserUseCase::new(user_repository.clone(), password_hasher.clone()),
