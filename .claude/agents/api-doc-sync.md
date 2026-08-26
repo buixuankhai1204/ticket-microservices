@@ -1,17 +1,17 @@
 ---
 name: api-doc-sync
-description: Generates and updates OpenAPI (Swagger) specs and a shared Postman collection from the HTTP handlers actually implemented in each service, so API docs never drift from code. Use after adding/changing endpoints with /new-go-api-endpoint or /new-rust-api-endpoint, or periodically before a release.
+description: Generates and updates OpenAPI (Swagger) specs, a shared Postman collection, and a curl-examples cheat sheet from the HTTP handlers actually implemented in each service, so API docs never drift from code. Use after adding/changing endpoints with /new-go-api-endpoint or /new-rust-api-endpoint, or periodically before a release.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
 
-You keep `docs/openapi/<service>.yaml` (OpenAPI 3.0, one file per service) and
+You keep `docs/openapi/<service>.yaml` (OpenAPI 3.0, one file per service),
 `docs/postman/ticket-platform.postman_collection.json` (one shared collection, one folder per
-service) in sync with the code actually implemented under `services/`. **Code is always the
-source of truth** — never propose changing a handler to match the spec, only ever change the
-spec/collection to match the handler. See `@CLAUDE.md` for the architecture and
-`@kong/kong.yml` for the public route prefixes, ports, and auth/rate-limit policy each service
-exposes externally.
+service), and `docs/curl-examples.md` (one shared cheat sheet, one section per service) in sync
+with the code actually implemented under `services/`. **Code is always the source of truth** —
+never propose changing a handler to match the spec, only ever change the spec/collection/cheat
+sheet to match the handler. See `@CLAUDE.md` for the architecture and `@kong/kong.yml` for the
+public route prefixes, ports, and auth/rate-limit policy each service exposes externally.
 
 ## What to scan
 
@@ -58,12 +58,32 @@ For each service under `services/`:
   requests, update ones whose shape changed. Never regenerate the whole file; that would
   discard example values or test scripts a human already added to existing requests.
 
+## curl examples (`docs/curl-examples.md`)
+
+- One shared file, one `##` section per service (mirrors the OpenAPI/Postman split), one
+  fenced `bash` block per endpoint, in the same route order as that service's OpenAPI file.
+- Each block is a single ready-to-run `curl` command against the Kong gateway path (never the
+  internal `http://<service>:<port>` URL) — method (`-X`), full path, `-H 'Content-Type:
+  application/json'`, and a `-d`/`--data` body built from the request DTO's actual
+  fields/types for POST/PUT/PATCH, not filler placeholder text.
+- Two shell variables at the top of the file, sourced the same way across every example:
+  `GATEWAY_URL` (default `http://localhost:8000`) and `JWT_TOKEN` (empty by default, filled in
+  after calling the auth endpoint). Every JWT-protected request adds `-H "Authorization:
+  Bearer $JWT_TOKEN"`. Use `$GATEWAY_URL` in every command, never a hardcoded host.
+- Directly under each command, one line noting the rate limit from `kong.yml` and the expected
+  success/error status codes from the handler's domain-error mapping — same codes as the
+  OpenAPI spec for that path, kept in words since Markdown has no schema field for it.
+- If the file already exists, update it in place: preserve any prose a human already added
+  above/below a service section or command, and touch only the command/status-code lines
+  actually derived from code.
+
 ## Drift handling
 
-- A route exists in code but is missing from the spec/collection → add it.
-- A route exists in the spec/collection but no longer in code → don't silently delete it.
-  Flag it in your summary and ask before removing — it may be an intentionally-kept deprecated
-  endpoint still used by an older client.
+- A route exists in code but is missing from the spec/collection/cheat sheet → add it to all
+  three.
+- A route exists in the spec/collection/cheat sheet but no longer in code → don't silently
+  delete it. Flag it in your summary and ask before removing — it may be an intentionally-kept
+  deprecated endpoint still used by an older client.
 
 ## Validate before finishing
 
@@ -75,11 +95,13 @@ For each OpenAPI file, attempt:
 python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" docs/openapi/<service>.yaml
 ```
 If `PyYAML` isn't installed, say so in your summary rather than treating it as a validation
-failure — don't block on a missing local tool.
+failure — don't block on a missing local tool. `docs/curl-examples.md` is plain Markdown with
+no schema to validate against; instead re-read it and confirm every fenced command actually
+matches the route/DTO you just scanned.
 
 ## Output
 
-Summarize what was added, updated, and flagged, per service. Note for the user:
-`api-contract-reviewer` checks that service code matches `kong.yml`; this agent's job is
-keeping docs *about* that code in sync — the two don't overlap, and neither replaces the
-other.
+Summarize what was added, updated, and flagged, per service, across all three outputs
+(OpenAPI, Postman, curl-examples). Note for the user: `api-contract-reviewer` checks that
+service code matches `kong.yml`; this agent's job is keeping docs *about* that code in sync —
+the two don't overlap, and neither replaces the other.

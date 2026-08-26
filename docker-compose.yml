@@ -27,7 +27,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       JWT_ISSUER: ${JWT_ISSUER:-user-service}
       DB_MAX_CONNECTIONS: ${USER_DB_MAX_CONNECTIONS:-10}
-      PORT: 8081
+    ports:
+        - "8081:8081"
     depends_on:
       postgres-user:
         condition: service_healthy

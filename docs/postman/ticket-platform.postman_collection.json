@@ -1,0 +1,98 @@
+{
+  "info": {
+    "name": "Ticket Platform",
+    "description": "One folder per service, one request per Kong-exposed endpoint. Walk a saga end to end (e.g. register/login in user-service, then create a booking, then check event-service's seat count) inside this single collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "user-service",
+      "item": [
+        {
+          "name": "Register user",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"jane.doe@example.com\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/auth/register",
+              "host": ["{{gateway_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            },
+            "description": "Rate limit: 60 req/min. No JWT required. 201 on success, 400 if the email is already registered or invalid."
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"jane.doe@example.com\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+            },
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/auth/login",
+              "host": ["{{gateway_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            },
+            "description": "Rate limit: 60 req/min. No JWT required to call. Returns a JWT in the response body on success (200) -- copy it into the {{jwt_token}} collection variable. 401 on invalid credentials."
+          },
+          "response": []
+        },
+        {
+          "name": "Get user by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/users/:id",
+              "host": ["{{gateway_url}}"],
+              "path": ["api", "v1", "users", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "00000000-0000-0000-0000-000000000000",
+                  "description": "User ID (UUID)"
+                }
+              ]
+            },
+            "description": "Rate limit: 100 req/min. Requires Authorization: Bearer {{jwt_token}} (Kong jwt plugin verifies the exp claim). 200 on success, 404 if the user does not exist."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
