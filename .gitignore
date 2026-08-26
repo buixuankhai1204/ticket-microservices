@@ -1,0 +1,14 @@
+# IDE
+.idea/
+.vscode/
+
+# Go
+services/**/bin/
+services/**/*.exe
+
+# Rust
+services/**/target/
+
+# Env
+.env
+.env.local
