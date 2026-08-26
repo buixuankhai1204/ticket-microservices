@@ -88,3 +88,60 @@ saga already sketched for this repo: `booking-service` publishes `BookingRequest
 `event-service` reserves the seat and publishes `SeatReserved`/`SeatReservationFailed` →
 `booking-service` confirms or compensates (cancels) the booking → `analytics-service` consumes
 the final outcome as a read model only.
+
+## Claude Code tooling already set up for this repo
+
+Skills (`.claude/skills/`, invoked as `/name`):
+
+| Skill | Use for |
+|---|---|
+| `new-go-service` / `new-rust-service` | Scaffold a new service in Clean Architecture |
+| `new-go-api-endpoint` / `new-rust-api-endpoint` | Add an endpoint to an existing service |
+| `add-go-saga-step` / `add-rust-saga-step` | Wire a Kafka publish/consume saga step |
+| `scalability-review` | Read-only audit: statelessness, pool sizing, N+1, missing caching |
+| `review-concurrency` | Read-only audit: race conditions, oversell/double-booking |
+
+Subagents (`.claude/agents/`, invoked via the Agent tool or by name):
+
+| Agent | Use for |
+|---|---|
+| `security-reviewer` | Read-only audit: injection, secrets, JWT/IDOR, log leakage |
+| `api-contract-reviewer` | Read-only, whole-repo audit: routes vs `kong.yml` drift |
+
+There is deliberately no "service builder" subagent — `new-go-service`/`new-rust-service` and
+the `new-*-api-endpoint` skills already cover guided code generation with the repo's
+conventions loaded as context; a separate subagent would duplicate them without adding
+isolation or safety benefits worth the redundancy.
+
+Hooks (`.claude/settings.json` + `.claude/hooks/`):
+
+- `pre-commit-check.sh` (`PreToolUse` on `Bash`) — only acts when the command is a
+  `git commit`. Lints/formats just the Go and Rust services with staged changes
+  (`gofmt`/`go vet`, `cargo fmt --check`/`cargo clippy -- -D warnings`), scoped to each
+  service's own `go.mod`/`Cargo.toml`, and blocks the commit (exit 2) on failure. Missing
+  toolchains are skipped, not treated as failures.
+- `clean-architecture-check.sh` (`PostToolUse` on `Write`/`Edit`) — for any file under a
+  service's `domain/`, `usecase/`, `adapter/http/`, or `adapter/repository/`, greps the
+  just-written file for imports that violate the dependency rule above (e.g. `domain/`
+  importing `pgx`/`sqlx`/`net/http`/`axum`, `usecase/` importing `adapter/` directly,
+  `adapter/http/` reaching into `adapter/repository/` instead of going through `usecase`).
+  Can't undo the edit (it already happened by the time `PostToolUse` fires) but surfaces the
+  violation to Claude immediately via exit 2, so it's fixed in the same turn instead of
+  surviving until a later review. `cmd/main.go`/`main.rs` (the composition root) is
+  intentionally exempt — it's allowed to import everything.
+
+Both only gate actions Claude takes inside a Claude Code session — they do not run for edits
+or commits made directly in a terminal/editor outside Claude Code; a real
+`.git/hooks/pre-commit` would be needed for that and hasn't been added.
+
+## `plugins/ticket-microservice-toolkit/`: the same tooling, packaged for distribution
+
+`.claude/` above is this repo's own zero-setup config. `plugins/ticket-microservice-toolkit/`
+repackages the same skills/agents/hooks as an installable Claude Code plugin
+(`.claude-plugin/plugin.json` + `skills/` + `agents/` + `hooks/hooks.json`, hook commands
+using `${CLAUDE_PLUGIN_ROOT}` instead of `$CLAUDE_PROJECT_DIR`) so the conventions can be
+reused in a sibling repo instead of copy-pasted. See that directory's own `README.md` for
+prerequisites and how to test it locally (`claude --plugin-dir
+./plugins/ticket-microservice-toolkit`). The two currently duplicate content on purpose —
+`.claude/` isn't wired to reference the plugin instead, since that wasn't verified to
+auto-load without an explicit `/plugin install` step.
