@@ -1,0 +1,6 @@
+*.md
+Dockerfile
+.dockerignore
+.gitignore
+/analytics-service
+/out/
