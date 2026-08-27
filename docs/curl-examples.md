@@ -13,10 +13,10 @@ Expected status: `201` on success, `400` if the email is already registered or i
 if the rate limit is exceeded.
 
 ```bash
-curl -i -X POST "$GATEWAY_URL/api/v1/auth/register" \
+curl -i -X POST "http://localhost:8000/api/v1/auth/register" \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "jane.doe@example.com",
+    "email": "jane1.doe@example.com",
     "password": "correct-horse-battery-staple"
   }'
 ```
