@@ -5,6 +5,7 @@
 # Go
 services/**/bin/
 services/**/*.exe
+services/**/go.sum
 
 # Rust
 services/**/target/
