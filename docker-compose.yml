@@ -22,7 +22,7 @@ services:
   # only (advertised as kafka:9092); use `docker compose exec kafka ...` to poke
   # it from the host.
   kafka:
-    image: bitnami/kafka:3.7
+    image: bitnamilegacy/kafka:3.7
     container_name: kafka
     environment:
       KAFKA_CFG_NODE_ID: "0"
@@ -45,7 +45,7 @@ services:
 
   # One-shot: create the saga topics (auto-create is disabled above), then exit.
   kafka-init:
-    image: bitnami/kafka:3.7
+    image: bitnamilegacy/kafka:3.7
     container_name: kafka-init
     depends_on:
       kafka:
