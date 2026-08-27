@@ -130,6 +130,41 @@ services:
     networks:
       - ticket-network
 
+  postgres-event:
+    image: postgres:16-alpine
+    container_name: postgres-event
+    environment:
+      POSTGRES_USER: ${EVENT_DB_USER:-event_service}
+      POSTGRES_PASSWORD: ${EVENT_DB_PASSWORD:-event_service}
+      POSTGRES_DB: ${EVENT_DB_NAME:-event_service}
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_event_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${EVENT_DB_USER:-event_service}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ticket-network
+
+  event-service:
+    build:
+      context: ./services/event-service
+    container_name: event-service
+    environment:
+      DATABASE_URL: postgres://${EVENT_DB_USER:-event_service}:${EVENT_DB_PASSWORD:-event_service}@postgres-event:5432/${EVENT_DB_NAME:-event_service}
+      PORT: "8082"
+      DB_MAX_CONNS: ${EVENT_DB_MAX_CONNS:-20}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres-event:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
   kong:
     image: kong:3.6
     container_name: kong
@@ -150,12 +185,14 @@ services:
     depends_on:
       - user-service
       - analytics-service
+      - event-service
     networks:
       - ticket-network
 
 volumes:
   postgres_user_data:
   postgres_analytics_data:
+  postgres_event_data:
 
 networks:
   ticket-network:

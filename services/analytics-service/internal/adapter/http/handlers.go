@@ -28,7 +28,19 @@ func NewHandler(
 	}
 }
 
-// GetEventStats handles GET /api/v1/analytics/events/{eventID}.
+// GetEventStats godoc
+//
+//	@Summary		Event booking stats
+//	@Description	Confirmed / cancelled booking counts for one event, projected from booking-outcome saga events.
+//	@Tags			analytics
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			eventID	path		string	true	"event UUID"
+//	@Success		200		{object}	EventStatsResponse
+//	@Failure		400		{object}	ErrorResponse	"eventID is not a UUID"
+//	@Failure		404		{object}	ErrorResponse	"no stats for this event"
+//	@Failure		500		{object}	ErrorResponse	"internal server error"
+//	@Router			/analytics/events/{eventID} [get]
 func (h *Handler) GetEventStats(w http.ResponseWriter, r *http.Request) {
 	eventID, err := uuid.Parse(r.PathValue("eventID"))
 	if err != nil {
@@ -45,8 +57,19 @@ func (h *Handler) GetEventStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ToEventStatsResponse(stats))
 }
 
-// GetUserRegistration handles GET /api/v1/analytics/users/{userID}. It reads the
-// projection built by the UserCreated Kafka consumer.
+// GetUserRegistration godoc
+//
+//	@Summary		User registration projection
+//	@Description	The registration record projected from the UserCreated event user-service published.
+//	@Tags			analytics
+//	@Produce		json
+//	@Security		BearerAuth
+//	@Param			userID	path		string	true	"user UUID"
+//	@Success		200		{object}	UserRegistrationResponse
+//	@Failure		400		{object}	ErrorResponse	"userID is not a UUID"
+//	@Failure		404		{object}	ErrorResponse	"no registration for this user"
+//	@Failure		500		{object}	ErrorResponse	"internal server error"
+//	@Router			/analytics/users/{userID} [get]
 func (h *Handler) GetUserRegistration(w http.ResponseWriter, r *http.Request) {
 	userID, err := uuid.Parse(r.PathValue("userID"))
 	if err != nil {

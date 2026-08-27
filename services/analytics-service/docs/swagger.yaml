@@ -1,0 +1,108 @@
+basePath: /api/v1
+definitions:
+  http.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  http.EventStatsResponse:
+    properties:
+      cancelled:
+        type: integer
+      confirmed:
+        type: integer
+      event_id:
+        type: string
+    type: object
+  http.UserRegistrationResponse:
+    properties:
+      email:
+        type: string
+      recorded_at:
+        type: string
+      registered_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Read-only projections built from saga events (user registrations, event
+    booking stats).
+  title: analytics-service API
+  version: "1.0"
+paths:
+  /analytics/events/{eventID}:
+    get:
+      description: Confirmed / cancelled booking counts for one event, projected from
+        booking-outcome saga events.
+      parameters:
+      - description: event UUID
+        in: path
+        name: eventID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.EventStatsResponse'
+        "400":
+          description: eventID is not a UUID
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: no stats for this event
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal server error
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Event booking stats
+      tags:
+      - analytics
+  /analytics/users/{userID}:
+    get:
+      description: The registration record projected from the UserCreated event user-service
+        published.
+      parameters:
+      - description: user UUID
+        in: path
+        name: userID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.UserRegistrationResponse'
+        "400":
+          description: userID is not a UUID
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: no registration for this user
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal server error
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: User registration projection
+      tags:
+      - analytics
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
