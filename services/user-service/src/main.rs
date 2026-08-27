@@ -7,10 +7,14 @@ use std::env;
 use std::sync::Arc;
 
 use chrono::Duration;
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::FutureProducer;
+use tokio_util::sync::CancellationToken;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use adapter::http::{build_router, ApiDoc, AppState};
+use adapter::messaging::kafka::OutboxRelay;
 use adapter::repository::postgres::PostgresUserRepository;
 use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
 use domain::{PasswordHasher, TokenIssuer, UserRepository};
@@ -35,6 +39,23 @@ async fn main() {
         .run(&pool)
         .await
         .expect("failed to run database migrations");
+
+    // Choreography saga bus: the outbox relay drains `outbox_events` (written in
+    // the same tx as each user insert) to Kafka. Runs for the whole process
+    // lifetime and is stopped by the same shutdown signal as the HTTP server.
+    let kafka_brokers = env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
+    let user_created_topic =
+        env::var("KAFKA_USER_CREATED_TOPIC").unwrap_or_else(|_| "user.created".to_string());
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &kafka_brokers)
+        .set("message.timeout.ms", "10000")
+        .set("enable.idempotence", "true")
+        .create()
+        .expect("failed to create kafka producer");
+    let relay_cancel = CancellationToken::new();
+    let relay_handle = tokio::spawn(
+        OutboxRelay::new(pool.clone(), producer, user_created_topic).run(relay_cancel.clone()),
+    );
 
     let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let jwt_issuer_key = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
@@ -69,9 +90,18 @@ async fn main() {
     tracing::info!(port, "user-service listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            // Tear the relay down on the same signal, then wait for its
+            // in-flight batch to finish.
+            relay_cancel.cancel();
+        })
         .await
         .expect("server error");
+
+    if let Err(err) = relay_handle.await {
+        tracing::error!(error = %err, "outbox relay task panicked");
+    }
 }
 
 async fn shutdown_signal() {

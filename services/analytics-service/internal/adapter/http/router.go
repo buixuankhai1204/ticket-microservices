@@ -14,6 +14,7 @@ func NewRouter(h *Handler, health *HealthHandler, mw ...Middleware) http.Handler
 
 	// Client-facing routes, full /api/v1/analytics prefix retained.
 	mux.HandleFunc("GET /api/v1/analytics/events/{eventID}", h.GetEventStats)
+	mux.HandleFunc("GET /api/v1/analytics/users/{userID}", h.GetUserRegistration)
 
 	return Chain(mux, mw...)
 }

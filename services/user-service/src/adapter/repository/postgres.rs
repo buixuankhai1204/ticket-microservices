@@ -27,12 +27,9 @@ struct UserRow {
 
 impl From<UserRow> for User {
     fn from(row: UserRow) -> Self {
-        User {
-            id: row.id,
-            email: row.email,
-            password_hash: row.password_hash,
-            created_at: row.created_at,
-        }
+        // Rehydrate through the domain constructor rather than a struct literal,
+        // so the adapter never depends on `User`'s private layout.
+        User::from_persisted(row.id, row.email, row.password_hash, row.created_at)
     }
 }
 
@@ -86,8 +83,10 @@ impl UserRepository for PostgresUserRepository {
     }
 
     async fn create(&self, user: &User) -> Result<(), UserError> {
-        // A write uses a normal read-write transaction — required anyway once
-        // /add-rust-saga-step adds an outbox insert alongside this state write.
+        // A write uses a normal read-write transaction: the users row and the
+        // user's pending domain events (the outbox rows) commit together or not
+        // at all — the transactional outbox pattern, avoiding the dual-write
+        // problem without two-phase commit against Kafka.
         let mut tx = self.pool.begin().await.map_err(repo_err)?;
 
         sqlx::query(
@@ -100,6 +99,20 @@ impl UserRepository for PostgresUserRepository {
         .execute(&mut *tx)
         .await
         .map_err(repo_err)?;
+
+        for event in user.pending_events() {
+            sqlx::query(
+                "INSERT INTO outbox_events (id, aggregate_id, event_type, payload) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(event.event_id())
+            .bind(event.aggregate_id())
+            .bind(event.event_type())
+            .bind(event.payload())
+            .execute(&mut *tx)
+            .await
+            .map_err(repo_err)?;
+        }
 
         tx.commit().await.map_err(repo_err)?;
 

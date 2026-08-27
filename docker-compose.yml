@@ -18,6 +18,53 @@ services:
     networks:
       - ticket-network
 
+  # Choreography saga bus. Single-node KRaft broker — no ZooKeeper. In-network
+  # only (advertised as kafka:9092); use `docker compose exec kafka ...` to poke
+  # it from the host.
+  kafka:
+    image: bitnamilegacy/kafka:3.7
+    container_name: kafka
+    environment:
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+    networks:
+      - ticket-network
+
+  # One-shot: create the saga topics (auto-create is disabled above), then exit.
+  kafka-init:
+    image: bitnamilegacy/kafka:3.7
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_USER_CREATED_TOPIC:-user.created} --partitions 3 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_USER_CREATED_TOPIC:-user.created}.dlq --partitions 1 --replication-factor 1
+        echo "saga topics ready:"
+        kafka-topics.sh --bootstrap-server kafka:9092 --list
+    networks:
+      - ticket-network
+
   user-service:
     build:
       context: ./services/user-service
@@ -27,11 +74,17 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       JWT_ISSUER: ${JWT_ISSUER:-user-service}
       DB_MAX_CONNECTIONS: ${USER_DB_MAX_CONNECTIONS:-10}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_USER_CREATED_TOPIC: ${KAFKA_USER_CREATED_TOPIC:-user.created}
     ports:
         - "8081:8081"
     depends_on:
       postgres-user:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     networks:
       - ticket-network
 
@@ -62,11 +115,18 @@ services:
       DATABASE_URL: postgres://${ANALYTICS_DB_USER:-analytics_service}:${ANALYTICS_DB_PASSWORD:-analytics_service}@postgres-analytics:5432/${ANALYTICS_DB_NAME:-analytics_service}
       PORT: "8084"
       DB_MAX_CONNS: ${ANALYTICS_DB_MAX_CONNS:-20}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_USER_CREATED_TOPIC: ${KAFKA_USER_CREATED_TOPIC:-user.created}
+      KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "8084:8084"
     depends_on:
       postgres-analytics:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     networks:
       - ticket-network
 

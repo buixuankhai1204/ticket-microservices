@@ -14,6 +14,7 @@ import (
 	"time"
 
 	httpadapter "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/http"
+	kafkaconsumer "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/messaging/kafka"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/repository/postgres"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/config"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/db"
@@ -51,8 +52,10 @@ func run(log logger.Logger) error {
 	// --- composition root: concrete adapters -> domain ports ---
 	repo := postgres.New(pool)
 	getEventStats := usecase.NewGetEventStatsUseCase(repo)
+	getUserRegistration := usecase.NewGetUserRegistrationUseCase(repo)
+	recordUserRegistration := usecase.NewRecordUserRegistrationUseCase(repo)
 
-	handler := httpadapter.NewHandler(getEventStats)
+	handler := httpadapter.NewHandler(getEventStats, getUserRegistration)
 	health := httpadapter.NewHealthHandler(pool)
 	router := httpadapter.NewRouter(handler, health,
 		httpadapter.RequestID(),
@@ -64,6 +67,23 @@ func run(log logger.Logger) error {
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	// Inbound saga adapter: consume UserCreated from user-service and project it
+	// into the read model. Stops on the same ctx as the HTTP server.
+	consumer := kafkaconsumer.NewConsumer(kafkaconsumer.Config{
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       cfg.KafkaUserCreatedTopic,
+		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
+	}, recordUserRegistration, log)
+	defer func() { _ = consumer.Close() }()
+
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		if err := consumer.Run(ctx); err != nil {
+			log.Error("kafka consumer exited with error", "err", err.Error())
+		}
+	}()
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -82,5 +102,12 @@ func run(log logger.Logger) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+
+	// ctx is already cancelled here (that's why we're shutting down), so the
+	// consumer is on its way out — wait for it to release the Kafka connection.
+	<-consumerDone
+	return nil
 }

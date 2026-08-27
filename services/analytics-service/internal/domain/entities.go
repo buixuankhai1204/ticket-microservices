@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,4 +51,30 @@ type EventBookingStats struct {
 	EventID   uuid.UUID
 	Confirmed int64
 	Cancelled int64
+}
+
+// UserRegistration is the read-model record projected from a UserCreated event.
+// analytics-service never originates one — it only records what user-service
+// already decided (see CLAUDE.md: analytics consumes as a read model only).
+type UserRegistration struct {
+	UserID       uuid.UUID
+	Email        string
+	RegisteredAt time.Time
+	RecordedAt   time.Time
+}
+
+// NewUserRegistration constructs a UserRegistration, enforcing the email
+// invariant at the point of creation rather than leaving callers to remember to
+// validate. A bad email here is a permanent rejection (the consumer dead-letters
+// it), never a retry.
+func NewUserRegistration(userID uuid.UUID, email string, registeredAt time.Time) (*UserRegistration, error) {
+	if email == "" || !strings.Contains(email, "@") {
+		return nil, ErrInvalidUserRegistration
+	}
+	return &UserRegistration{
+		UserID:       userID,
+		Email:        email,
+		RegisteredAt: registeredAt,
+		RecordedAt:   time.Now().UTC(),
+	}, nil
 }

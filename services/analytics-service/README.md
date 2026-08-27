@@ -4,18 +4,25 @@ Go microservice, port **8084**, gateway prefix **`/api/v1/analytics`** (`strip_p
 in `kong/kong.yml`, so this service handles the full prefix). Kong verifies a JWT (`exp`
 claim) before any `/api/v1/analytics` request reaches here.
 
-Per the platform design it is a **read model only**: it *consumes* the final outcome of the
-booking saga from Kafka and serves aggregate queries. It never publishes saga events and its
-HTTP surface is read-only.
+Per the platform design it is a **read model only**: it *consumes* events other services
+publish and serves aggregate queries. It never publishes saga events (the one topic it writes
+to is its own `<topic>.dlq` dead-letter topic) and its HTTP surface is read-only.
+
+Consumed so far:
+
+| Event | Topic | Group | Projection |
+|---|---|---|---|
+| `UserCreated` (from user-service) | `user.created` | `analytics-service-UserCreated` | `user_registrations` |
 
 ## Layout (Clean Architecture, dependencies point inward)
 
 | Path | Role |
 |---|---|
-| `internal/domain/` | `BookingOutcome` entity + invariant, `EventBookingStats` value, `Repository` port, domain errors. No framework/driver imports. |
-| `internal/usecase/` | `GetEventStatsUseCase` — one flow, constructor-injected `domain.Repository`. |
-| `internal/adapter/http/` | Handlers, DTOs + `ToEventStatsResponse` mapper, health probes, request-ID / access-log middleware, router. |
-| `internal/adapter/repository/postgres/` | `Repository` against Postgres via `pgxpool`. Only package allowed to import `pgx`. |
+| `internal/domain/` | `BookingOutcome` / `UserRegistration` entities + invariants, `EventBookingStats` value, `UserCreated` event, `Repository` port, domain errors. No framework/driver imports. |
+| `internal/usecase/` | `GetEventStatsUseCase`, `GetUserRegistrationUseCase`, `RecordUserRegistrationUseCase` — one flow each, constructor-injected `domain.Repository`. |
+| `internal/adapter/http/` | Handlers, DTOs + `To*Response` mappers, health probes, request-ID / access-log middleware, router. |
+| `internal/adapter/messaging/kafka/` | Inbound saga consumer: subscribes to `user.created`, drives `RecordUserRegistrationUseCase`, manual offset commit, bounded retry-with-backoff, dead-letters poison / permanently-failing messages to `user.created.dlq`. |
+| `internal/adapter/repository/postgres/` | `Repository` against Postgres via `pgxpool` (read-model reads + the idempotent `RecordUserRegistration` write). Only package allowed to import `pgx`. |
 | `internal/platform/` | `config`, `db` (bounded pool + minimal migration runner), `logger` (slog JSON behind an interface). |
 | `migrations/` | Embedded `.sql`, applied at startup in filename order. |
 | `cmd/main.go` | Composition root + lifecycle (graceful shutdown on SIGINT/SIGTERM). |
@@ -25,8 +32,11 @@ HTTP surface is read-only.
 | Var | Required | Default |
 |---|---|---|
 | `DATABASE_URL` | yes | — |
+| `KAFKA_BROKERS` | yes | — (comma-separated `host:port` list) |
 | `PORT` | no | `8084` |
 | `DB_MAX_CONNS` | no | `20` |
+| `KAFKA_USER_CREATED_TOPIC` | no | `user.created` |
+| `KAFKA_CONSUMER_MAX_ATTEMPTS` | no | `5` (transient-failure retries before dead-lettering) |
 
 ## Endpoints
 
@@ -35,14 +45,15 @@ HTTP surface is read-only.
 | `GET` | `/healthz` | Liveness (no DB touch) |
 | `GET` | `/readyz` | Readiness (pings the pool) |
 | `GET` | `/api/v1/analytics/events/{eventID}` | Confirmed / cancelled booking counts for one event |
+| `GET` | `/api/v1/analytics/users/{userID}` | The projected registration for one user (from `UserCreated`) |
 
 ## What still needs filling in
 
 - Real analytics entities / use cases / queries — add them with `/new-go-api-endpoint`.
 - The Kafka consumer that writes `booking_outcomes` from `BookingConfirmed` /
-  `BookingCancelled` events — add it with `/add-go-saga-step` (it also adds a
-  `processed_events` idempotency table and the write method on `domain.Repository`).
-- `go mod tidy` in this directory to produce `go.sum` (needs network once).
+  `BookingCancelled` events — add it with `/add-go-saga-step`.
+- `docs/openapi/analytics-service.yaml` + Postman entry for `/api/v1/analytics/users/{userID}`
+  — run the `api-doc-sync` agent.
 
 ## Local build / run
 
@@ -50,5 +61,5 @@ HTTP surface is read-only.
 cd services/analytics-service
 go mod tidy
 go vet ./...
-DATABASE_URL=postgres://localhost:5432/analytics go run ./cmd
+DATABASE_URL=postgres://localhost:5432/analytics KAFKA_BROKERS=localhost:9092 go run ./cmd
 ```
