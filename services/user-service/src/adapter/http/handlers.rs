@@ -1,27 +1,36 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::domain::UserError;
+use crate::domain::{Pagination, UserError, DEFAULT_LIMIT};
 use crate::platform::db::DbPool;
-use crate::usecase::{GetUserProfileUseCase, LoginUserUseCase, RegisterUserUseCase};
+use crate::usecase::{
+    GetUserProfileUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase,
+};
 
-use super::dto::{ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, UserResponse};
+use super::dto::{
+    ErrorResponse, LoginRequest, LoginResponse, PaginatedUsersResponse, RegisterRequest,
+    UserResponse,
+};
 
 pub struct AppState {
     pub register_user: RegisterUserUseCase,
     pub login_user: LoginUserUseCase,
     pub get_user_profile: GetUserProfileUseCase,
+    pub list_users: ListUsersUseCase,
     pub db_pool: DbPool,
 }
 
 fn map_error(err: UserError) -> (StatusCode, Json<ErrorResponse>) {
     let status = match err {
         UserError::NotFound => StatusCode::NOT_FOUND,
-        UserError::EmailAlreadyExists | UserError::InvalidEmail => StatusCode::BAD_REQUEST,
+        UserError::EmailAlreadyExists | UserError::InvalidEmail | UserError::InvalidPagination => {
+            StatusCode::BAD_REQUEST
+        }
         UserError::InvalidCredentials => StatusCode::UNAUTHORIZED,
         UserError::Repository(_) | UserError::Hashing(_) | UserError::Token(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
@@ -105,6 +114,53 @@ pub async fn get_user(
         .map_err(map_error)?;
 
     Ok(Json(UserResponse::from(&user)))
+}
+
+/// Query params for `GET /api/v1/users`. Both optional: an absent value takes
+/// the domain default, a present non-integer is rejected by axum's `Query`
+/// extractor with a 400 before the handler runs, and a present negative value
+/// is rejected by `Pagination::new`.
+#[derive(Debug, Deserialize)]
+pub struct ListUsersParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/users",
+    params(
+        ("limit" = Option<i64>, Query, description = "page size, default 20, max 100"),
+        ("offset" = Option<i64>, Query, description = "rows to skip, default 0"),
+    ),
+    responses(
+        (status = 200, description = "Page of users", body = PaginatedUsersResponse),
+        (status = 400, description = "Invalid pagination parameters", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn list_users(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListUsersParams>,
+) -> Result<Json<PaginatedUsersResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let pagination = Pagination::new(
+        params.limit.unwrap_or(DEFAULT_LIMIT),
+        params.offset.unwrap_or(0),
+    )
+    .map_err(map_error)?;
+
+    let (users, total) = state
+        .list_users
+        .execute(pagination)
+        .await
+        .map_err(map_error)?;
+
+    Ok(Json(PaginatedUsersResponse::new(
+        &users,
+        &pagination,
+        total,
+    )))
 }
 
 pub async fn healthz() -> StatusCode {

@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::{User, UserError, UserRepository};
+use crate::domain::{Pagination, User, UserError, UserRepository};
 
 pub struct PostgresUserRepository {
     pool: PgPool,
@@ -80,6 +80,36 @@ impl UserRepository for PostgresUserRepository {
         tx.commit().await.map_err(repo_err)?;
 
         Ok(row.map(User::from))
+    }
+
+    async fn list(&self, pagination: Pagination) -> Result<(Vec<User>, i64), UserError> {
+        // Read-only transaction: the COUNT and the page SELECT see one
+        // consistent snapshot, so a concurrent insert between them can't make
+        // `total` disagree with the returned rows.
+        let mut tx = self.pool.begin().await.map_err(repo_err)?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(repo_err)?;
+
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(repo_err)?;
+
+        let rows = sqlx::query_as::<_, UserRow>(
+            "SELECT id, email, password_hash, created_at FROM users \
+             ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(pagination.limit)
+        .bind(pagination.offset)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(repo_err)?;
+
+        tx.commit().await.map_err(repo_err)?;
+
+        Ok((rows.into_iter().map(User::from).collect(), total))
     }
 
     async fn create(&self, user: &User) -> Result<(), UserError> {

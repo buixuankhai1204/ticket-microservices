@@ -1,17 +1,27 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-use super::dto::{ErrorResponse, LoginRequest, LoginResponse, RegisterRequest, UserResponse};
+use super::dto::{
+    ErrorResponse, LoginRequest, LoginResponse, PaginatedUsersResponse, PaginationMeta,
+    RegisterRequest, UserResponse,
+};
 use super::handlers;
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(handlers::register, handlers::login, handlers::get_user),
+    paths(
+        handlers::register,
+        handlers::login,
+        handlers::get_user,
+        handlers::list_users
+    ),
     components(schemas(
         RegisterRequest,
         LoginRequest,
         LoginResponse,
         UserResponse,
+        PaginatedUsersResponse,
+        PaginationMeta,
         ErrorResponse
     )),
     modifiers(&SecurityAddon)
