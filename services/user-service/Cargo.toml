@@ -21,3 +21,7 @@ argon2 = "0.5"
 jsonwebtoken = "9"
 utoipa = { version = "4", features = ["axum_extras", "uuid"] }
 utoipa-swagger-ui = { version = "6", features = ["axum"] }
+
+[dev-dependencies]
+# Real Postgres for integration tests (services/user-service/tests/), needs Docker.
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
