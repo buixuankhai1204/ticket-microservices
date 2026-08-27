@@ -3,12 +3,19 @@ use uuid::Uuid;
 
 use super::entities::User;
 use super::errors::UserError;
+use super::pagination::Pagination;
 
 #[async_trait]
 pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> Result<User, UserError>;
     async fn find_by_email(&self, email: &str) -> Result<Option<User>, UserError>;
     async fn create(&self, user: &User) -> Result<(), UserError>;
+
+    /// One page of users, newest first, plus the full match count ignoring
+    /// limit/offset (for the response envelope). The count and the page are read
+    /// in the same read-only transaction so a concurrent write can't make them
+    /// disagree.
+    async fn list(&self, pagination: Pagination) -> Result<(Vec<User>, i64), UserError>;
 }
 
 /// Outbound gateway: turns a plaintext password into a stored hash and back-checks

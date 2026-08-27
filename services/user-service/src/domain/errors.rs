@@ -10,6 +10,8 @@ pub enum UserError {
     InvalidEmail,
     #[error("invalid email or password")]
     InvalidCredentials,
+    #[error("invalid pagination parameters")]
+    InvalidPagination,
     #[error("repository error: {0}")]
     Repository(String),
     #[error("password hashing error: {0}")]

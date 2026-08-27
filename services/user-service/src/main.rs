@@ -19,7 +19,7 @@ use adapter::repository::postgres::PostgresUserRepository;
 use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
 use domain::{PasswordHasher, TokenIssuer, UserRepository};
 use platform::db;
-use usecase::{GetUserProfileUseCase, LoginUserUseCase, RegisterUserUseCase};
+use usecase::{GetUserProfileUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase};
 
 #[tokio::main]
 async fn main() {
@@ -72,7 +72,8 @@ async fn main() {
     let state = Arc::new(AppState {
         register_user: RegisterUserUseCase::new(user_repository.clone(), password_hasher.clone()),
         login_user: LoginUserUseCase::new(user_repository.clone(), password_hasher, token_issuer),
-        get_user_profile: GetUserProfileUseCase::new(user_repository),
+        get_user_profile: GetUserProfileUseCase::new(user_repository.clone()),
+        list_users: ListUsersUseCase::new(user_repository),
         db_pool: pool,
     });
 

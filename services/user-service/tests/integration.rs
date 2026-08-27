@@ -13,7 +13,10 @@
 //! `crate::adapter::*`, so this flat re-declaration compiles them exactly as
 //! `src/main.rs` does.
 
-#![allow(dead_code)]
+// The modules under test are pulled in wholesale with `#[path]`, so this test
+// crate legitimately does not touch every item / re-export they expose (e.g.
+// usecases and DTO constants only the HTTP layer uses).
+#![allow(dead_code, unused_imports)]
 
 use std::sync::Arc;
 use std::time::Duration;
