@@ -74,7 +74,7 @@ services:
   # ----------------------------------------------------------------------------
   # 4. ANALYTICS SERVICE
   # ----------------------------------------------------------------------------
-  - name: analytics-service
+  - name: 8
     url: http://analytics-service:8084
     routes:
       - name: analytics-routes

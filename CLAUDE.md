@@ -57,6 +57,33 @@ Use `/new-go-service` or `/new-rust-service` to scaffold a service in this shape
 `/new-go-api-endpoint` / `/new-rust-api-endpoint` to add an endpoint to one afterward, and
 `/scalability-review` / `/review-concurrency` to audit one.
 
+### Endpoint conventions: entity IDs, response mapping, transactions
+
+Three rules `/new-go-api-endpoint` and `/new-rust-api-endpoint` enforce on every endpoint they
+add, not just the ones that happen to need them:
+
+- **Entity IDs are UUID, never an auto-increment integer.** Go: `github.com/google/uuid`
+  (`uuid.UUID` field, `uuid.New()` when an entity is created — in the `domain` constructor, not
+  scattered in `usecase`). Rust: the `uuid` crate (`Uuid` field, `Uuid::new_v4()`). Postgres
+  columns are `UUID` (`gen_random_uuid()`/`uuid_generate_v4()` default is fine, but the app
+  still generates its own so a new entity has an ID before the first insert). Two reasons, not
+  just convention: a sequential ID is guessable, which makes IDOR easier to exploit by
+  enumeration (see `security-reviewer`); and every saga event already carries an
+  `aggregate_id` (see the outbox section below) — UUID entity IDs and event `aggregate_id`s are
+  then the same type end to end, no translation at the Kafka boundary.
+- **The `adapter/http` layer converts `domain` → response DTO through one named function, not
+  ad hoc field copying inline in the handler.** Go: a `ToBookingResponse(b *domain.Booking)
+  BookingResponse`-style function next to the DTO. Rust: `impl From<&domain::Booking> for
+  BookingResponse` (or an explicit `to_response(&self)` method) next to the DTO. Keeps the
+  domain→wire mapping in one place instead of re-derived per handler, and gives
+  `api-doc-sync`/tests one clear function to point at.
+- **Every endpoint's database access runs inside one transaction**, not only the ones that
+  happen to touch more than one table. A read endpoint uses a read-only transaction (a
+  consistent snapshot across however many queries it runs); a write endpoint uses a normal
+  read-write transaction — which is required anyway the moment `/add-go-saga-step` or
+  `/add-rust-saga-step` adds an outbox insert next to the state write, so starting every write
+  handler in a transaction from day one avoids retrofitting it later.
+
 ## Cross-service communication: choreography saga over Kafka
 
 Cross-service state changes (e.g. a booking needing a seat reserved in `event-service`) go

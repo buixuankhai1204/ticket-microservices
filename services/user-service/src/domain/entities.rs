@@ -3,11 +3,10 @@ use uuid::Uuid;
 
 use super::errors::UserError;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct User {
     pub id: Uuid,
     pub email: String,
-    #[serde(skip_serializing)]
     pub password_hash: String,
     pub created_at: DateTime<Utc>,
 }

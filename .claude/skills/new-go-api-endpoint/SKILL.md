@@ -24,21 +24,31 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
    (`strip_path: false`, so the full path is what the handler must register). If it doesn't
    match any route Kong sends to this service, stop and tell the user to add the route to
    `kong.yml` first.
-3. Add code layer by layer, respecting the existing dependency rule (see @CLAUDE.md):
-   - `internal/domain/` — if this operation represents a new business rule, add/extend the
-     entity with a method that enforces the invariant (returns a domain error, e.g.
-     `ErrSeatUnavailable`, on violation) rather than letting the usecase check ad hoc
+3. Add code layer by layer, respecting the existing dependency rule and the endpoint
+   conventions in @CLAUDE.md (UUID IDs, explicit response mapper, transaction per endpoint):
+   - `internal/domain/` — if this operation creates a new entity, its ID field is `uuid.UUID`
+     (`github.com/google/uuid`), generated with `uuid.New()` in the entity's constructor —
+     never an auto-increment integer. If this operation represents a new business rule,
+     add/extend the entity with a method that enforces the invariant (returns a domain error,
+     e.g. `ErrSeatUnavailable`, on violation) rather than letting the usecase check ad hoc
      conditions. Add any new port method the usecase will need to the `Repository` interface
      here — don't define it in the postgres adapter first.
    - `internal/usecase/` — add `<UseCaseName>UseCase` (constructor-injected with the `domain`
      ports it needs), one exported method (e.g. `Execute(ctx, input) (output, error)`). No
      framework types (`http.Request`, `pgx.Row`) appear in this signature.
    - `internal/adapter/repository/postgres/` — implement any new `Repository` method added in
-     the domain step, using `pgxpool`, inside a transaction if the operation touches more than
-     one row/table.
+     the domain step using `pgxpool`, and run it **inside one transaction (`pgx.Tx`) every
+     time**, not only when the operation touches more than one row/table: a read uses a
+     read-only transaction (`pgx.TxOptions{AccessMode: pgx.ReadOnly}`) for a consistent
+     snapshot across its queries, a write uses a normal read-write transaction — which becomes
+     required anyway once `/add-go-saga-step` adds an outbox insert alongside the state write,
+     so starting every write in a transaction now avoids retrofitting it later.
    - `internal/adapter/http/` — request/response DTOs (kept separate from domain entities —
-     don't leak domain types into JSON tags), a handler that decodes the request, calls the
-     usecase, and maps domain errors to HTTP status codes explicitly (e.g.
+     don't leak domain types into JSON tags), and a **named mapper function**
+     (`ToBookingResponse(b *domain.Booking) BookingResponse`-style, next to the DTO) that
+     converts the `domain` entity into the response DTO — not inline field copying scattered in
+     the handler. The handler itself decodes the request, calls the usecase, calls the mapper,
+     and maps domain errors to HTTP status codes explicitly (e.g.
      `errors.Is(err, domain.ErrSeatUnavailable) → 409`, `errors.Is(err, domain.ErrNotFound) →
      404`, unmapped error → 500). Register the route on the exact `<path>`/`<METHOD>` in the
      router built in `cmd/main.go`.

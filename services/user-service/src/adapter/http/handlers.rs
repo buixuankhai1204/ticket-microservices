@@ -55,7 +55,7 @@ pub async fn register(
         .await
         .map_err(map_error)?;
 
-    Ok((StatusCode::CREATED, Json(user.into())))
+    Ok((StatusCode::CREATED, Json(UserResponse::from(&user))))
 }
 
 #[utoipa::path(
@@ -104,7 +104,7 @@ pub async fn get_user(
         .await
         .map_err(map_error)?;
 
-    Ok(Json(user.into()))
+    Ok(Json(UserResponse::from(&user)))
 }
 
 pub async fn healthz() -> StatusCode {

@@ -27,11 +27,14 @@ pub struct UserResponse {
     pub email: String,
 }
 
-impl From<User> for UserResponse {
-    fn from(user: User) -> Self {
+/// Named `domain::User` → wire mapper, kept next to the DTO. Borrows the entity
+/// (rather than consuming it) so a handler can still use the `User` afterwards —
+/// e.g. once a saga step needs the aggregate after responding.
+impl From<&User> for UserResponse {
+    fn from(user: &User) -> Self {
         Self {
             id: user.id,
-            email: user.email,
+            email: user.email.clone(),
         }
     }
 }

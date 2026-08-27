@@ -24,23 +24,35 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
    (`strip_path: false`, so the full path is what the router must register). If it doesn't
    match any route Kong sends to this service, stop and tell the user to add the route to
    `kong.yml` first.
-3. Add code layer by layer, respecting the existing dependency rule (see @CLAUDE.md):
-   - `src/domain/` — if this operation represents a new business rule, add/extend the entity
-     with a method that enforces the invariant (returns a domain error variant, e.g.
-     `BookingError::SeatUnavailable`, on violation) rather than letting the usecase check ad hoc
-     conditions. Add any new port method the usecase will need to the relevant `#[async_trait]`
-     repository trait here — don't define it on the postgres adapter first.
+3. Add code layer by layer, respecting the existing dependency rule and the endpoint
+   conventions in @CLAUDE.md (UUID IDs, explicit response mapper, transaction per endpoint):
+   - `src/domain/` — if this operation creates a new entity, its ID field is `uuid::Uuid`
+     (crate `uuid`, feature `v4`), generated with `Uuid::new_v4()` in the entity's constructor
+     — never an auto-increment integer. If this operation represents a new business rule,
+     add/extend the entity with a method that enforces the invariant (returns a domain error
+     variant, e.g. `BookingError::SeatUnavailable`, on violation) rather than letting the
+     usecase check ad hoc conditions. Add any new port method the usecase will need to the
+     relevant `#[async_trait]` repository trait here — don't define it on the postgres adapter
+     first.
    - `src/usecase/` — add a `<UseCaseName>UseCase` struct (holding `Arc<dyn Trait>` ports
      injected via `new()`), one async method (e.g. `execute(&self, input) -> Result<Output,
      DomainError>`). No `axum`/`sqlx` types appear in this signature.
    - `src/adapter/repository/postgres.rs` — implement any new trait method added in the domain
-     step using `sqlx::PgPool`, inside a transaction if the operation touches more than one
-     row/table.
+     step using `sqlx::PgPool`, and run it **inside one transaction every time**
+     (`pool.begin()`), not only when the operation touches more than one row/table: a read
+     starts the transaction with `sqlx::Transaction` at the default (or explicitly `SET
+     TRANSACTION READ ONLY`) isolation for a consistent snapshot across its queries, a write
+     commits a normal read-write transaction — which becomes required anyway once
+     `/add-rust-saga-step` adds an outbox insert alongside the state write, so starting every
+     write in a transaction now avoids retrofitting it later.
    - `src/adapter/http/` — request/response DTOs with `serde` derives (kept separate from
-     domain entities — don't derive `Serialize`/`Deserialize` on domain types just for this), an
-     `axum` handler that extracts the request, calls the usecase, and maps domain error variants
-     to HTTP status codes explicitly (e.g. `BookingError::SeatUnavailable →
-     StatusCode::CONFLICT`, `BookingError::NotFound → StatusCode::NOT_FOUND`, unmapped →
+     domain entities — don't derive `Serialize`/`Deserialize` on domain types just for this),
+     and a **named mapper** (`impl From<&domain::Booking> for BookingResponse`, next to the
+     DTO) that converts the `domain` entity into the response DTO — not inline field copying
+     scattered in the handler. The `axum` handler itself extracts the request, calls the
+     usecase, calls `.into()`/the mapper, and maps domain error variants to HTTP status codes
+     explicitly (e.g. `BookingError::SeatUnavailable → StatusCode::CONFLICT`,
+     `BookingError::NotFound → StatusCode::NOT_FOUND`, unmapped →
      `StatusCode::INTERNAL_SERVER_ERROR`). Register the route on the exact `<path>`/`<METHOD>`
      in the router built in `main.rs`.
 4. If a successful call needs another service to react asynchronously (e.g. reserving a seat
