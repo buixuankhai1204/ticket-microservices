@@ -1,0 +1,6 @@
+*.md
+Dockerfile
+.dockerignore
+.gitignore
+/event-service
+/out/

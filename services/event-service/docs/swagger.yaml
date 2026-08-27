@@ -1,0 +1,183 @@
+basePath: /api/v1
+definitions:
+  http.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  http.EventResponse:
+    properties:
+      created_at:
+        type: string
+      description:
+        type: string
+      ends_at:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      starts_at:
+        type: string
+      venue:
+        type: string
+    type: object
+  http.PaginatedEventsResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/http.EventResponse'
+        type: array
+      pagination:
+        $ref: '#/definitions/http.PaginationMeta'
+    type: object
+  http.PaginatedSeatsResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/http.SeatResponse'
+        type: array
+      pagination:
+        $ref: '#/definitions/http.PaginationMeta'
+    type: object
+  http.PaginationMeta:
+    properties:
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total:
+        type: integer
+    type: object
+  http.SeatResponse:
+    properties:
+      event_id:
+        type: string
+      id:
+        type: string
+      number:
+        type: string
+      price_minor:
+        type: integer
+      row:
+        type: string
+      section:
+        type: string
+      status:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: 'Read side of the event catalogue: browse events and their seat maps.'
+  title: event-service API
+  version: "1.0"
+paths:
+  /events:
+    get:
+      description: Browse events newest first. Optionally restrict to upcoming events.
+        Paginated with limit/offset.
+      parameters:
+      - description: only events that have not ended yet
+        in: query
+        name: upcoming
+        type: boolean
+      - description: page size (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: rows to skip (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.PaginatedEventsResponse'
+        "400":
+          description: invalid limit/offset
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal server error
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      summary: List events
+      tags:
+      - events
+  /events/{eventID}:
+    get:
+      description: Fetch a single event by its UUID.
+      parameters:
+      - description: event UUID
+        in: path
+        name: eventID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.EventResponse'
+        "400":
+          description: eventID is not a UUID
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: no such event
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal server error
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      summary: Get one event
+      tags:
+      - events
+  /events/{eventID}/seats:
+    get:
+      description: The seat map for one event, ordered by section/row/number. Paginated
+        with limit/offset.
+      parameters:
+      - description: event UUID
+        in: path
+        name: eventID
+        required: true
+        type: string
+      - description: page size (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: rows to skip (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/http.PaginatedSeatsResponse'
+        "400":
+          description: eventID is not a UUID, or invalid limit/offset
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "404":
+          description: no such event
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+        "500":
+          description: internal server error
+          schema:
+            $ref: '#/definitions/http.ErrorResponse'
+      summary: List an event's seats
+      tags:
+      - events
+swagger: "2.0"

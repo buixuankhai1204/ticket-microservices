@@ -8,7 +8,8 @@ import (
 
 // NewRouter wires every route for the service. Prefixes must match
 // kong/kong.yml exactly: Kong routes this service with strip_path: false, so it
-// receives the full /api/v1/analytics path and must NOT strip the prefix.
+// receives the full /api/v1/events path and must NOT strip the prefix. The
+// /api/v1/events route has no jwt plugin in kong.yml — event browsing is public.
 func NewRouter(h *Handler, health *HealthHandler, mw ...Middleware) http.Handler {
 	mux := http.NewServeMux()
 
@@ -20,9 +21,10 @@ func NewRouter(h *Handler, health *HealthHandler, mw ...Middleware) http.Handler
 	// off this service, independent of the repo-level docs/openapi bundle.
 	mux.Handle("GET /swagger/", httpSwagger.WrapHandler)
 
-	// Client-facing routes, full /api/v1/analytics prefix retained.
-	mux.HandleFunc("GET /api/v1/analytics/events/{eventID}", h.GetEventStats)
-	mux.HandleFunc("GET /api/v1/analytics/users/{userID}", h.GetUserRegistration)
+	// Client-facing routes, full /api/v1/events prefix retained.
+	mux.HandleFunc("GET /api/v1/events", h.ListEvents)
+	mux.HandleFunc("GET /api/v1/events/{eventID}", h.GetEvent)
+	mux.HandleFunc("GET /api/v1/events/{eventID}/seats", h.ListEventSeats)
 
 	return Chain(mux, mw...)
 }

@@ -57,9 +57,9 @@ Use `/new-go-service` or `/new-rust-service` to scaffold a service in this shape
 `/new-go-api-endpoint` / `/new-rust-api-endpoint` to add an endpoint to one afterward, and
 `/scalability-review` / `/review-concurrency` to audit one.
 
-### Endpoint conventions: entity IDs, response mapping, transactions
+### Endpoint conventions: entity IDs, response mapping, transactions, pagination
 
-Three rules `/new-go-api-endpoint` and `/new-rust-api-endpoint` enforce on every endpoint they
+Four rules `/new-go-api-endpoint` and `/new-rust-api-endpoint` enforce on every endpoint they
 add, not just the ones that happen to need them:
 
 - **Entity IDs are UUID, never an auto-increment integer.** Go: `github.com/google/uuid`
@@ -83,6 +83,15 @@ add, not just the ones that happen to need them:
   read-write transaction — which is required anyway the moment `/add-go-saga-step` or
   `/add-rust-saga-step` adds an outbox insert next to the state write, so starting every write
   handler in a transaction from day one avoids retrofitting it later.
+- **Every list endpoint is paginated with `limit`/`offset`, never an unbounded result set.** A
+  shared `Pagination` domain type per service (not redefined per entity) validates
+  `offset >= 0` and `limit >= 1`, defaults to `limit=20, offset=0` when absent, and clamps
+  `limit` to a max of 100 rather than erroring on too large a value — an invalid (non-integer
+  or negative) value is still a 400. The repository's list method returns the total match count
+  alongside the page (one `COUNT(*)` alongside the `LIMIT`/`OFFSET` query, same read-only
+  transaction as the rule above so the two can't disagree). The response is an envelope —
+  `{ "data": [...], "pagination": { "limit", "offset", "total", "has_more" } }` — never a bare
+  array, so a client can tell it's paginated without reading the docs.
 
 ## Cross-service communication: choreography saga over Kafka
 
@@ -158,6 +167,13 @@ Subagents (`.claude/agents/`, invoked via the Agent tool or by name):
 `docs/postman/ticket-platform.postman_collection.json` in sync with implemented handlers,
 code always wins over the spec. It doesn't overlap with `api-contract-reviewer`, which checks
 code against `kong.yml`, not against API docs.
+
+`/new-go-api-endpoint` and `/new-rust-api-endpoint` also bootstrap `swaggo`/`utoipa` on a
+service's first endpoint and annotate every endpoint after — this gives each service its own
+live, interactive Swagger UI (`/swagger/` for Go, `/swagger-ui` for Rust) independent of
+`api-doc-sync`, which currently reads source instead of that live endpoint. The two aren't
+wired together right now; ask before assuming `api-doc-sync` should switch to curling
+`swagger/doc.json`/`openapi.json` instead of parsing source.
 
 `unit-test-writer` and `integration-test-writer` split by test *type*, not by language (both
 branch internally for Go/Rust, like the review agents do) — the two need genuinely different
