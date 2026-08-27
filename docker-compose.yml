@@ -35,6 +35,41 @@ services:
     networks:
       - ticket-network
 
+  postgres-analytics:
+    image: postgres:16-alpine
+    container_name: postgres-analytics
+    environment:
+      POSTGRES_USER: ${ANALYTICS_DB_USER:-analytics_service}
+      POSTGRES_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics_service}
+      POSTGRES_DB: ${ANALYTICS_DB_NAME:-analytics_service}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ANALYTICS_DB_USER:-analytics_service}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ticket-network
+
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+    container_name: analytics-service
+    environment:
+      DATABASE_URL: postgres://${ANALYTICS_DB_USER:-analytics_service}:${ANALYTICS_DB_PASSWORD:-analytics_service}@postgres-analytics:5432/${ANALYTICS_DB_NAME:-analytics_service}
+      PORT: "8084"
+      DB_MAX_CONNS: ${ANALYTICS_DB_MAX_CONNS:-20}
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
   kong:
     image: kong:3.6
     container_name: kong
@@ -54,11 +89,13 @@ services:
       - "8001:8001"
     depends_on:
       - user-service
+      - analytics-service
     networks:
       - ticket-network
 
 volumes:
   postgres_user_data:
+  postgres_analytics_data:
 
 networks:
   ticket-network:
