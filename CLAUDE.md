@@ -97,24 +97,40 @@ services, including compensating its own earlier step on a downstream failure. A
 changing a saga step should never require teaching one service the full sequence — only what
 it does when it observes a given event.
 
-Two supporting patterns are required, not optional, for any publish/consume code:
+Three supporting patterns are required, not optional, for any publish/consume code:
 
 - **Transactional outbox** — an event is written to an `outbox_events` table in the *same* DB
   transaction as the state change it describes, and a background relay publishes from that
   table to Kafka. This avoids the dual-write problem (DB commit and Kafka publish can't be made
   atomic any other way without 2PC). Events for the same aggregate are keyed by `aggregate_id`
-  so a partition preserves their order.
+  so a partition preserves their order. The relay must not let one un-publishable row block
+  the rest of the outbox — log it, leave `published_at` NULL, move on, retry next tick.
 - **Idempotent consumers** — Kafka delivers at-least-once. Every consumer checks a
   `processed_events` table (unique event ID) before applying an event, in the same transaction
   as the side effect.
+- **Dead-letter handling** — a consume step must terminate *every* message, never wedge a
+  partition. Classify the outcome: success / idempotent no-op → commit the offset; transient
+  error (DB/broker blip) → do not commit, retry in-process with capped backoff up to
+  `MAX_ATTEMPTS`; poison message (undeserializable) or permanent domain rejection → publish to
+  the dead-letter topic `<topic>.dlq` then commit; retries exhausted → `<topic>.dlq` then
+  commit, as a last resort. DLQ records carry the original key/payload plus diagnostic headers
+  (`x-dlq-reason`, source topic/partition/offset). `<topic>.dlq` is created alongside
+  `<topic>` in the topic-init / `docker-compose` step.
 
 Client libraries: `segmentio/kafka-go` for Go services, `rdkafka` for Rust services.
 
-Use `/add-go-saga-step` or `/add-rust-saga-step` to wire a publish or consume step. Example
-saga already sketched for this repo: `booking-service` publishes `BookingRequested` →
-`event-service` reserves the seat and publishes `SeatReserved`/`SeatReservationFailed` →
-`booking-service` confirms or compensates (cancels) the booking → `analytics-service` consumes
-the final outcome as a read model only.
+Use `/add-go-saga-step` or `/add-rust-saga-step` to wire a publish or consume step.
+
+Implemented so far (reference these when wiring a new step): `user-service` publishes
+`UserCreated` on `user.created` via the outbox + relay → `analytics-service` consumes it
+(group `analytics-service-UserCreated`), projects a `user_registrations` read-model row behind
+a `processed_events` check, and dead-letters poison / permanently-failing / retry-exhausted
+messages to `user.created.dlq`.
+
+Sketched next: `booking-service` publishes `BookingRequested` → `event-service` reserves the
+seat and publishes `SeatReserved`/`SeatReservationFailed` → `booking-service` confirms or
+compensates (cancels) the booking → `analytics-service` consumes the final outcome as a read
+model only.
 
 ## Claude Code tooling already set up for this repo
 
@@ -135,11 +151,21 @@ Subagents (`.claude/agents/`, invoked via the Agent tool or by name):
 | `security-reviewer` | Read-only audit: injection, secrets, JWT/IDOR, log leakage |
 | `api-contract-reviewer` | Read-only, whole-repo audit: routes vs `kong.yml` drift |
 | `api-doc-sync` | Writer: generates/updates `docs/openapi/*.yaml` and the Postman collection from actual handler code |
+| `unit-test-writer` | Writer: unit tests for `domain`/`usecase`, mocked ports, exhaustive edge cases |
+| `integration-test-writer` | Writer: integration tests against real Postgres — concurrency, idempotency, transaction atomicity |
 
 `api-doc-sync` is the only writing agent — it keeps `docs/openapi/<service>.yaml` and
 `docs/postman/ticket-platform.postman_collection.json` in sync with implemented handlers,
 code always wins over the spec. It doesn't overlap with `api-contract-reviewer`, which checks
 code against `kong.yml`, not against API docs.
+
+`unit-test-writer` and `integration-test-writer` split by test *type*, not by language (both
+branch internally for Go/Rust, like the review agents do) — the two need genuinely different
+infrastructure (mocked ports + no Docker vs. real Postgres via `testcontainers`), so keeping
+them separate stops a "quick unit test" request from accidentally pulling in Docker, and vice
+versa. Use `unit-test-writer` after any `domain`/`usecase` change; use
+`integration-test-writer` once a service has real endpoints or saga steps, since it needs
+something real to hit.
 
 There is deliberately no "service builder" subagent — `new-go-service`/`new-rust-service` and
 the `new-*-api-endpoint` skills already cover guided code generation with the repo's

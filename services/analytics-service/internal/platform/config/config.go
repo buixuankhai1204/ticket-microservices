@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,15 +16,22 @@ type Config struct {
 	DatabaseURL   string
 	DBMaxConns    int32
 	ShutdownGrace time.Duration
+
+	// Kafka (choreography saga bus).
+	KafkaBrokers             []string
+	KafkaUserCreatedTopic    string
+	KafkaConsumerMaxAttempts int
 }
 
 // Load reads and validates configuration. DATABASE_URL is required; everything
 // else has a bounded default.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:          8084, // must match kong/kong.yml (http://analytics-service:8084)
-		DBMaxConns:    20,
-		ShutdownGrace: 15 * time.Second,
+		Port:                     8084, // must match kong/kong.yml (http://analytics-service:8084)
+		DBMaxConns:               20,
+		ShutdownGrace:            15 * time.Second,
+		KafkaUserCreatedTopic:    "user.created",
+		KafkaConsumerMaxAttempts: 5,
 	}
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -45,6 +53,33 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid DB_MAX_CONNS %q", v)
 		}
 		cfg.DBMaxConns = int32(n)
+	}
+
+	// KAFKA_BROKERS is required — analytics is a Kafka consumer first, an HTTP
+	// service second.
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers == "" {
+		return Config{}, fmt.Errorf("KAFKA_BROKERS must be set")
+	}
+	for _, b := range strings.Split(brokers, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			cfg.KafkaBrokers = append(cfg.KafkaBrokers, b)
+		}
+	}
+	if len(cfg.KafkaBrokers) == 0 {
+		return Config{}, fmt.Errorf("KAFKA_BROKERS contained no usable entries")
+	}
+
+	if v := os.Getenv("KAFKA_USER_CREATED_TOPIC"); v != "" {
+		cfg.KafkaUserCreatedTopic = v
+	}
+
+	if v := os.Getenv("KAFKA_CONSUMER_MAX_ATTEMPTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return Config{}, fmt.Errorf("invalid KAFKA_CONSUMER_MAX_ATTEMPTS %q", v)
+		}
+		cfg.KafkaConsumerMaxAttempts = n
 	}
 
 	return cfg, nil

@@ -14,11 +14,18 @@ import (
 // Handler holds the use cases the HTTP layer drives. It is constructed once at
 // startup and shared across every request — no per-request mutable field.
 type Handler struct {
-	getEventStats *usecase.GetEventStatsUseCase
+	getEventStats       *usecase.GetEventStatsUseCase
+	getUserRegistration *usecase.GetUserRegistrationUseCase
 }
 
-func NewHandler(getEventStats *usecase.GetEventStatsUseCase) *Handler {
-	return &Handler{getEventStats: getEventStats}
+func NewHandler(
+	getEventStats *usecase.GetEventStatsUseCase,
+	getUserRegistration *usecase.GetUserRegistrationUseCase,
+) *Handler {
+	return &Handler{
+		getEventStats:       getEventStats,
+		getUserRegistration: getUserRegistration,
+	}
 }
 
 // GetEventStats handles GET /api/v1/analytics/events/{eventID}.
@@ -36,6 +43,24 @@ func (h *Handler) GetEventStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, ToEventStatsResponse(stats))
+}
+
+// GetUserRegistration handles GET /api/v1/analytics/users/{userID}. It reads the
+// projection built by the UserCreated Kafka consumer.
+func (h *Handler) GetUserRegistration(w http.ResponseWriter, r *http.Request) {
+	userID, err := uuid.Parse(r.PathValue("userID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "userID must be a valid UUID")
+		return
+	}
+
+	reg, err := h.getUserRegistration.Execute(r.Context(), userID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ToUserRegistrationResponse(reg))
 }
 
 // writeDomainError translates a domain / repository error into an HTTP status at
