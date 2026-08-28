@@ -93,17 +93,32 @@ type LayoutSpec struct {
 	Exceptions []SeatException
 }
 
+// seatAdjust is the effect one SeatException has on the seat it addresses.
+type seatAdjust struct {
+	remove bool
+	price  *int64
+}
+
+// seatKey joins a section/row/number into the string used to address one seat
+// within a layout. The NUL separator can't occur in any part, so distinct
+// triples never collide.
+func seatKey(section, row, number string) string {
+	return section + "\x00" + row + "\x00" + number
+}
+
 // NewEventWithSeats builds a new Event together with its seat map in one step,
 // so the rule "an event is always created with its seat map" lives in the
-// domain rather than in the usecase. It expands layout into individual seats
-// and enforces:
+// domain rather than in the usecase. It runs three steps, each its own function
+// so the failure modes can be unit-tested in isolation: validate the sections
+// (validateSections), index the exceptions against them (indexExceptions),
+// expand the grid (expandSeats). Between them they enforce:
 //   - every Event invariant (via NewEvent),
 //   - a well-formed layout: >=1 section, unique section names, Rows and
 //     SeatsPerRow >= 1, PriceMinor >= 0 (ErrInvalidLayout),
+//   - the expanded map fits under MaxSeatsPerEvent (ErrLayoutTooLarge),
 //   - every exception targets a seat the grid actually produces, no two
 //     exceptions target the same seat, and each exception removes or reprices
 //     (ErrInvalidLayout),
-//   - the expanded map fits under MaxSeatsPerEvent (ErrLayoutTooLarge),
 //   - at least one seat survives removals (ErrEventRequiresSeats).
 //
 // Uniqueness of section/row/number is guaranteed by construction here — the
@@ -115,69 +130,106 @@ func NewEventWithSeats(name, description, venue string, startsAt, endsAt time.Ti
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(layout.Sections) == 0 {
+
+	sections, err := validateSections(layout.Sections)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	adjustments, err := indexExceptions(layout.Exceptions, sections)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	seats, err := expandSeats(event.ID, layout.Sections, adjustments)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(seats) == 0 {
 		return nil, nil, ErrEventRequiresSeats
 	}
+	return event, seats, nil
+}
 
-	// Validate sections and size the expansion up front, so an abusive layout
-	// is rejected before anything is allocated.
-	sections := make(map[string]SectionSpec, len(layout.Sections))
+// validateSections checks each section, rejects a duplicate (trimmed) name, and
+// enforces MaxSeatsPerEvent on the running seat total before anything is
+// allocated. It returns the sections indexed by trimmed name for the exception
+// step. An empty slice is ErrEventRequiresSeats.
+func validateSections(specs []SectionSpec) (map[string]SectionSpec, error) {
+	if len(specs) == 0 {
+		return nil, ErrEventRequiresSeats
+	}
+
+	byName := make(map[string]SectionSpec, len(specs))
 	total := 0
-	for _, s := range layout.Sections {
+	for _, s := range specs {
 		s.Name = strings.TrimSpace(s.Name)
 		if s.Name == "" || s.Rows < 1 || s.SeatsPerRow < 1 || s.PriceMinor < 0 {
-			return nil, nil, ErrInvalidLayout
+			return nil, ErrInvalidLayout
 		}
-		if _, dup := sections[s.Name]; dup {
-			return nil, nil, ErrInvalidLayout
+		if _, dup := byName[s.Name]; dup {
+			return nil, ErrInvalidLayout
 		}
-		sections[s.Name] = s
+		byName[s.Name] = s
+
 		total += s.Rows * s.SeatsPerRow
 		if total > MaxSeatsPerEvent {
-			return nil, nil, ErrLayoutTooLarge
+			return nil, ErrLayoutTooLarge
 		}
 	}
+	return byName, nil
+}
 
-	// Index exceptions by the seat they address; reject any that fall outside
-	// the grid, collide with another exception, or would do nothing.
-	type adjust struct {
-		remove bool
-		price  *int64
-	}
-	byKey := make(map[string]adjust, len(layout.Exceptions))
-	for _, ex := range layout.Exceptions {
+// indexExceptions validates every SeatException against the already-validated
+// sections and returns them keyed by the seat they address. An exception that
+// falls outside the grid, duplicates another, or would do nothing (neither
+// removes nor reprices) is an ErrInvalidLayout.
+func indexExceptions(exceptions []SeatException, sections map[string]SectionSpec) (map[string]seatAdjust, error) {
+	byKey := make(map[string]seatAdjust, len(exceptions))
+	for _, ex := range exceptions {
 		sec, ok := sections[strings.TrimSpace(ex.Section)]
 		if !ok {
-			return nil, nil, ErrInvalidLayout
+			return nil, ErrInvalidLayout
 		}
 		row, err1 := strconv.Atoi(ex.Row)
 		num, err2 := strconv.Atoi(ex.Number)
 		if err1 != nil || err2 != nil || row < 1 || row > sec.Rows || num < 1 || num > sec.SeatsPerRow {
-			return nil, nil, ErrInvalidLayout
+			return nil, ErrInvalidLayout
 		}
 		if !ex.Remove && ex.PriceMinor == nil {
-			return nil, nil, ErrInvalidLayout
+			return nil, ErrInvalidLayout
 		}
 		if ex.PriceMinor != nil && *ex.PriceMinor < 0 {
-			return nil, nil, ErrInvalidLayout
+			return nil, ErrInvalidLayout
 		}
-		key := sec.Name + "\x00" + ex.Row + "\x00" + ex.Number
+		key := seatKey(sec.Name, ex.Row, ex.Number)
 		if _, dup := byKey[key]; dup {
-			return nil, nil, ErrInvalidLayout
+			return nil, ErrInvalidLayout
 		}
+		byKey[key] = seatAdjust{remove: ex.Remove, price: ex.PriceMinor}
+	}
+	return byKey, nil
+}
 
-		byKey[key] = adjust{remove: ex.Remove, price: ex.PriceMinor}
+// expandSeats walks each section's grid in row/number order, applies any
+// adjustment for a seat (skipping one marked remove), and builds the Seat
+// entities against eventID.
+func expandSeats(eventID uuid.UUID, specs []SectionSpec, adjustments map[string]seatAdjust) ([]Seat, error) {
+	total := 0
+	for _, s := range specs {
+		total += s.Rows * s.SeatsPerRow
 	}
 
 	seats := make([]Seat, 0, total)
-	for _, s := range layout.Sections {
+	for _, s := range specs {
 		secName := strings.TrimSpace(s.Name)
 		for r := 1; r <= s.Rows; r++ {
 			rs := strconv.Itoa(r)
 			for n := 1; n <= s.SeatsPerRow; n++ {
 				ns := strconv.Itoa(n)
+
 				price := s.PriceMinor
-				if a, ok := byKey[secName+"\x00"+rs+"\x00"+ns]; ok {
+				if a, ok := adjustments[seatKey(secName, rs, ns)]; ok {
 					if a.remove {
 						continue
 					}
@@ -185,19 +237,16 @@ func NewEventWithSeats(name, description, venue string, startsAt, endsAt time.Ti
 						price = *a.price
 					}
 				}
-				seat, err := NewSeat(event.ID, secName, rs, ns, price)
+
+				seat, err := NewSeat(eventID, secName, rs, ns, price)
 				if err != nil {
-					return nil, nil, err
+					return nil, err
 				}
 				seats = append(seats, *seat)
 			}
 		}
 	}
-
-	if len(seats) == 0 {
-		return nil, nil, ErrEventRequiresSeats
-	}
-	return event, seats, nil
+	return seats, nil
 }
 
 // Seat is one bookable position within an Event. The invariant that a seat can
