@@ -27,7 +27,7 @@ import (
 
 //	@title			event-service API
 //	@version		1.0
-//	@description	Read side of the event catalogue: browse events and their seat maps.
+//	@description	Event catalogue: browse events and their seat maps, and create new events with their seats.
 //	@BasePath		/api/v1
 
 func main() {
@@ -62,8 +62,9 @@ func run(log logger.Logger) error {
 	listEvents := usecase.NewListEventsUseCase(repo)
 	getEvent := usecase.NewGetEventUseCase(repo)
 	listEventSeats := usecase.NewListEventSeatsUseCase(repo)
+	createNewEvent := usecase.NewCreateNewEventUseCase(repo)
 
-	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats)
+	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
 	health := httpadapter.NewHealthHandler(pool)
 	router := httpadapter.NewRouter(handler, health,
 		httpadapter.RequestID(),
