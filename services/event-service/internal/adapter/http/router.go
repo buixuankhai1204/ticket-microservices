@@ -23,6 +23,7 @@ func NewRouter(h *Handler, health *HealthHandler, mw ...Middleware) http.Handler
 
 	// Client-facing routes, full /api/v1/events prefix retained.
 	mux.HandleFunc("GET /api/v1/events", h.ListEvents)
+	mux.HandleFunc("POST /api/v1/events", h.CreateEvent)
 	mux.HandleFunc("GET /api/v1/events/{eventID}", h.GetEvent)
 	mux.HandleFunc("GET /api/v1/events/{eventID}/seats", h.ListEventSeats)
 

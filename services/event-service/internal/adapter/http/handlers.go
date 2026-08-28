@@ -18,17 +18,20 @@ type Handler struct {
 	listEvents     *usecase.ListEventsUseCase
 	getEvent       *usecase.GetEventUseCase
 	listEventSeats *usecase.ListEventSeatsUseCase
+	createNewEvent *usecase.CreateNewEventUseCase
 }
 
 func NewHandler(
 	listEvents *usecase.ListEventsUseCase,
 	getEvent *usecase.GetEventUseCase,
 	listEventSeats *usecase.ListEventSeatsUseCase,
+	createNewEvent *usecase.CreateNewEventUseCase,
 ) *Handler {
 	return &Handler{
 		listEvents:     listEvents,
 		getEvent:       getEvent,
 		listEventSeats: listEventSeats,
+		createNewEvent: createNewEvent,
 	}
 }
 
@@ -62,6 +65,41 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, ToPaginatedEventsResponse(events, p, total))
+}
+
+// CreateEvent godoc
+//
+//	@Summary		Create an event with its seat map
+//	@Description	Creates a new event and expands the given seat layout (rectangular sections + per-seat exceptions) into its seat map, all in one transaction. A 100k-seat venue is a ~1KB body. The seat map is read back (paginated) via GET /api/v1/events/{eventID}/seats; this response carries only the seat count.
+//	@Tags			events
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		CreateEventRequest	true	"event fields plus the seat layout to expand"
+//	@Success		201		{object}	CreateEventResponse
+//	@Failure		400		{object}	ErrorResponse	"malformed body, invalid event, invalid or too-large layout, or no seats"
+//	@Failure		500		{object}	ErrorResponse	"internal server error"
+//	@Router			/events [post]
+func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
+	var req CreateEventRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "request body must be valid JSON")
+		return
+	}
+
+	event, seats, err := h.createNewEvent.Execute(r.Context(), usecase.CreateNewEventInput{
+		Name:        req.Name,
+		Description: req.Description,
+		Venue:       req.Venue,
+		StartsAt:    req.StartsAt,
+		EndsAt:      req.EndsAt,
+		Layout:      req.ToLayoutSpec(),
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, ToCreateEventResponse(event, seats))
 }
 
 // GetEvent godoc
@@ -175,7 +213,10 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, domain.ErrInvalidPagination),
 		errors.Is(err, domain.ErrInvalidEvent),
-		errors.Is(err, domain.ErrInvalidSeat):
+		errors.Is(err, domain.ErrInvalidSeat),
+		errors.Is(err, domain.ErrInvalidLayout),
+		errors.Is(err, domain.ErrLayoutTooLarge),
+		errors.Is(err, domain.ErrEventRequiresSeats):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal server error")

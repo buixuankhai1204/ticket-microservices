@@ -65,6 +65,50 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "post": {
+                "description": "Creates a new event and expands the given seat layout (rectangular sections + per-seat exceptions) into its seat map, all in one transaction. A 100k-seat venue is a ~1KB body. The seat map is read back (paginated) via GET /api/v1/events/{eventID}/seats; this response carries only the seat count.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "events"
+                ],
+                "summary": "Create an event with its seat map",
+                "parameters": [
+                    {
+                        "description": "event fields plus the seat layout to expand",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/http.CreateEventRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/http.CreateEventResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "malformed body, invalid event, invalid or too-large layout, or no seats",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/http.ErrorResponse"
+                        }
+                    }
+                }
             }
         },
         "/events/{eventID}": {
@@ -175,6 +219,40 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "http.CreateEventRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "ends_at": {
+                    "type": "string"
+                },
+                "layout": {
+                    "$ref": "#/definitions/http.LayoutRequest"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "starts_at": {
+                    "type": "string"
+                },
+                "venue": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.CreateEventResponse": {
+            "type": "object",
+            "properties": {
+                "event": {
+                    "$ref": "#/definitions/http.EventResponse"
+                },
+                "seat_count": {
+                    "type": "integer"
+                }
+            }
+        },
         "http.ErrorResponse": {
             "type": "object",
             "properties": {
@@ -206,6 +284,43 @@ const docTemplate = `{
                 },
                 "venue": {
                     "type": "string"
+                }
+            }
+        },
+        "http.ExceptionRequest": {
+            "type": "object",
+            "properties": {
+                "number": {
+                    "type": "string"
+                },
+                "price_minor": {
+                    "type": "integer"
+                },
+                "remove": {
+                    "type": "boolean"
+                },
+                "row": {
+                    "type": "string"
+                },
+                "section": {
+                    "type": "string"
+                }
+            }
+        },
+        "http.LayoutRequest": {
+            "type": "object",
+            "properties": {
+                "exceptions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/http.ExceptionRequest"
+                    }
+                },
+                "sections": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/http.SectionRequest"
+                    }
                 }
             }
         },
@@ -279,6 +394,23 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        },
+        "http.SectionRequest": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "price_minor": {
+                    "type": "integer"
+                },
+                "rows": {
+                    "type": "integer"
+                },
+                "seats_per_row": {
+                    "type": "integer"
+                }
+            }
         }
     }
 }`
@@ -290,7 +422,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/api/v1",
 	Schemes:          []string{},
 	Title:            "event-service API",
-	Description:      "Read side of the event catalogue: browse events and their seat maps.",
+	Description:      "Event catalogue: browse events and their seat maps, and create new events with their seats.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

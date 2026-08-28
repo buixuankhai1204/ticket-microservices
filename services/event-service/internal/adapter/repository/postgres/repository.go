@@ -104,6 +104,42 @@ func (r *Repository) GetEvent(ctx context.Context, id uuid.UUID) (domain.Event, 
 	return e, nil
 }
 
+// CreateEventWithSeats inserts the event row and every seat row in one
+// read-write transaction (CLAUDE.md: every write handler starts a transaction).
+// The seats go in via COPY rather than N INSERTs so creating an event with a
+// large seat map stays one round trip's worth of work.
+func (r *Repository) CreateEventWithSeats(ctx context.Context, e domain.Event, seats []domain.Seat) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return &domain.RepositoryError{Err: err}
+	}
+	defer tx.Rollback(ctx) // no-op after Commit; rolls back on any early return
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO events (id, name, description, venue, starts_at, ends_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		e.ID, e.Name, e.Description, e.Venue, e.StartsAt, e.EndsAt, e.CreatedAt,
+	); err != nil {
+		return &domain.RepositoryError{Err: fmt.Errorf("insert event: %w", err)}
+	}
+
+	if _, err := tx.CopyFrom(ctx,
+		pgx.Identifier{"seats"},
+		[]string{"id", "event_id", "section", "row", "number", "status", "price_minor"},
+		pgx.CopyFromSlice(len(seats), func(i int) ([]any, error) {
+			s := seats[i]
+			return []any{s.ID, s.EventID, s.Section, s.Row, s.Number, s.Status, s.PriceMinor}, nil
+		}),
+	); err != nil {
+		return &domain.RepositoryError{Err: fmt.Errorf("bulk insert seats: %w", err)}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return &domain.RepositoryError{Err: err}
+	}
+	return nil
+}
+
 // ListSeatsForEvent runs inside one read-only transaction that first confirms
 // the event exists (so the caller can tell "no seats" from "no such event"),
 // then reads the COUNT and the seat page from the same snapshot.

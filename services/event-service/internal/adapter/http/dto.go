@@ -52,6 +52,87 @@ type PaginatedSeatsResponse struct {
 	Pagination PaginationMeta `json:"pagination"`
 }
 
+// SectionRequest is one rectangular block of seats in a layout: Rows numbered
+// "1".."Rows", each with SeatsPerRow seats, all at PriceMinor.
+type SectionRequest struct {
+	Name        string `json:"name"`
+	Rows        int    `json:"rows"`
+	SeatsPerRow int    `json:"seats_per_row"`
+	PriceMinor  int64  `json:"price_minor"`
+}
+
+// ExceptionRequest adjusts one generated seat: remove it, override its price, or
+// both. Address it with the same string row/number the grid produces.
+type ExceptionRequest struct {
+	Section    string `json:"section"`
+	Row        string `json:"row"`
+	Number     string `json:"number"`
+	Remove     bool   `json:"remove"`
+	PriceMinor *int64 `json:"price_minor,omitempty"`
+}
+
+// LayoutRequest is the compact seat-map description: a few rectangular sections
+// plus per-seat exceptions for the irregular parts. The service expands it into
+// individual seats.
+type LayoutRequest struct {
+	Sections   []SectionRequest   `json:"sections"`
+	Exceptions []ExceptionRequest `json:"exceptions"`
+}
+
+// CreateEventRequest is the body of POST /api/v1/events. Every event is created
+// together with its seat map, described as a layout rather than an explicit list.
+type CreateEventRequest struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Venue       string        `json:"venue"`
+	StartsAt    time.Time     `json:"starts_at"`
+	EndsAt      time.Time     `json:"ends_at"`
+	Layout      LayoutRequest `json:"layout"`
+}
+
+// ToLayoutSpec converts the request's layout into the domain input type. This is
+// transport decoding, so it lives at the HTTP edge, not in the usecase.
+func (r CreateEventRequest) ToLayoutSpec() domain.LayoutSpec {
+	sections := make([]domain.SectionSpec, 0, len(r.Layout.Sections))
+	for _, s := range r.Layout.Sections {
+		sections = append(sections, domain.SectionSpec{
+			Name:        s.Name,
+			Rows:        s.Rows,
+			SeatsPerRow: s.SeatsPerRow,
+			PriceMinor:  s.PriceMinor,
+		})
+	}
+	exceptions := make([]domain.SeatException, 0, len(r.Layout.Exceptions))
+	for _, e := range r.Layout.Exceptions {
+		exceptions = append(exceptions, domain.SeatException{
+			Section:    e.Section,
+			Row:        e.Row,
+			Number:     e.Number,
+			Remove:     e.Remove,
+			PriceMinor: e.PriceMinor,
+		})
+	}
+	return domain.LayoutSpec{Sections: sections, Exceptions: exceptions}
+}
+
+// CreateEventResponse is the wire shape for a freshly created event. The seat
+// map is read back (paginated) via GET /api/v1/events/{eventID}/seats rather
+// than returned inline, so this response stays bounded no matter how many seats
+// the event has.
+type CreateEventResponse struct {
+	Event     EventResponse `json:"event"`
+	SeatCount int           `json:"seat_count"`
+}
+
+// ToCreateEventResponse is the one domain -> wire mapper for a created event,
+// kept next to the DTO (CLAUDE.md convention).
+func ToCreateEventResponse(e domain.Event, seats []domain.Seat) CreateEventResponse {
+	return CreateEventResponse{
+		Event:     ToEventResponse(e),
+		SeatCount: len(seats),
+	}
+}
+
 // ErrorResponse is the single error envelope every handler returns.
 type ErrorResponse struct {
 	Error string `json:"error"`
