@@ -36,12 +36,12 @@ type Config struct {
 	MaxAttempts int
 }
 
-// Consumer subscribes to the UserCreated topic and projects each event into the
-// read model via the injected use case.
+// Consumer subscribes to the user.events topic and projects each UserCreated
+// event into the read model via the injected use case.
 //
 //   - Offsets are committed manually, only after a message is fully handled
-//     (FetchMessage + CommitMessages) — at-least-once, as the outbox relay on the
-//     publish side is also at-least-once.
+//     (FetchMessage + CommitMessages) — at-least-once, as the Debezium CDC
+//     connector on the publish side is also at-least-once.
 //   - Idempotency is enforced downstream by the use case (processed_events table),
 //     so a redelivery is a harmless no-op.
 //   - A message that can't be deserialized, or that fails permanently, or that
@@ -138,6 +138,16 @@ func (c *Consumer) Close() error {
 // offset. It returns a non-nil error only when the message could not be
 // dead-lettered (so the offset must NOT be committed) or ctx was cancelled.
 func (c *Consumer) handle(ctx context.Context, m segkafka.Message) error {
+	// The Debezium Outbox Event Router routes every `user.*` event onto
+	// `user.events` and stamps the concrete kind in the `event_type` header.
+	// Only UserCreated is expected here; anything else is a routing/producer bug,
+	// not something a retry fixes, so dead-letter it. A missing header is
+	// tolerated (older producers / hand-crafted test messages).
+	if t := headerValue(m, "event_type"); t != "" && t != "UserCreated" {
+		c.log.Error("unexpected event_type -> dlq", "event_type", t, "offset", m.Offset)
+		return c.toDLQ(ctx, m, "unexpected event_type: "+t)
+	}
+
 	ev, parseErr := parseUserCreated(m.Value)
 	if parseErr != nil {
 		c.log.Error("undeserializable message -> dlq", "err", parseErr.Error(), "offset", m.Offset)
@@ -213,6 +223,16 @@ func isRetryable(err error) bool {
 	return errors.As(err, &repoErr)
 }
 
+// headerValue returns the first Kafka header matching key, or "" if absent.
+func headerValue(m segkafka.Message, key string) string {
+	for _, h := range m.Headers {
+		if h.Key == key {
+			return string(h.Value)
+		}
+	}
+	return ""
+}
+
 // sleep waits for d, or returns early with ctx.Err() if ctx is cancelled first.
 func sleep(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
@@ -225,8 +245,10 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// userCreatedWire is the on-the-wire JSON shape published by user-service
-// (rdkafka, serde). Field names are snake_case; timestamps are RFC 3339.
+// userCreatedWire is the on-the-wire JSON shape of the event. user-service
+// writes it as the `outbox_events.payload` JSONB (serde, snake_case, RFC 3339
+// timestamps); the Debezium Outbox Event Router SMT unwraps that payload so it
+// arrives here as the bare Kafka message value — the same shape either way.
 type userCreatedWire struct {
 	EventID   string `json:"event_id"`
 	UserID    string `json:"user_id"`

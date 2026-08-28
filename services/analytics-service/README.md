@@ -12,7 +12,12 @@ Consumed so far:
 
 | Event | Topic | Group | Projection |
 |---|---|---|---|
-| `UserCreated` (from user-service) | `user.created` | `analytics-service-UserCreated` | `user_registrations` |
+| `UserCreated` (from user-service) | `user.events` | `analytics-service-UserCreated` | `user_registrations` |
+
+The publish side is CDC: user-service writes an `outbox_events` row and a Debezium connector
+(Kafka Connect) routes it — by `aggregate_type` — to `user.events`, stamping the concrete kind
+in an `event_type` header. The consumer dead-letters any message whose `event_type` header is
+not `UserCreated`.
 
 ## Layout (Clean Architecture, dependencies point inward)
 
@@ -21,7 +26,7 @@ Consumed so far:
 | `internal/domain/` | `BookingOutcome` / `UserRegistration` entities + invariants, `EventBookingStats` value, `UserCreated` event, `Repository` port, domain errors. No framework/driver imports. |
 | `internal/usecase/` | `GetEventStatsUseCase`, `GetUserRegistrationUseCase`, `RecordUserRegistrationUseCase` — one flow each, constructor-injected `domain.Repository`. |
 | `internal/adapter/http/` | Handlers, DTOs + `To*Response` mappers, health probes, request-ID / access-log middleware, router. |
-| `internal/adapter/messaging/kafka/` | Inbound saga consumer: subscribes to `user.created`, drives `RecordUserRegistrationUseCase`, manual offset commit, bounded retry-with-backoff, dead-letters poison / permanently-failing messages to `user.created.dlq`. |
+| `internal/adapter/messaging/kafka/` | Inbound saga consumer: subscribes to `user.events`, guards the `event_type` header, drives `RecordUserRegistrationUseCase`, manual offset commit, bounded retry-with-backoff, dead-letters poison / permanently-failing / unexpected-`event_type` messages to `user.events.dlq`. |
 | `internal/adapter/repository/postgres/` | `Repository` against Postgres via `pgxpool` (read-model reads + the idempotent `RecordUserRegistration` write). Only package allowed to import `pgx`. |
 | `internal/platform/` | `config`, `db` (bounded pool + minimal migration runner), `logger` (slog JSON behind an interface). |
 | `migrations/` | Embedded `.sql`, applied at startup in filename order. |
@@ -35,7 +40,7 @@ Consumed so far:
 | `KAFKA_BROKERS` | yes | — (comma-separated `host:port` list) |
 | `PORT` | no | `8084` |
 | `DB_MAX_CONNS` | no | `20` |
-| `KAFKA_USER_CREATED_TOPIC` | no | `user.created` |
+| `KAFKA_USER_EVENTS_TOPIC` | no | `user.events` |
 | `KAFKA_CONSUMER_MAX_ATTEMPTS` | no | `5` (transient-failure retries before dead-lettering) |
 
 ## Endpoints

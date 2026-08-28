@@ -108,12 +108,20 @@ it does when it observes a given event.
 
 Three supporting patterns are required, not optional, for any publish/consume code:
 
-- **Transactional outbox** — an event is written to an `outbox_events` table in the *same* DB
-  transaction as the state change it describes, and a background relay publishes from that
-  table to Kafka. This avoids the dual-write problem (DB commit and Kafka publish can't be made
-  atomic any other way without 2PC). Events for the same aggregate are keyed by `aggregate_id`
-  so a partition preserves their order. The relay must not let one un-publishable row block
-  the rest of the outbox — log it, leave `published_at` NULL, move on, retry next tick.
+- **Transactional outbox (CDC)** — an event is written to an `outbox_events` table in the
+  *same* DB transaction as the state change it describes. This avoids the dual-write problem
+  (DB commit and Kafka publish can't be made atomic any other way without 2PC). Publishing is
+  **log-tailing CDC, not an in-process relay**: a Debezium PostgreSQL connector on Kafka
+  Connect reads the WAL via a logical replication slot and publishes each insert through the
+  **Outbox Event Router SMT** — sub-second latency, near-zero query load on the write DB,
+  scaling independently of the write path. Table shape: `id, aggregate_id, aggregate_type,
+  event_type, payload JSONB, created_at` (no `published_at` — nothing stamps rows). The SMT
+  maps `aggregate_id` → Kafka message key (so a partition preserves per-aggregate order),
+  `aggregate_type` → topic **`<aggregate_type>.events`**, `event_type`/`id` → headers,
+  `payload` → the message value (unwrapped). The connector is set `skipped.operations=u,d,t`
+  (inserts only), so a service writes the row and **deletes it again in the same transaction**
+  to keep the table empty — the WAL still carries the insert. Connector defs live in
+  `debezium/`, registered by the `connect-init` one-shot in `docker-compose`.
 - **Idempotent consumers** — Kafka delivers at-least-once. Every consumer checks a
   `processed_events` table (unique event ID) before applying an event, in the same transaction
   as the side effect.
@@ -126,15 +134,19 @@ Three supporting patterns are required, not optional, for any publish/consume co
   (`x-dlq-reason`, source topic/partition/offset). `<topic>.dlq` is created alongside
   `<topic>` in the topic-init / `docker-compose` step.
 
-Client libraries: `segmentio/kafka-go` for Go services, `rdkafka` for Rust services.
+Client libraries: `segmentio/kafka-go` for Go services, `rdkafka` for Rust services — for
+**consumers**. The publish side is CDC (Debezium), so there is no producer client library on
+the publish path.
 
 Use `/add-go-saga-step` or `/add-rust-saga-step` to wire a publish or consume step.
 
-Implemented so far (reference these when wiring a new step): `user-service` publishes
-`UserCreated` on `user.created` via the outbox + relay → `analytics-service` consumes it
+Implemented so far (reference these when wiring a new step): `user-service` writes a
+`UserCreated` row to `outbox_events` (same txn as the users insert, then deletes it in that
+txn) with `aggregate_type = "user"`; the Debezium `user-service-outbox` connector tails the
+WAL and routes it to the `user.events` topic → `analytics-service` consumes `user.events`
 (group `analytics-service-UserCreated`), projects a `user_registrations` read-model row behind
-a `processed_events` check, and dead-letters poison / permanently-failing / retry-exhausted
-messages to `user.created.dlq`.
+a `processed_events` check, and dead-letters poison / permanently-failing / retry-exhausted /
+unexpected-`event_type` messages to `user.events.dlq`.
 
 Sketched next: `booking-service` publishes `BookingRequested` → `event-service` reserves the
 seat and publishes `SeatReserved`/`SeatReservationFailed` → `booking-service` confirms or

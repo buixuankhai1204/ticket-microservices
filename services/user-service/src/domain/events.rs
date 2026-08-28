@@ -60,6 +60,16 @@ impl DomainEvent {
         }
     }
 
+    /// The kind of aggregate this event is about, stored in
+    /// `outbox_events.aggregate_type`. The Debezium Outbox Event Router SMT
+    /// routes on this: the event lands on the `<aggregate_type>.events` topic.
+    /// It is per-aggregate, not per-event — every `user.*` event shares `"user"`.
+    pub fn aggregate_type(&self) -> &'static str {
+        match self {
+            DomainEvent::UserCreated(_) => "user",
+        }
+    }
+
     /// JSON body stored in `outbox_events.payload` and published verbatim.
     pub fn payload(&self) -> serde_json::Value {
         match self {
