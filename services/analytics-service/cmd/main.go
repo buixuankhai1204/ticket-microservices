@@ -84,7 +84,7 @@ func run(log logger.Logger) error {
 	// into the read model. Stops on the same ctx as the HTTP server.
 	consumer := kafkaconsumer.NewConsumer(kafkaconsumer.Config{
 		Brokers:     cfg.KafkaBrokers,
-		Topic:       cfg.KafkaUserCreatedTopic,
+		Topic:       cfg.KafkaUserEventsTopic,
 		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
 	}, recordUserRegistration, log)
 	defer func() { _ = consumer.Close() }()

@@ -1,7 +1,7 @@
 ---
 name: add-go-saga-step
 description: Wire one step of a choreography saga over Kafka for a Go service in this repo - either publishing a domain event via the transactional outbox, or consuming an event to trigger a local (possibly compensating) use case. Use after a use case exists that needs to announce, or react to, a cross-service state change (e.g. booking creation triggering seat reservation).
-argument-hint: "<service-name> publish <EventName> <topic>  OR  <service-name> consume <EventName> <topic> <UseCaseToTrigger>"
+argument-hint: "<service-name> publish <EventName> <aggregate_type>  OR  <service-name> consume <EventName> <topic> <UseCaseToTrigger>"
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
 
@@ -10,6 +10,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ## Context
 - Project conventions (Clean Architecture, saga pattern): @CLAUDE.md
 - Existing outbox/messaging code in this service: !`grep -rl "outbox_events\|kafka" services 2>/dev/null | head -20`
+- Debezium connector defs (CDC publish side): !`ls debezium/ 2>/dev/null`
 
 ## Why choreography, not orchestration
 This repo uses **choreography**: there is no central saga-coordinator service. Each service
@@ -21,7 +22,8 @@ sequence, only "what do I do when I see event X."
 
 ## Arguments
 `$ARGUMENTS` is one of:
-- `<service-name> publish <EventName> <topic>`
+- `<service-name> publish <EventName> <aggregate_type>` — the CDC connector routes the event to
+  the `<aggregate_type>.events` topic (e.g. `booking` → `booking.events`).
 - `<service-name> consume <EventName> <topic> <UseCaseToTrigger>`
 
 Verify `services/<service-name>/go.mod` exists first — if not, suggest `/new-go-service`.
@@ -30,26 +32,38 @@ Verify `services/<service-name>/go.mod` exists first — if not, suggest `/new-g
 
 ### Mode: publish
 
+The publish side is **log-tailing CDC, not an in-process relay**: a Debezium PostgreSQL
+connector on Kafka Connect tails `outbox_events` from the WAL and publishes each insert via the
+Outbox Event Router SMT. You write the outbox row (and delete it in the same txn); you do
+**not** write any relay/producer code.
+
 1. `internal/domain/` — define `<EventName>` as a plain struct (e.g. `BookingRequested{
-   BookingID, EventID, UserID, RequestedAt}`), no Kafka-specific types. Give the aggregate or
-   usecase result a way to carry "pending events" produced by a successful operation.
+   BookingID, EventID, UserID, RequestedAt}`), no Kafka-specific types. The struct is
+   `json`-serializable with snake_case field names (it becomes the Kafka message value
+   verbatim). Give the aggregate or usecase result a way to carry "pending events" produced by
+   a successful operation, and a method returning the event's `aggregate_type` string.
 2. `internal/adapter/repository/postgres/` — in the **same DB transaction** as the
-   state-changing write, insert a row into an `outbox_events` table (`id, aggregate_id,
-   event_type, payload JSONB, created_at, published_at NULL`); create the migration for this
-   table if it doesn't exist yet for this service. This is the transactional outbox pattern: it
-   avoids the dual-write problem (DB commit succeeds but the Kafka publish is lost, or the
-   reverse) without needing two-phase commit with Kafka.
-3. `internal/adapter/messaging/kafka/outbox_relay.go` — a background loop, started as a
-   goroutine from `cmd/main.go` and stopped on the same shutdown context as the HTTP server,
-   that polls unpublished `outbox_events` rows, publishes each to `<topic>` via
-   `segmentio/kafka-go`, keyed by `aggregate_id` (so all events for the same
-   booking/event/etc. stay ordered within a partition — losing that order breaks the saga),
-   then marks `published_at`. This is at-least-once delivery: if the process crashes between
-   publishing and marking the row, it republishes on restart — the consumer side must be
-   idempotent (see below), this side must not try to be exactly-once. A publish failure on one
-   row must not stop the relay: log it, leave `published_at` NULL, move on, retry next tick.
-4. Tell the user `<topic>` needs to exist in Kafka and name which other service(s) should now
-   add a `consume` step for it.
+   state-changing write: `INSERT` a row into `outbox_events` (`id, aggregate_id,
+   aggregate_type, event_type, payload JSONB, created_at`) **then `DELETE` that same row**
+   before the transaction commits. The `INSERT` still lands in the WAL for Debezium to capture;
+   the `DELETE` (which the connector ignores) keeps the table empty. Create the migration for
+   this table if it doesn't exist yet for this service — copy the shape from
+   `services/user-service/migrations/*_create_outbox_events.sql` +
+   `*_outbox_debezium.sql` (no `published_at` column). This is the transactional outbox
+   pattern: it avoids the dual-write problem without two-phase commit with Kafka.
+3. `debezium/<service-name>-outbox.json` — if this service has no connector yet, add one
+   (copy `debezium/user-service-outbox.json`): point `database.*` at the service's Postgres,
+   pick a unique `slot.name` / `publication.name`, keep `table.include.list=public.outbox_events`,
+   `skipped.operations=u,d,t`, and the `EventRouter` transform (`route.by.field=aggregate_type`,
+   `route.topic.replacement=${routedByValue}.events`, `aggregate_id` → key,
+   `event_type`/`id` → headers, `table.expand.json.payload=true`). Register it by adding the
+   file to the `connect-init` step in `docker-compose` (it POSTs every def in `debezium/`).
+   The service's Postgres also needs `wal_level=logical` (set via its `command:` in compose).
+   If the connector already exists, nothing to do here — a new `aggregate_type` just starts
+   routing to its own `<aggregate_type>.events` topic automatically.
+4. Add `<aggregate_type>.events` and `<aggregate_type>.events.dlq` to the `kafka-init`
+   topic-creation step. Tell the user which other service(s) should now add a `consume` step
+   for `<aggregate_type>.events`.
 
 ### Mode: consume
 
@@ -88,17 +102,21 @@ Verify `services/<service-name>/go.mod` exists first — if not, suggest `/new-g
 ## Concrete example for this repo
 
 **Already implemented — read it as the reference for a new step:** `analytics-service` (Go)
-consumes `UserCreated` off `user.created` in `internal/adapter/messaging/kafka/consumer.go`
-with group `analytics-service-UserCreated`: manual offset commit, `processed_events`
-idempotency check (migration `*_create_processed_events.sql`), the
+consumes `UserCreated` off `user.events` in `internal/adapter/messaging/kafka/consumer.go`
+with group `analytics-service-UserCreated`: manual offset commit, an `event_type` header
+guard, `processed_events` idempotency check (migration `*_create_processed_events.sql`), the
 `RecordUserRegistrationUseCase` projection into `user_registrations`, bounded
 retry-with-backoff on `*domain.RepositoryError`, and a `kafka.Writer` that dead-letters
-poison / permanently-failing / retry-exhausted messages to `user.created.dlq`. The publish
-side lives in `user-service` (Rust).
+poison / permanently-failing / retry-exhausted / unexpected-`event_type` messages to
+`user.events.dlq`. The publish side lives in `user-service` (Rust): it writes an
+`outbox_events` row with `aggregate_type = "user"` and the Debezium `user-service-outbox`
+connector (`debezium/user-service-outbox.json`) routes it to `user.events` — there is no
+relay code to read.
 
-Sketched next: `booking-service` publishes `BookingRequested` on `booking.requested` →
-`event-service` consumes it, atomically tries to decrement `available_seats`, and publishes
-either `SeatReserved` or `SeatReservationFailed` on `event.seat-reservation` →
-`booking-service` consumes that to confirm or cancel the booking (the compensating path) →
-`analytics-service` consumes the final `BookingConfirmed`/`BookingCancelled` events purely as a
-read model, since it never mutates another service's state and needs no compensation.
+Sketched next: `booking-service` publishes `BookingRequested` (`aggregate_type = "booking"` →
+topic `booking.events`) → `event-service` consumes it, atomically tries to decrement
+`available_seats`, and publishes either `SeatReserved` or `SeatReservationFailed`
+(`aggregate_type = "seat_reservation"` → `seat_reservation.events`) → `booking-service`
+consumes that to confirm or cancel the booking (the compensating path) → `analytics-service`
+consumes the final `BookingConfirmed`/`BookingCancelled` events purely as a read model, since
+it never mutates another service's state and needs no compensation.

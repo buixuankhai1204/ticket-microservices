@@ -19,16 +19,11 @@
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
-
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::FutureProducer;
-use tokio_util::sync::CancellationToken;
 
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -50,13 +45,9 @@ mod argon2_hasher;
 #[path = "../src/adapter/security/jwt_issuer.rs"]
 mod jwt_issuer;
 
-#[path = "../src/adapter/messaging/kafka/outbox_relay.rs"]
-mod outbox_relay;
-
 use argon2_hasher::Argon2PasswordHasher;
 use domain::{DomainEvent, PasswordHasher, User, UserCreated, UserError, UserRepository};
 use jwt_issuer::JwtTokenIssuer;
-use outbox_relay::OutboxRelay;
 use postgres_repo::PostgresUserRepository;
 use usecase::{GetUserProfileUseCase, LoginUserUseCase, RegisterUserUseCase};
 
@@ -93,8 +84,8 @@ async fn shared_pg() -> &'static SharedPg {
 }
 
 /// A freshly created, migrated, empty database dedicated to a single test.
-/// Full isolation - including for the outbox relay's whole-table scan - without
-/// having to serialise the suite.
+/// Full isolation of the shared `outbox_events` table without having to
+/// serialise the suite.
 ///
 /// The admin connection is opened fresh here and closed straight after: a pooled
 /// admin connection left idle gets silently dropped by Docker Desktop's port
@@ -164,7 +155,7 @@ fn unique_email(prefix: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn register_persists_user_and_outbox_event_in_one_transaction() {
+async fn register_persists_user_and_leaves_no_outbox_row() {
     let pool = fresh_db().await;
     let h = hasher();
     let register = RegisterUserUseCase::new(repo(&pool), h.clone());
@@ -200,35 +191,15 @@ async fn register_persists_user_and_outbox_event_in_one_transaction() {
         "the stored hash must verify against the original password"
     );
 
-    // Exactly one outbox row, written in the same transaction, keyed by
-    // aggregate_id = user id.
-    let outbox: Vec<(
-        Uuid,
-        String,
-        serde_json::Value,
-        Option<chrono::DateTime<Utc>>,
-    )> =
-        sqlx::query_as("SELECT aggregate_id, event_type, payload, published_at FROM outbox_events")
-            .fetch_all(&pool)
-            .await
-            .expect("outbox query");
-
-    assert_eq!(outbox.len(), 1, "exactly one UserCreated outbox row");
-    let (agg_id, event_type, payload, published_at) = &outbox[0];
+    // The UserCreated event is written to `outbox_events` and deleted again
+    // inside the same transaction as the users insert: the INSERT is what the
+    // Debezium connector captures from the WAL, but the table itself is left
+    // empty. (That the event actually reaches Kafka is covered by the
+    // docker-compose end-to-end check, not here.)
     assert_eq!(
-        *agg_id, user.id,
-        "outbox row keyed by aggregate_id = user id"
-    );
-    assert_eq!(event_type, "UserCreated");
-    assert!(
-        published_at.is_none(),
-        "the relay has not run; published_at stays NULL"
-    );
-    assert_eq!(payload["user_id"], serde_json::json!(user.id.to_string()));
-    assert_eq!(payload["email"], serde_json::json!(email));
-    assert!(
-        payload["event_id"].is_string(),
-        "the event carries its own idempotency key"
+        count(&pool, "SELECT count(*) FROM outbox_events").await,
+        0,
+        "the outbox row must not linger after the transaction commits"
     );
 
     assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
@@ -318,13 +289,15 @@ async fn users_insert_rolls_back_when_the_outbox_insert_in_the_same_tx_fails() {
     let repository = PostgresUserRepository::new(pool.clone());
 
     // Seed an outbox row whose PK equals the event_id the new user will carry,
-    // so the second INSERT inside `create` violates the primary key.
+    // so the outbox INSERT inside `create` violates the primary key.
     let poison_event_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO outbox_events (id, aggregate_id, event_type, payload) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(poison_event_id)
     .bind(Uuid::new_v4())
+    .bind("user")
     .bind("Preexisting")
     .bind(serde_json::json!({ "seeded": true }))
     .execute(&pool)
@@ -367,10 +340,10 @@ async fn users_insert_rolls_back_when_the_outbox_insert_in_the_same_tx_fails() {
 
 /// Concurrent registrations for the same email: the DB unique constraint is the
 /// backstop the use case's pre-check races past. Exactly one wins, and the losing
-/// transactions (users insert + outbox insert) roll back cleanly - no orphan
-/// outbox row, never a second users row.
+/// transactions (users insert + outbox insert/delete) roll back cleanly - never a
+/// second users row, and the winner leaves no outbox row behind either.
 #[tokio::test]
-async fn concurrent_registrations_for_the_same_email_commit_exactly_one_user_and_one_outbox_row() {
+async fn concurrent_registrations_for_the_same_email_commit_exactly_one_user() {
     let pool = fresh_db().await;
     let register = Arc::new(RegisterUserUseCase::new(repo(&pool), hasher()));
 
@@ -404,25 +377,11 @@ async fn concurrent_registrations_for_the_same_email_commit_exactly_one_user_and
         .expect("count");
     assert_eq!(users, 1, "unique email held under concurrency");
 
-    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-        .bind(&email)
-        .fetch_one(&pool)
-        .await
-        .expect("id");
-
     let outbox: i64 = count(&pool, "SELECT count(*) FROM outbox_events").await;
     assert_eq!(
-        outbox, 1,
-        "only the winning transaction's outbox row committed; losers rolled back"
-    );
-
-    let agg: Uuid = sqlx::query_scalar("SELECT aggregate_id FROM outbox_events")
-        .fetch_one(&pool)
-        .await
-        .expect("row");
-    assert_eq!(
-        agg, user_id,
-        "the surviving outbox row belongs to the surviving user"
+        outbox, 0,
+        "the winner deleted its own outbox row in-transaction; the losers rolled back - \
+         either way nothing lingers"
     );
 }
 
@@ -601,79 +560,12 @@ async fn get_user_profile_performs_no_ownership_check_idor_gap() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Outbox relay
+// 4. Outbox -> Kafka
 // ---------------------------------------------------------------------------
-
-/// With an unreachable broker every publish fails. The relay must not lose the
-/// rows and must not crash the task: rows stay `published_at = NULL`, and the
-/// task shuts down cleanly on cancellation.
-///
-/// NOTE: the stronger property from CLAUDE.md - "one un-publishable row must not
-/// block the rest of the outbox" - is NOT covered here because the current relay
-/// does not implement per-row poison isolation (see the summary). `drain_once`
-/// stops the whole chunk on the first `send` error and retries from that same
-/// row next tick.
-#[tokio::test]
-async fn outbox_relay_leaves_unpublishable_rows_null_and_shuts_down_cleanly() {
-    let pool = fresh_db().await;
-    let register = RegisterUserUseCase::new(repo(&pool), hasher());
-
-    for i in 0..2 {
-        register
-            .execute(unique_email(&format!("relay-{i}")), "pw".to_string())
-            .await
-            .expect("register");
-    }
-    assert_eq!(
-        count(
-            &pool,
-            "SELECT count(*) FROM outbox_events WHERE published_at IS NULL"
-        )
-        .await,
-        2
-    );
-
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", "127.0.0.1:1")
-        .set("message.timeout.ms", "1500")
-        .set("socket.timeout.ms", "1000")
-        .set("reconnect.backoff.max.ms", "500")
-        .create()
-        .expect("build producer");
-
-    let relay = OutboxRelay::new(pool.clone(), producer, "user.created".to_string());
-    let cancel = CancellationToken::new();
-    let handle = tokio::spawn(relay.run(cancel.clone()));
-
-    // Long enough for several poll ticks and at least one failed send.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    cancel.cancel();
-
-    let joined = tokio::time::timeout(Duration::from_secs(20), handle).await;
-    assert!(
-        joined.is_ok(),
-        "relay task did not stop within 20s of cancellation"
-    );
-    assert!(
-        joined.unwrap().is_ok(),
-        "relay task panicked on an unpublishable batch"
-    );
-
-    assert_eq!(
-        count(
-            &pool,
-            "SELECT count(*) FROM outbox_events WHERE published_at IS NULL"
-        )
-        .await,
-        2,
-        "rows the relay could not publish stay published_at = NULL - not lost"
-    );
-    assert_eq!(
-        count(
-            &pool,
-            "SELECT count(*) FROM outbox_events WHERE published_at IS NOT NULL"
-        )
-        .await,
-        0
-    );
-}
+//
+// The publish side is now a Debezium PostgreSQL connector tailing the
+// `outbox_events` WAL (see `debezium/user-service-outbox.json` and the
+// `kafka-connect` service in docker-compose), not an in-process relay. There is
+// no relay object to unit/integration test here; that the INSERT captured from
+// the WAL reaches the `user.events` topic is verified by the docker-compose
+// end-to-end check in the migration plan.

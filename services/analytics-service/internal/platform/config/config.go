@@ -19,7 +19,7 @@ type Config struct {
 
 	// Kafka (choreography saga bus).
 	KafkaBrokers             []string
-	KafkaUserCreatedTopic    string
+	KafkaUserEventsTopic     string
 	KafkaConsumerMaxAttempts int
 }
 
@@ -30,7 +30,7 @@ func Load() (Config, error) {
 		Port:                     8084, // must match kong/kong.yml (http://analytics-service:8084)
 		DBMaxConns:               20,
 		ShutdownGrace:            15 * time.Second,
-		KafkaUserCreatedTopic:    "user.created",
+		KafkaUserEventsTopic:     "user.events",
 		KafkaConsumerMaxAttempts: 5,
 	}
 
@@ -70,8 +70,10 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("KAFKA_BROKERS contained no usable entries")
 	}
 
-	if v := os.Getenv("KAFKA_USER_CREATED_TOPIC"); v != "" {
-		cfg.KafkaUserCreatedTopic = v
+	// The publish side is now a Debezium connector routing outbox rows to
+	// `<aggregate_type>.events`; for UserCreated that is `user.events`.
+	if v := os.Getenv("KAFKA_USER_EVENTS_TOPIC"); v != "" {
+		cfg.KafkaUserEventsTopic = v
 	}
 
 	if v := os.Getenv("KAFKA_CONSUMER_MAX_ATTEMPTS"); v != "" {

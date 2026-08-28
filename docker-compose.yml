@@ -2,6 +2,16 @@ services:
   postgres-user:
     image: postgres:16-alpine
     container_name: postgres-user
+    # wal_level=logical is required for the Debezium connector to tail the
+    # outbox_events WAL via a logical replication slot (see kafka-connect).
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
     environment:
       POSTGRES_USER: ${USER_DB_USER:-user_service}
       POSTGRES_PASSWORD: ${USER_DB_PASSWORD:-user_service}
@@ -44,6 +54,8 @@ services:
       - ticket-network
 
   # One-shot: create the saga topics (auto-create is disabled above), then exit.
+  # The outbox events land on <aggregate_type>.events — `user` -> user.events —
+  # routed there by the Debezium Outbox Event Router SMT (see kafka-connect).
   kafka-init:
     image: bitnamilegacy/kafka:3.7
     container_name: kafka-init
@@ -57,11 +69,73 @@ services:
       - |
         set -e
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
-          --topic ${KAFKA_USER_CREATED_TOPIC:-user.created} --partitions 3 --replication-factor 1
+          --topic ${KAFKA_USER_EVENTS_TOPIC:-user.events} --partitions 3 --replication-factor 1
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
-          --topic ${KAFKA_USER_CREATED_TOPIC:-user.created}.dlq --partitions 1 --replication-factor 1
+          --topic ${KAFKA_USER_EVENTS_TOPIC:-user.events}.dlq --partitions 1 --replication-factor 1
         echo "saga topics ready:"
         kafka-topics.sh --bootstrap-server kafka:9092 --list
+    networks:
+      - ticket-network
+
+  # Kafka Connect running the Debezium PostgreSQL connector. It tails the
+  # user_service DB's WAL for public.outbox_events and publishes each insert via
+  # the Outbox Event Router SMT — this replaces the old in-process outbox relay.
+  # The debezium/connect image bundles the Postgres connector + EventRouter SMT.
+  kafka-connect:
+    image: debezium/connect:2.7
+    container_name: kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres-user:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: ticket-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    ports:
+      - "8083:8083"
+    healthcheck:
+      # The debezium/connect image may ship curl or only wget — try both.
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors >/dev/null 2>&1 || wget -qO- http://localhost:8083/connectors >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - ticket-network
+
+  # One-shot: register (or update) the Debezium connector, then exit. Treats an
+  # existing connector (HTTP 409) as success so re-running compose is idempotent.
+  connect-init:
+    image: curlimages/curl:8.8.0
+    container_name: connect-init
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ./debezium:/debezium:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
+          -H 'Content-Type: application/json' \
+          --data @/debezium/user-service-outbox.json \
+          http://kafka-connect:8083/connectors)
+        echo "connector register HTTP $$code"; cat /tmp/resp; echo
+        case "$$code" in 200|201|409) echo "connector ready"; exit 0;; *) exit 1;; esac
     networks:
       - ticket-network
 
@@ -74,17 +148,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       JWT_ISSUER: ${JWT_ISSUER:-user-service}
       DB_MAX_CONNECTIONS: ${USER_DB_MAX_CONNECTIONS:-10}
-      KAFKA_BROKERS: kafka:9092
-      KAFKA_USER_CREATED_TOPIC: ${KAFKA_USER_CREATED_TOPIC:-user.created}
     ports:
         - "8081:8081"
+    # No Kafka dependency any more: user-service publishes UserCreated purely by
+    # writing outbox_events; the Debezium connector (kafka-connect) does the rest.
     depends_on:
       postgres-user:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
-      kafka-init:
-        condition: service_completed_successfully
     networks:
       - ticket-network
 
@@ -116,7 +186,7 @@ services:
       PORT: "8084"
       DB_MAX_CONNS: ${ANALYTICS_DB_MAX_CONNS:-20}
       KAFKA_BROKERS: kafka:9092
-      KAFKA_USER_CREATED_TOPIC: ${KAFKA_USER_CREATED_TOPIC:-user.created}
+      KAFKA_USER_EVENTS_TOPIC: ${KAFKA_USER_EVENTS_TOPIC:-user.events}
       KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "8084:8084"
@@ -126,6 +196,8 @@ services:
       kafka:
         condition: service_healthy
       kafka-init:
+        condition: service_completed_successfully
+      connect-init:
         condition: service_completed_successfully
     networks:
       - ticket-network

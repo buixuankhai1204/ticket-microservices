@@ -131,17 +131,30 @@ impl UserRepository for PostgresUserRepository {
         .map_err(repo_err)?;
 
         for event in user.pending_events() {
+            // Insert the event, then delete it again in this same transaction.
+            // The INSERT is still written to the WAL, so the Debezium connector
+            // tailing it captures and publishes the event (routed by
+            // aggregate_type to `<aggregate_type>.events`); the table stays
+            // empty. The connector skips deletes, so the paired DELETE is inert
+            // on the wire — it's only here to keep `outbox_events` from growing.
             sqlx::query(
-                "INSERT INTO outbox_events (id, aggregate_id, event_type, payload) \
-                 VALUES ($1, $2, $3, $4)",
+                "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
+                 VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(event.event_id())
             .bind(event.aggregate_id())
+            .bind(event.aggregate_type())
             .bind(event.event_type())
             .bind(event.payload())
             .execute(&mut *tx)
             .await
             .map_err(repo_err)?;
+
+            sqlx::query("DELETE FROM outbox_events WHERE id = $1")
+                .bind(event.event_id())
+                .execute(&mut *tx)
+                .await
+                .map_err(repo_err)?;
         }
 
         tx.commit().await.map_err(repo_err)?;
