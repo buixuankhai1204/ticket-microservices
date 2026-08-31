@@ -82,7 +82,7 @@ services:
   # the Outbox Event Router SMT — this replaces the old in-process outbox relay.
   # The debezium/connect image bundles the Postgres connector + EventRouter SMT.
   kafka-connect:
-    image: debezium/connect:2.7
+    image: debezium/connect:2.7.3.Final
     container_name: kafka-connect
     depends_on:
       kafka:

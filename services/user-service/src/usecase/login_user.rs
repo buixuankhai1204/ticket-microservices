@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use chrono::Utc;
 use sqlx::PgPool;
 
 use super::tx_err;
-use crate::domain::{PasswordHasher, TokenIssuer, UserError};
+use crate::domain::{DomainEvent, PasswordHasher, TokenIssuer, UserError, UserLoggedIn};
 use crate::platform::port::UserRepository;
 
 pub struct LoginUserUseCase {
@@ -48,6 +49,14 @@ impl LoginUserUseCase {
             return Err(UserError::InvalidCredentials);
         }
 
-        self.token_issuer.issue(user.id, &user.email)
+        let token = self.token_issuer.issue(user.id, &user.email)?;
+
+        let event =
+            DomainEvent::UserLoggedIn(UserLoggedIn::new(user.id, user.email.clone(), Utc::now()));
+        let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
+        self.user_repository.write_outbox(&mut tx, &event).await?;
+        tx.commit().await.map_err(tx_err)?;
+
+        Ok(token)
     }
 }

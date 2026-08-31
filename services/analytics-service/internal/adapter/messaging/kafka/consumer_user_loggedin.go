@@ -15,35 +15,37 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
 )
 
-const consumerGroup = "analytics-service-UserCreated"
+const userLoggedInConsumerGroup = "analytics-service-UserLoggedIn"
 
-type userCreatedRecorder interface {
-	Execute(ctx context.Context, ev domain.UserCreated) (alreadyProcessed bool, err error)
+type userLoggedInRecorder interface {
+	Execute(ctx context.Context, ev domain.UserLoggedIn) (alreadyProcessed bool, err error)
 }
 
-type Config struct {
+// UserLoggedInConfig mirrors Config; kept separate so the two consumers on
+// user.events can be tuned independently.
+type UserLoggedInConfig struct {
 	Brokers     []string
 	Topic       string
 	MaxAttempts int
 }
 
-type Consumer struct {
+type UserLoggedInConsumer struct {
 	reader      *segkafka.Reader
 	dlq         *segkafka.Writer
-	record      userCreatedRecorder
+	record      userLoggedInRecorder
 	log         logger.Logger
 	maxAttempts int
 }
 
-func NewConsumer(cfg Config, record userCreatedRecorder, log logger.Logger) *Consumer {
+func NewUserLoggedInConsumer(cfg UserLoggedInConfig, record userLoggedInRecorder, log logger.Logger) *UserLoggedInConsumer {
 	maxAttempts := cfg.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 5
 	}
-	return &Consumer{
+	return &UserLoggedInConsumer{
 		reader: segkafka.NewReader(segkafka.ReaderConfig{
 			Brokers:        cfg.Brokers,
-			GroupID:        consumerGroup,
+			GroupID:        userLoggedInConsumerGroup,
 			Topic:          cfg.Topic,
 			MinBytes:       1,
 			MaxBytes:       10 * 1024 * 1024,
@@ -57,13 +59,13 @@ func NewConsumer(cfg Config, record userCreatedRecorder, log logger.Logger) *Con
 			RequiredAcks: segkafka.RequireAll,
 		},
 		record:      record,
-		log:         log.With("component", "user_created_consumer", "topic", cfg.Topic),
+		log:         log.With("component", "user_logged_in_consumer", "topic", cfg.Topic),
 		maxAttempts: maxAttempts,
 	}
 }
 
-func (c *Consumer) Run(ctx context.Context) error {
-	c.log.Info("consumer started", "group", consumerGroup, "max_attempts", c.maxAttempts)
+func (c *UserLoggedInConsumer) Run(ctx context.Context) error {
+	c.log.Info("consumer started", "group", userLoggedInConsumerGroup, "max_attempts", c.maxAttempts)
 
 	for {
 		m, err := c.reader.FetchMessage(ctx)
@@ -99,17 +101,20 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Consumer) Close() error {
+func (c *UserLoggedInConsumer) Close() error {
 	return errors.Join(c.reader.Close(), c.dlq.Close())
 }
 
-func (c *Consumer) handle(ctx context.Context, m segkafka.Message) error {
-	if t := headerValue(m, "event_type"); t != "" && t != "UserCreated" {
+func (c *UserLoggedInConsumer) handle(ctx context.Context, m segkafka.Message) error {
+	// user.events carries every `user` aggregate event (UserCreated, UserLoggedIn,
+	// ...). Anything that isn't ours belongs to a sibling consumer group — ack it
+	// and move on, never dead-letter it.
+	if t := headerValue(m, "event_type"); t != "" && t != "UserLoggedIn" {
 		c.log.Info("event_type not handled by this consumer, skipping", "event_type", t, "offset", m.Offset)
 		return nil
 	}
 
-	ev, parseErr := parseUserCreated(m.Value)
+	ev, parseErr := parseUserLoggedIn(m.Value)
 	if parseErr != nil {
 		c.log.Error("undeserializable message -> dlq", "err", parseErr.Error(), "offset", m.Offset)
 		return c.toDLQ(ctx, m, "parse: "+parseErr.Error())
@@ -125,7 +130,7 @@ func (c *Consumer) handle(ctx context.Context, m segkafka.Message) error {
 			if already {
 				log.Info("duplicate event skipped")
 			} else {
-				log.Info("user registration recorded")
+				log.Info("user login recorded")
 			}
 			return nil
 
@@ -152,7 +157,7 @@ func (c *Consumer) handle(ctx context.Context, m segkafka.Message) error {
 	}
 }
 
-func (c *Consumer) toDLQ(ctx context.Context, m segkafka.Message, reason string) error {
+func (c *UserLoggedInConsumer) toDLQ(ctx context.Context, m segkafka.Message, reason string) error {
 	dead := segkafka.Message{
 		Key:   m.Key,
 		Value: m.Value,
@@ -171,59 +176,34 @@ func (c *Consumer) toDLQ(ctx context.Context, m segkafka.Message, reason string)
 	return nil
 }
 
-func isRetryable(err error) bool {
-	var repoErr *domain.RepositoryError
-	return errors.As(err, &repoErr)
+type userLoggedInWire struct {
+	EventID    string `json:"event_id"`
+	UserID     string `json:"user_id"`
+	Email      string `json:"email"`
+	LoggedInAt string `json:"logged_in_at"`
 }
 
-func headerValue(m segkafka.Message, key string) string {
-	for _, h := range m.Headers {
-		if h.Key == key {
-			return string(h.Value)
-		}
-	}
-	return ""
-}
-
-func sleep(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
-type userCreatedWire struct {
-	EventID   string `json:"event_id"`
-	UserID    string `json:"user_id"`
-	Email     string `json:"email"`
-	CreatedAt string `json:"created_at"`
-}
-
-func parseUserCreated(b []byte) (domain.UserCreated, error) {
-	var w userCreatedWire
+func parseUserLoggedIn(b []byte) (domain.UserLoggedIn, error) {
+	var w userLoggedInWire
 	if err := json.Unmarshal(b, &w); err != nil {
-		return domain.UserCreated{}, fmt.Errorf("unmarshal UserCreated: %w", err)
+		return domain.UserLoggedIn{}, fmt.Errorf("unmarshal UserLoggedIn: %w", err)
 	}
 	eventID, err := uuid.Parse(w.EventID)
 	if err != nil {
-		return domain.UserCreated{}, fmt.Errorf("bad event_id %q: %w", w.EventID, err)
+		return domain.UserLoggedIn{}, fmt.Errorf("bad event_id %q: %w", w.EventID, err)
 	}
 	userID, err := uuid.Parse(w.UserID)
 	if err != nil {
-		return domain.UserCreated{}, fmt.Errorf("bad user_id %q: %w", w.UserID, err)
+		return domain.UserLoggedIn{}, fmt.Errorf("bad user_id %q: %w", w.UserID, err)
 	}
-	createdAt, err := time.Parse(time.RFC3339, w.CreatedAt)
+	loggedInAt, err := time.Parse(time.RFC3339, w.LoggedInAt)
 	if err != nil {
-		return domain.UserCreated{}, fmt.Errorf("bad created_at %q: %w", w.CreatedAt, err)
+		return domain.UserLoggedIn{}, fmt.Errorf("bad logged_in_at %q: %w", w.LoggedInAt, err)
 	}
-	return domain.UserCreated{
-		EventID:   eventID,
-		UserID:    userID,
-		Email:     w.Email,
-		CreatedAt: createdAt,
+	return domain.UserLoggedIn{
+		EventID:    eventID,
+		UserID:     userID,
+		Email:      w.Email,
+		LoggedInAt: loggedInAt,
 	}, nil
 }

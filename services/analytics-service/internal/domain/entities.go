@@ -59,3 +59,25 @@ func NewUserRegistration(userID uuid.UUID, email string, registeredAt time.Time)
 		RecordedAt:   time.Now().UTC(),
 	}, nil
 }
+
+type UserLogin struct {
+	UserID     uuid.UUID
+	Email      string
+	LoggedInAt time.Time
+	RecordedAt time.Time
+}
+
+func NewUserLogin(userID uuid.UUID, email string, loggedInAt time.Time) (*UserLogin, error) {
+	if email == "" || !strings.Contains(email, "@") {
+		return nil, ErrInvalidUserLogin
+	}
+	if loggedInAt.IsZero() {
+		return nil, ErrInvalidUserLogin
+	}
+	return &UserLogin{
+		UserID:     userID,
+		Email:      email,
+		LoggedInAt: loggedInAt,
+		RecordedAt: time.Now().UTC(),
+	}, nil
+}

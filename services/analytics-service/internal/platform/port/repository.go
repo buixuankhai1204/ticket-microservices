@@ -15,4 +15,6 @@ type Repository interface {
 	RecordUserRegistration(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, reg domain.UserRegistration) (alreadyProcessed bool, err error)
 
 	GetUserRegistration(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (domain.UserRegistration, error)
+
+	RecordUserLogin(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, login domain.UserLogin) (alreadyProcessed bool, err error)
 }

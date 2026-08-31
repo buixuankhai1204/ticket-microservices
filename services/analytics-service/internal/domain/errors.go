@@ -8,6 +8,8 @@ var (
 	ErrInvalidOutcomeStatus = errors.New("invalid booking outcome status")
 
 	ErrInvalidUserRegistration = errors.New("invalid user registration")
+
+	ErrInvalidUserLogin = errors.New("invalid user login")
 )
 
 type RepositoryError struct{ Err error }
