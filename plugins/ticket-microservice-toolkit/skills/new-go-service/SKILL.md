@@ -27,36 +27,48 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
    rule is strict: arrows only point inward. Enforce it by import discipline, not just folder
    names:
    - `internal/domain/` — entities (structs) and domain errors (e.g. `ErrSeatUnavailable`),
-     plus the **port interfaces** this service needs (`Repository`, and any outbound gateway
-     like `PaymentGateway`). Zero imports from this repo or from frameworks/drivers (no `pgx`,
-     no `net/http`, no `pgxpool`). Business invariants live here as methods on the entity
-     (e.g. a `Seat.Reserve()` that returns `ErrSeatUnavailable` if already taken) — the entity
-     itself, not the caller, enforces the rule.
+     plus any **pure outbound-gateway port** that names no driver type (e.g. `PaymentGateway`).
+     Zero imports from this repo or from frameworks/drivers (no `pgx`, no `net/http`, no
+     `pgxpool`). Business invariants live here as methods on the entity (e.g. a `Seat.Reserve()`
+     that returns `ErrSeatUnavailable` if already taken) — the entity itself, not the caller,
+     enforces the rule. The `Repository` port does **not** live here: it names the DB
+     transaction handle (`pgx.Tx`), so it belongs in `internal/platform/port/`.
+   - `internal/platform/port/` — the port interfaces that name the tx handle, `Repository`
+     above all. `package port` may import `pgx` (for `pgx.Tx`) and `domain`; it must not import
+     `usecase`, `adapter`, or `cmd`. This is the one seam where "the usecase owns the
+     transaction" is expressed in a type: every `Repository` method takes `ctx, tx pgx.Tx, …`.
    - `internal/usecase/` — one type per use case (e.g. `BookSeatUseCase`), constructor-injected
-     with the `domain` interfaces it needs. Imports `domain` only, never `adapter` and never a
-     concrete driver. This is where a multi-step business flow is orchestrated inside a single
-     repository-driven transaction — see `/review-concurrency` for why that matters for
-     booking-service specifically.
+     with the `platform/port` interfaces it needs **and the `*pgxpool.Pool`**. It **owns the
+     transaction boundary**: it opens one `tx` per flow (read-only via
+     `pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})` for reads, read-write via
+     `pool.Begin(ctx)` for writes), threads that `tx` through every repository call, and
+     `Commit`s. All non-DB work (entity construction, hashing, payload building) happens
+     **before** `Begin` so a pooled connection is never pinned across CPU-bound work. Imports
+     `domain`, `platform/port`, and `pgx`/`pgxpool`; never `adapter`. See `/review-concurrency`
+     for why a single threaded `tx` matters for booking-service specifically.
    - `internal/adapter/http/` — HTTP handlers/controllers and request/response DTOs. Depend on
      the `usecase` layer's exported interface (not its struct) so handlers stay testable with a
      fake. Translates transport (HTTP status, JSON) at the edge; no business rules here.
-   - `internal/adapter/repository/postgres/` — implements the `domain.Repository` port using
-     `pgxpool`. This is the only package allowed to import `pgx`/`pgxpool` — the DB driver is a
-     detail, not something `usecase` or `domain` should know exists.
+   - `internal/adapter/repository/postgres/` — implements the `internal/platform/port`
+     `Repository` port using `pgx`. Every method runs on the `pgx.Tx` the usecase hands it and
+     **never opens or commits a transaction of its own**. This is the only package allowed to
+     import `pgx` — the DB driver is a detail, not something `usecase` or `domain` should know
+     exists (`usecase` names only `pgx.Tx` / `pgxpool.Pool`, not query APIs).
    - `internal/platform/` — cross-cutting infrastructure with no business meaning: DB pool
-     construction, logger setup, config loading. Used only from `cmd/main.go`.
+     construction, logger setup, config loading (used only from `cmd/main.go`), plus the
+     `port/` package above (imported by `usecase` and the postgres adapter).
    - `cmd/main.go` — the **composition root**: the only file that imports every layer and wires
-     concrete adapters into interfaces (`repo := postgres.NewRepository(pool)`,
-     `uc := usecase.NewBookSeatUseCase(repo)`, `h := http.NewHandler(uc)`). No business logic
-     here, only construction, routing, and the process lifecycle (see below).
+     concrete adapters into interfaces (`repo := postgres.NewRepository()`,
+     `uc := usecase.NewBookSeatUseCase(pool, repo)`, `h := http.NewHandler(uc)`). No business
+     logic here, only construction, routing, and the process lifecycle (see below).
    - `go.mod` for this service (module per service, not a shared monorepo module).
 3. Wire in these scalability/stability patterns, placed in the layer that owns them — do not
    let infrastructure concerns leak into `domain`/`usecase`:
    - **DB connection pool**: built once in `internal/platform/db` using `pgxpool.New`
      (github.com/jackc/pgx/v5/pgxpool) with an explicit `MaxConns` from an env var (default a
      bounded value, e.g. 20) — never the driver's unbounded default. Constructed in
-     `cmd/main.go`, passed into the postgres adapter as `*pgxpool.Pool`; `usecase`/`domain`
-     never see it directly.
+     `cmd/main.go`, passed into **each use case** as `*pgxpool.Pool` (the use case owns the
+     transaction boundary); the postgres adapter holds no pool, and `domain` never sees one.
    - **Health check endpoint**: `GET /healthz` (liveness, no DB touch) and `GET /readyz` (pings
      the pool) in `internal/adapter/http` — Kong/orchestrator needs both for safe rolling
      deploys. `/readyz` may reach `platform/db` directly since liveness/readiness is an infra
@@ -77,9 +89,11 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
      set an explicit timeout with context propagation — never an unbounded call.
 4. Add a minimal `Dockerfile` (multi-stage build, distroless/alpine final stage).
 5. Confirm the route prefix implemented in the router matches `kong.yml` exactly. Also verify
-   the dependency rule wasn't violated: `domain` imports nothing local, `usecase` imports only
-   `domain`, `adapter/http` and `adapter/repository/*` don't import each other — grep for
-   cross-layer imports if unsure. Then tell the user what was scaffolded and what they still
+   the dependency rule wasn't violated: `domain` imports nothing local and no driver, `usecase`
+   imports `domain` + `platform/port` + `pgx`/`pgxpool` (for the tx boundary it owns) but never
+   `adapter`, `platform/port` imports only `domain` + `pgx`, `adapter/http` and
+   `adapter/repository/*` don't import each other — grep for cross-layer imports if unsure. Then
+   tell the user what was scaffolded and what they still
    need to fill in (actual entities/use cases/DB schema).
 
 Do not add a message queue, cache, or circuit breaker here unless asked — this command

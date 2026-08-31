@@ -61,11 +61,11 @@ func run(log logger.Logger) error {
 		return err
 	}
 
-	// --- composition root: concrete adapters -> domain ports ---
-	repo := postgres.New(pool)
-	getEventStats := usecase.NewGetEventStatsUseCase(repo)
-	getUserRegistration := usecase.NewGetUserRegistrationUseCase(repo)
-	recordUserRegistration := usecase.NewRecordUserRegistrationUseCase(repo)
+	// --- composition root: concrete adapters -> ports ---
+	repo := postgres.New()
+	getEventStats := usecase.NewGetEventStatsUseCase(pool, repo)
+	getUserRegistration := usecase.NewGetUserRegistrationUseCase(pool, repo)
+	recordUserRegistration := usecase.NewRecordUserRegistrationUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(getEventStats, getUserRegistration)
 	health := httpadapter.NewHealthHandler(pool)

@@ -29,12 +29,12 @@ import (
 // loopback TCP listener.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 	h := httpadapter.NewHandler(
-		usecase.NewListEventsUseCase(repo),
-		usecase.NewGetEventUseCase(repo),
-		usecase.NewListEventSeatsUseCase(repo),
-		usecase.NewCreateNewEventUseCase(repo),
+		usecase.NewListEventsUseCase(testPool, repo),
+		usecase.NewGetEventUseCase(testPool, repo),
+		usecase.NewListEventSeatsUseCase(testPool, repo),
+		usecase.NewCreateNewEventUseCase(testPool, repo),
 	)
 	health := httpadapter.NewHealthHandler(testPool)
 	router := httpadapter.NewRouter(h, health,
@@ -307,7 +307,7 @@ func TestCreateEvent_ResponseEnvelopeShape(t *testing.T) {
 func TestCreateEventWithSeats_DuplicateSeatPosition_RollsBackWholeTx(t *testing.T) {
 	truncateAll(t)
 	ctx := context.Background()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 
 	ev, err := domain.NewEvent("Atomic Dup", "", "Test Arena",
 		time.Now().UTC().Add(24*time.Hour), time.Now().UTC().Add(27*time.Hour))
@@ -322,7 +322,12 @@ func TestCreateEventWithSeats_DuplicateSeatPosition_RollsBackWholeTx(t *testing.
 		{ID: uuid.New(), EventID: ev.ID, Section: "A", Row: "1", Number: "1", Status: domain.SeatAvailable, PriceMinor: 2000},
 	}
 
-	err = repo.CreateEventWithSeats(ctx, *ev, seats)
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	err = repo.CreateEventWithSeats(ctx, tx, *ev, seats)
+	_ = tx.Rollback(ctx)
 	if err == nil {
 		t.Fatalf("CreateEventWithSeats returned nil, want a constraint error")
 	}
@@ -337,7 +342,7 @@ func TestCreateEventWithSeats_DuplicateSeatPosition_RollsBackWholeTx(t *testing.
 func TestCreateEventWithSeats_NegativePrice_RollsBackWholeTx(t *testing.T) {
 	truncateAll(t)
 	ctx := context.Background()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 
 	ev, err := domain.NewEvent("Atomic Neg", "", "Test Arena",
 		time.Now().UTC().Add(24*time.Hour), time.Now().UTC().Add(27*time.Hour))
@@ -352,7 +357,13 @@ func TestCreateEventWithSeats_NegativePrice_RollsBackWholeTx(t *testing.T) {
 		{ID: uuid.New(), EventID: ev.ID, Section: "A", Row: "1", Number: "2", Status: domain.SeatAvailable, PriceMinor: -1},
 	}
 
-	if err := repo.CreateEventWithSeats(ctx, *ev, seats); err == nil {
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	err = repo.CreateEventWithSeats(ctx, tx, *ev, seats)
+	_ = tx.Rollback(ctx)
+	if err == nil {
 		t.Fatalf("CreateEventWithSeats returned nil, want a CHECK violation")
 	}
 

@@ -33,6 +33,9 @@ use tokio::sync::OnceCell;
 #[path = "../src/domain/mod.rs"]
 mod domain;
 
+#[path = "../src/platform/mod.rs"]
+mod platform;
+
 #[path = "../src/usecase/mod.rs"]
 mod usecase;
 
@@ -46,8 +49,9 @@ mod argon2_hasher;
 mod jwt_issuer;
 
 use argon2_hasher::Argon2PasswordHasher;
-use domain::{DomainEvent, PasswordHasher, User, UserCreated, UserError, UserRepository};
+use domain::{DomainEvent, PasswordHasher, User, UserCreated, UserError};
 use jwt_issuer::JwtTokenIssuer;
+use platform::port::UserRepository;
 use postgres_repo::PostgresUserRepository;
 use usecase::{GetUserProfileUseCase, LoginUserUseCase, RegisterUserUseCase};
 
@@ -128,8 +132,8 @@ async fn count(pool: &PgPool, sql: &str) -> i64 {
         .expect("count query")
 }
 
-fn repo(pool: &PgPool) -> Arc<PostgresUserRepository> {
-    Arc::new(PostgresUserRepository::new(pool.clone()))
+fn repo(_pool: &PgPool) -> Arc<PostgresUserRepository> {
+    Arc::new(PostgresUserRepository::new())
 }
 
 fn hasher() -> Arc<Argon2PasswordHasher> {
@@ -158,7 +162,7 @@ fn unique_email(prefix: &str) -> String {
 async fn register_persists_user_and_leaves_no_outbox_row() {
     let pool = fresh_db().await;
     let h = hasher();
-    let register = RegisterUserUseCase::new(repo(&pool), h.clone());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
 
     let email = unique_email("register");
     let password = "correct horse battery staple";
@@ -208,7 +212,7 @@ async fn register_persists_user_and_leaves_no_outbox_row() {
 #[tokio::test]
 async fn entity_ids_are_random_uuidv4_not_sequential() {
     let pool = fresh_db().await;
-    let register = RegisterUserUseCase::new(repo(&pool), hasher());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), hasher());
 
     let mut ids = Vec::new();
     for i in 0..4 {
@@ -236,7 +240,7 @@ async fn entity_ids_are_random_uuidv4_not_sequential() {
 async fn register_rejects_duplicate_email_and_leaves_first_registration_intact() {
     let pool = fresh_db().await;
     let h = hasher();
-    let register = RegisterUserUseCase::new(repo(&pool), h.clone());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
 
     let email = unique_email("dup");
     register
@@ -286,7 +290,7 @@ async fn register_rejects_duplicate_email_and_leaves_first_registration_intact()
 #[tokio::test]
 async fn users_insert_rolls_back_when_the_outbox_insert_in_the_same_tx_fails() {
     let pool = fresh_db().await;
-    let repository = PostgresUserRepository::new(pool.clone());
+    let repository = PostgresUserRepository::new();
 
     // Seed an outbox row whose PK equals the event_id the new user will carry,
     // so the outbox INSERT inside `create` violates the primary key.
@@ -313,7 +317,9 @@ async fn users_insert_rolls_back_when_the_outbox_insert_in_the_same_tx_fails() {
         created_at: user.created_at,
     }));
 
-    let result = repository.create(&user).await;
+    let mut tx = pool.begin().await.expect("begin");
+    let result = repository.create(&mut tx, &user).await;
+    let _ = tx.rollback().await;
     assert!(
         matches!(result, Err(UserError::Repository(_))),
         "create must surface the failed outbox insert, got {result:?}"
@@ -345,7 +351,11 @@ async fn users_insert_rolls_back_when_the_outbox_insert_in_the_same_tx_fails() {
 #[tokio::test]
 async fn concurrent_registrations_for_the_same_email_commit_exactly_one_user() {
     let pool = fresh_db().await;
-    let register = Arc::new(RegisterUserUseCase::new(repo(&pool), hasher()));
+    let register = Arc::new(RegisterUserUseCase::new(
+        pool.clone(),
+        repo(&pool),
+        hasher(),
+    ));
 
     let email = unique_email("race");
     let n = 8;
@@ -393,8 +403,8 @@ async fn concurrent_registrations_for_the_same_email_commit_exactly_one_user() {
 async fn login_with_correct_credentials_issues_a_jwt_for_that_user() {
     let pool = fresh_db().await;
     let h = hasher();
-    let register = RegisterUserUseCase::new(repo(&pool), h.clone());
-    let login = LoginUserUseCase::new(repo(&pool), h, issuer());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
+    let login = LoginUserUseCase::new(pool.clone(), repo(&pool), h, issuer());
 
     let email = unique_email("login-ok");
     let password = "right-password";
@@ -439,8 +449,8 @@ async fn login_with_correct_credentials_issues_a_jwt_for_that_user() {
 async fn login_with_wrong_password_is_rejected_as_invalid_credentials() {
     let pool = fresh_db().await;
     let h = hasher();
-    let register = RegisterUserUseCase::new(repo(&pool), h.clone());
-    let login = LoginUserUseCase::new(repo(&pool), h, issuer());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
+    let login = LoginUserUseCase::new(pool.clone(), repo(&pool), h, issuer());
 
     let email = unique_email("login-wrong");
     register
@@ -459,8 +469,8 @@ async fn login_with_wrong_password_is_rejected_as_invalid_credentials() {
 async fn login_failures_are_indistinguishable_between_wrong_password_and_unknown_email() {
     let pool = fresh_db().await;
     let h = hasher();
-    let register = RegisterUserUseCase::new(repo(&pool), h.clone());
-    let login = LoginUserUseCase::new(repo(&pool), h, issuer());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
+    let login = LoginUserUseCase::new(pool.clone(), repo(&pool), h, issuer());
 
     let email = unique_email("login-enum");
     register
@@ -500,8 +510,8 @@ async fn login_failures_are_indistinguishable_between_wrong_password_and_unknown
 #[tokio::test]
 async fn get_user_profile_returns_the_stored_profile_for_a_known_id() {
     let pool = fresh_db().await;
-    let register = RegisterUserUseCase::new(repo(&pool), hasher());
-    let profile = GetUserProfileUseCase::new(repo(&pool));
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), hasher());
+    let profile = GetUserProfileUseCase::new(pool.clone(), repo(&pool));
 
     let email = unique_email("profile");
     let created = register
@@ -522,7 +532,7 @@ async fn get_user_profile_returns_the_stored_profile_for_a_known_id() {
 #[tokio::test]
 async fn get_user_profile_maps_an_unknown_id_to_not_found() {
     let pool = fresh_db().await;
-    let profile = GetUserProfileUseCase::new(repo(&pool));
+    let profile = GetUserProfileUseCase::new(pool.clone(), repo(&pool));
 
     let err = profile
         .execute(Uuid::new_v4())
@@ -539,8 +549,8 @@ async fn get_user_profile_maps_an_unknown_id_to_not_found() {
 #[tokio::test]
 async fn get_user_profile_performs_no_ownership_check_idor_gap() {
     let pool = fresh_db().await;
-    let register = RegisterUserUseCase::new(repo(&pool), hasher());
-    let profile = GetUserProfileUseCase::new(repo(&pool));
+    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), hasher());
+    let profile = GetUserProfileUseCase::new(pool.clone(), repo(&pool));
 
     let victim = register
         .execute(unique_email("victim"), "pw".to_string())

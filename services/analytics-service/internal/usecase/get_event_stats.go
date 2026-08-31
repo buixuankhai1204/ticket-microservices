@@ -4,24 +4,36 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/port"
 )
 
-// GetEventStatsUseCase returns aggregate booking analytics for one event. One
-// type per business flow; it depends only on the domain.Repository port, which
-// is injected via the constructor.
 type GetEventStatsUseCase struct {
-	repo domain.Repository
+	pool *pgxpool.Pool
+	repo port.Repository
 }
 
-func NewGetEventStatsUseCase(repo domain.Repository) *GetEventStatsUseCase {
-	return &GetEventStatsUseCase{repo: repo}
+func NewGetEventStatsUseCase(pool *pgxpool.Pool, repo port.Repository) *GetEventStatsUseCase {
+	return &GetEventStatsUseCase{pool: pool, repo: repo}
 }
 
-// Execute fetches the confirmed / cancelled counts for the given event. The
-// single read-only transaction that spans the read lives in the repository
-// implementation (CLAUDE.md: every endpoint's DB access runs in one transaction).
 func (uc *GetEventStatsUseCase) Execute(ctx context.Context, eventID uuid.UUID) (domain.EventBookingStats, error) {
-	return uc.repo.GetEventBookingStats(ctx, eventID)
+	tx, err := uc.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return domain.EventBookingStats{}, &domain.RepositoryError{Err: err}
+	}
+	defer tx.Rollback(ctx)
+
+	stats, err := uc.repo.GetEventBookingStats(ctx, tx, eventID)
+	if err != nil {
+		return domain.EventBookingStats{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.EventBookingStats{}, &domain.RepositoryError{Err: err}
+	}
+	return stats, nil
 }

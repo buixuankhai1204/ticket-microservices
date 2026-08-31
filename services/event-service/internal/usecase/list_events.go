@@ -3,24 +3,36 @@ package usecase
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
-// ListEventsUseCase serves the event-browsing list. One type per business flow;
-// it depends only on the domain.Repository port, injected via the constructor.
 type ListEventsUseCase struct {
-	repo domain.Repository
+	pool *pgxpool.Pool
+	repo port.Repository
 }
 
-func NewListEventsUseCase(repo domain.Repository) *ListEventsUseCase {
-	return &ListEventsUseCase{repo: repo}
+func NewListEventsUseCase(pool *pgxpool.Pool, repo port.Repository) *ListEventsUseCase {
+	return &ListEventsUseCase{pool: pool, repo: repo}
 }
 
-// Execute returns one page of events matching the filter (newest first) and the
-// total match count for the response envelope. It parses nothing itself — the
-// HTTP layer hands it an already-validated domain.Pagination. The single
-// read-only transaction that spans the page + count lives in the repository
-// implementation (CLAUDE.md: every endpoint's DB access runs in one transaction).
 func (uc *ListEventsUseCase) Execute(ctx context.Context, f domain.EventFilter, p domain.Pagination) ([]domain.Event, int, error) {
-	return uc.repo.ListEvents(ctx, f, p)
+	tx, err := uc.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, 0, &domain.RepositoryError{Err: err}
+	}
+	defer tx.Rollback(ctx)
+
+	events, total, err := uc.repo.ListEvents(ctx, tx, f, p)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, 0, &domain.RepositoryError{Err: err}
+	}
+	return events, total, nil
 }

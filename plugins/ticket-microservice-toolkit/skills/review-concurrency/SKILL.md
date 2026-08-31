@@ -42,6 +42,15 @@ interleaving of two (or more) concurrent requests that breaks it — not just "t
 6. **Transaction scope too broad or too narrow** — a transaction held open across a slow
    external call (holding DB locks longer than necessary, hurting throughput), or conversely
    split across multiple statements that should be atomic but aren't.
+7. **Transaction ownership** — in this repo the **usecase** opens exactly one transaction per
+   flow and threads that one handle (`pgx.Tx` in Go, `&mut *tx` in Rust) through every
+   repository call; repository methods take the handle and never call `Begin`/`begin()` /
+   `Commit`/`commit()` themselves. Flag: a repo method that opens its own transaction (a
+   read-then-write flow then can't be atomic — the `SELECT ... FOR UPDATE` and the `UPDATE`
+   land in separate transactions, so the lock is released between them); a usecase that calls
+   `pool.Begin` more than once in a flow (the second tx can't see the first's uncommitted
+   rows, and the two can deadlock); or a `tx` value shared across goroutines/tasks (`pgx.Tx`
+   is not safe for concurrent use — N concurrent callers each need their own `Begin`).
 
 ## Output
 

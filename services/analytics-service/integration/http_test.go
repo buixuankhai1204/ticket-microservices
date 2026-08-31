@@ -23,10 +23,10 @@ import (
 // loopback TCP listener.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 	h := httpadapter.NewHandler(
-		usecase.NewGetEventStatsUseCase(repo),
-		usecase.NewGetUserRegistrationUseCase(repo),
+		usecase.NewGetEventStatsUseCase(testPool, repo),
+		usecase.NewGetUserRegistrationUseCase(testPool, repo),
 	)
 	health := httpadapter.NewHealthHandler(testPool)
 	router := httpadapter.NewRouter(h, health,

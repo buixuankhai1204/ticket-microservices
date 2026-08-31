@@ -57,7 +57,7 @@ not `UserCreated`.
 
 - Real analytics entities / use cases / queries — add them with `/new-go-api-endpoint`.
 - The Kafka consumer that writes `booking_outcomes` from `BookingConfirmed` /
-  `BookingCancelled` events — add it with `/add-go-saga-step`.
+  `BookingCancelled` events — add it with `/new-go-api-endpoint` (a `consume:` step).
 - `docs/openapi/analytics-service.yaml` + Postman entry for `/api/v1/analytics/users/{userID}`
   — run the `api-doc-sync` agent.
 

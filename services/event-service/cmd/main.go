@@ -57,12 +57,12 @@ func run(log logger.Logger) error {
 		return err
 	}
 
-	// --- composition root: concrete adapters -> domain ports ---
-	repo := postgres.New(pool)
-	listEvents := usecase.NewListEventsUseCase(repo)
-	getEvent := usecase.NewGetEventUseCase(repo)
-	listEventSeats := usecase.NewListEventSeatsUseCase(repo)
-	createNewEvent := usecase.NewCreateNewEventUseCase(repo)
+	// --- composition root: concrete adapters -> ports ---
+	repo := postgres.New()
+	listEvents := usecase.NewListEventsUseCase(pool, repo)
+	getEvent := usecase.NewGetEventUseCase(pool, repo)
+	listEventSeats := usecase.NewListEventSeatsUseCase(pool, repo)
+	createNewEvent := usecase.NewCreateNewEventUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
 	health := httpadapter.NewHealthHandler(pool)

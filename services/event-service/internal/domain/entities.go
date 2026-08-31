@@ -9,10 +9,10 @@ import (
 )
 
 // Seat lifecycle. A seat starts SeatAvailable; the seat-reservation saga step
-// (wired later with /add-go-saga-step, when booking-service publishes
-// BookingRequested) moves it to SeatReserved and then SeatBooked, or back to
-// SeatAvailable on a compensation. The HTTP surface this skill scaffolds is
-// read-only — it never transitions a seat.
+// (wired later via a /new-go-api-endpoint consume: step, when booking-service
+// publishes BookingRequested) moves it to SeatReserved and then SeatBooked, or
+// back to SeatAvailable on a compensation. The HTTP surface this skill scaffolds
+// is read-only — it never transitions a seat.
 const (
 	SeatAvailable = "available"
 	SeatReserved  = "reserved"

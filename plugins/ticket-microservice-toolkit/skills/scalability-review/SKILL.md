@@ -36,7 +36,13 @@ code, and explain the failure scenario under load (not just "this is bad practic
 7. **Blocking work on the request path** — synchronous calls to slow/external systems
    (email, analytics, third-party APIs) done inline instead of being pushed to a queue/async
    job, which would inflate p99 latency under load.
-8. **Graceful shutdown** — verify `SIGTERM`/`SIGINT` are handled and in-flight requests are
+8. **CPU-bound work inside an open transaction** — in this repo the usecase opens the tx, so
+   check it does all CPU-bound / network work (Argon2 password hashing ≈ 100 ms, an outbound
+   gateway call, response building) **before** `pool.Begin` / `db_pool.begin()`, never between
+   `Begin` and `Commit`. Holding a pooled connection + open transaction across a slow step
+   pins that connection for the whole step; at `MaxConns` concurrent requests the pool
+   exhausts and every further request blocks on checkout.
+9. **Graceful shutdown** — verify `SIGTERM`/`SIGINT` are handled and in-flight requests are
    drained before exit, not just `os.Exit`/process kill.
 
 ## Output

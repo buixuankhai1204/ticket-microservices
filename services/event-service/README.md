@@ -9,7 +9,8 @@ It serves the read side of the catalogue: browse events (large or small — the 
 event is just how many `seats` rows point at it) and read the seat map for one event. It
 does **not** yet reserve seats: the seat-reservation saga step (when `booking-service`
 publishes `BookingRequested` → this service reserves the seat and publishes
-`SeatReserved` / `SeatReservationFailed`) is wired later with `/add-go-saga-step`. The
+`SeatReserved` / `SeatReservationFailed`) is wired later with `/new-go-api-endpoint`
+(a `consume:` + `publish:` step). The
 `Seat.Reserve()` / `Seat.Release()` invariants already live on the domain entity so that
 step has them to call.
 
@@ -91,11 +92,12 @@ above 100 is clamped, not rejected.
 - `PATCH`/`DELETE` for events, and adding/removing seats on an existing event — add with
   `/new-go-api-endpoint`.
 - Publishing `EventCreated` for `analytics-service` to project — wire with
-  `/add-go-saga-step` (publish mode) if analytics needs an event read model.
+  `/new-go-api-endpoint` (a `publish:` step) if analytics needs an event read model.
 - The seat-reservation saga: consume `BookingRequested`, call `Seat.Reserve()` behind a
   `processed_events` check + row lock, publish `SeatReserved` / `SeatReservationFailed`
-  via the transactional outbox — add it with `/add-go-saga-step`. This also adds the
-  `outbox_events` / `processed_events` migrations.
+  via the transactional outbox — add it with `/new-go-api-endpoint`
+  (`consume:BookingRequested:booking.events publish:SeatReserved:seat_reservation`). This
+  also adds the `outbox_events` / `processed_events` migrations.
 - `docs/openapi/event-service.yaml` + Postman entry — run the `api-doc-sync` agent.
 
 ## API docs

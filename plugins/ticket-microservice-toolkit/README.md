@@ -20,8 +20,8 @@ If a target repo doesn't have those yet, copy the relevant sections from this re
 ## What's included
 
 - `skills/` — `new-go-service`, `new-rust-service`, `new-go-api-endpoint`,
-  `new-rust-api-endpoint`, `add-go-saga-step`, `add-rust-saga-step`, `scalability-review`,
-  `review-concurrency`
+  `new-rust-api-endpoint` (each covers a REST endpoint and/or a Kafka publish/consume saga
+  step via `http:` / `publish:` / `consume:` args), `scalability-review`, `review-concurrency`
 - `agents/` — `security-reviewer`, `api-contract-reviewer`
 - `hooks/` — `pre-commit-check.sh` (blocks `git commit` on gofmt/vet/clippy failures, scoped
   to staged files' own service) and `clean-architecture-check.sh` (flags a dependency-rule

@@ -8,4 +8,4 @@ pub use entities::User;
 pub use errors::UserError;
 pub use events::{DomainEvent, UserCreated};
 pub use pagination::{Pagination, DEFAULT_LIMIT};
-pub use ports::{PasswordHasher, TokenIssuer, UserRepository};
+pub use ports::{PasswordHasher, TokenIssuer};

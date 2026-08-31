@@ -4,22 +4,36 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
-// GetEventUseCase serves a single event by ID. One flow; depends only on the
-// domain.Repository port.
 type GetEventUseCase struct {
-	repo domain.Repository
+	pool *pgxpool.Pool
+	repo port.Repository
 }
 
-func NewGetEventUseCase(repo domain.Repository) *GetEventUseCase {
-	return &GetEventUseCase{repo: repo}
+func NewGetEventUseCase(pool *pgxpool.Pool, repo port.Repository) *GetEventUseCase {
+	return &GetEventUseCase{pool: pool, repo: repo}
 }
 
-// Execute returns the event, or domain.ErrNotFound. The single read-only
-// transaction lives in the repository implementation.
 func (uc *GetEventUseCase) Execute(ctx context.Context, id uuid.UUID) (domain.Event, error) {
-	return uc.repo.GetEvent(ctx, id)
+	tx, err := uc.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return domain.Event{}, &domain.RepositoryError{Err: err}
+	}
+	defer tx.Rollback(ctx)
+
+	event, err := uc.repo.GetEvent(ctx, tx, id)
+	if err != nil {
+		return domain.Event{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Event{}, &domain.RepositoryError{Err: err}
+	}
+	return event, nil
 }

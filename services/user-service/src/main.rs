@@ -13,8 +13,9 @@ use utoipa_swagger_ui::SwaggerUi;
 use adapter::http::{build_router, ApiDoc, AppState};
 use adapter::repository::postgres::PostgresUserRepository;
 use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
-use domain::{PasswordHasher, TokenIssuer, UserRepository};
+use domain::{PasswordHasher, TokenIssuer};
 use platform::db;
+use platform::port::UserRepository;
 use usecase::{GetUserProfileUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase};
 
 #[tokio::main]
@@ -47,8 +48,7 @@ async fn main() {
     let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let jwt_issuer_key = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
 
-    let user_repository: Arc<dyn UserRepository> =
-        Arc::new(PostgresUserRepository::new(pool.clone()));
+    let user_repository: Arc<dyn UserRepository> = Arc::new(PostgresUserRepository::new());
     let password_hasher: Arc<dyn PasswordHasher> = Arc::new(Argon2PasswordHasher::new());
     let token_issuer: Arc<dyn TokenIssuer> = Arc::new(JwtTokenIssuer::new(
         &jwt_secret,
@@ -57,10 +57,19 @@ async fn main() {
     ));
 
     let state = Arc::new(AppState {
-        register_user: RegisterUserUseCase::new(user_repository.clone(), password_hasher.clone()),
-        login_user: LoginUserUseCase::new(user_repository.clone(), password_hasher, token_issuer),
-        get_user_profile: GetUserProfileUseCase::new(user_repository.clone()),
-        list_users: ListUsersUseCase::new(user_repository),
+        register_user: RegisterUserUseCase::new(
+            pool.clone(),
+            user_repository.clone(),
+            password_hasher.clone(),
+        ),
+        login_user: LoginUserUseCase::new(
+            pool.clone(),
+            user_repository.clone(),
+            password_hasher,
+            token_issuer,
+        ),
+        get_user_profile: GetUserProfileUseCase::new(pool.clone(), user_repository.clone()),
+        list_users: ListUsersUseCase::new(pool.clone(), user_repository),
         db_pool: pool,
     });
 

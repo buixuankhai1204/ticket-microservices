@@ -17,7 +17,7 @@ const (
 // read-model record: analytics-service never originates these — it only records
 // what booking-service / event-service already decided (see CLAUDE.md: analytics
 // "consumes the final outcome as a read model only"). The write path is wired
-// later with /add-go-saga-step; the HTTP surface stays read-only.
+// later via a /new-go-api-endpoint consume: step; the HTTP surface stays read-only.
 type BookingOutcome struct {
 	ID         uuid.UUID
 	BookingID  uuid.UUID

@@ -31,8 +31,8 @@ func TestRecordUserRegistration_IdempotentOnRedelivery(t *testing.T) {
 	truncateAll(t)
 	ctx := context.Background()
 
-	repo := postgres.New(testPool)
-	uc := usecase.NewRecordUserRegistrationUseCase(repo)
+	repo := postgres.New()
+	uc := usecase.NewRecordUserRegistrationUseCase(testPool, repo)
 
 	ev := domain.UserCreated{
 		EventID:   uuid.New(),
@@ -99,8 +99,8 @@ func TestRecordUserRegistration_TransactionAtomicity(t *testing.T) {
 			`ALTER TABLE user_registrations DROP CONSTRAINT IF EXISTS no_boom`)
 	})
 
-	repo := postgres.New(testPool)
-	uc := usecase.NewRecordUserRegistrationUseCase(repo)
+	repo := postgres.New()
+	uc := usecase.NewRecordUserRegistrationUseCase(testPool, repo)
 
 	ev := domain.UserCreated{
 		EventID:   uuid.New(),

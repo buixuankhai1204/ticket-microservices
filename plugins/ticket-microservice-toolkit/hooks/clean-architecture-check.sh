@@ -23,6 +23,7 @@ REL_PATH=${FILE_PATH#"$REPO_ROOT"/}
 
 case "$REL_PATH" in
   */domain/*) LAYER=domain ;;
+  */platform/port/*|*/platform/port.rs) LAYER=port ;;
   */usecase/*) LAYER=usecase ;;
   */adapter/http/*) LAYER=http ;;
   */adapter/repository/*) LAYER=repository ;;
@@ -41,14 +42,20 @@ hit() { grep -qE "$1" "$FILE_PATH" 2>/dev/null; }
 
 if [ "$LANG" = "go" ]; then
   DRIVER_OR_FRAMEWORK='"net/http"|jackc/pgx|pgxpool|gin-gonic/gin|labstack/echo|gofiber/fiber|segmentio/kafka-go'
+  # usecase/ owns the transaction boundary, so it is allowed to hold the pool and
+  # name the tx handle (pgx/pgxpool) — but still no HTTP server / framework / Kafka client.
+  USECASE_FORBIDDEN='"net/http"|gin-gonic/gin|labstack/echo|gofiber/fiber|segmentio/kafka-go'
   case "$LAYER" in
     domain)
       hit "$DRIVER_OR_FRAMEWORK" && add_violation "domain/ imports a framework or driver directly — domain must stay free of net/http, pgx/pgxpool, an HTTP framework, or a Kafka client. Move it behind a port interface instead."
-      hit '"[^"]*/adapter/|"[^"]*/cmd/' && add_violation "domain/ imports from adapter/ or cmd/ — dependencies must point inward only; domain cannot import outer layers."
+      hit '"[^"]*/adapter/|"[^"]*/cmd/|"[^"]*/platform/port"' && add_violation "domain/ imports from adapter/, cmd/, or platform/port — dependencies must point inward only; domain cannot import outer layers."
+      ;;
+    port)
+      hit '"[^"]*/adapter[/"]|"[^"]*/usecase[/"]|"[^"]*/cmd[/"]' && add_violation "platform/port/ imports from adapter/, usecase/, or cmd/ — a port interface may only depend on domain (plus the DB driver for the tx handle), never on outer layers."
       ;;
     usecase)
-      hit "$DRIVER_OR_FRAMEWORK" && add_violation "usecase/ imports a framework or driver directly — usecase must depend on domain ports only, not concrete pgx/http/Kafka libraries."
-      hit '"[^"]*/adapter/' && add_violation "usecase/ imports from adapter/ — usecase must receive dependencies via domain interfaces injected at the composition root (cmd/main.go), not import adapter packages directly."
+      hit "$USECASE_FORBIDDEN" && add_violation "usecase/ imports an HTTP server, HTTP framework, or Kafka client — usecase owns the DB transaction boundary (pgx/pgxpool is allowed) but transport belongs in adapter/."
+      hit '"[^"]*/adapter/' && add_violation "usecase/ imports from adapter/ — usecase must receive dependencies via port interfaces injected at the composition root (cmd/main.go), not import adapter packages directly."
       ;;
     http)
       hit '"[^"]*/adapter/repository/' && add_violation "adapter/http/ imports adapter/repository/ directly — handlers must call through usecase, not bypass it to reach the repository."
@@ -59,14 +66,20 @@ if [ "$LANG" = "go" ]; then
   esac
 else
   DRIVER_OR_FRAMEWORK='use[[:space:]]+axum|use[[:space:]]+sqlx|use[[:space:]]+rdkafka|use[[:space:]]+tokio::net'
+  # usecase/ owns the transaction boundary, so it is allowed to hold the pool and
+  # name the connection handle (sqlx) — but still no axum / rdkafka / raw tokio::net.
+  USECASE_FORBIDDEN='use[[:space:]]+axum|use[[:space:]]+rdkafka|use[[:space:]]+tokio::net'
   case "$LAYER" in
     domain)
       hit "$DRIVER_OR_FRAMEWORK" && add_violation "domain/ imports a framework or driver directly — domain must stay free of axum, sqlx, rdkafka, or raw tokio::net. Move it behind a port trait instead."
-      hit 'use[[:space:]]+crate::adapter|use[[:space:]]+crate::main' && add_violation "domain/ imports from crate::adapter or main — dependencies must point inward only; domain cannot import outer layers."
+      hit 'use[[:space:]]+crate::adapter|use[[:space:]]+crate::main|use[[:space:]]+crate::platform::port' && add_violation "domain/ imports from crate::adapter, main, or platform::port — dependencies must point inward only; domain cannot import outer layers."
+      ;;
+    port)
+      hit 'use[[:space:]]+crate::adapter|use[[:space:]]+crate::usecase' && add_violation "platform::port imports from crate::adapter or crate::usecase — a port trait may only depend on domain (plus the DB driver for the connection handle), never on outer layers."
       ;;
     usecase)
-      hit "$DRIVER_OR_FRAMEWORK" && add_violation "usecase/ imports a framework or driver directly — usecase must depend on domain port traits only, not concrete sqlx/axum/rdkafka types."
-      hit 'use[[:space:]]+crate::adapter' && add_violation "usecase/ imports crate::adapter — usecase must receive dependencies via domain trait objects injected at the composition root (main.rs), not import adapter modules directly."
+      hit "$USECASE_FORBIDDEN" && add_violation "usecase/ imports axum, rdkafka, or raw tokio::net — usecase owns the DB transaction boundary (sqlx is allowed) but transport belongs in adapter/."
+      hit 'use[[:space:]]+crate::adapter' && add_violation "usecase/ imports crate::adapter — usecase must receive dependencies via port trait objects injected at the composition root (main.rs), not import adapter modules directly."
       ;;
     http)
       hit 'use[[:space:]]+crate::adapter::repository' && add_violation "adapter/http/ imports adapter::repository directly — handlers must call through usecase, not bypass it to reach the repository."
