@@ -1,6 +1,3 @@
-// Package config loads the fully-resolved runtime configuration from the
-// environment once, at startup. It has no business meaning and is used only from
-// cmd/main.go.
 package config
 
 import (
@@ -17,17 +14,14 @@ type Config struct {
 	DBMaxConns    int32
 	ShutdownGrace time.Duration
 
-	// Kafka (choreography saga bus).
 	KafkaBrokers             []string
 	KafkaUserEventsTopic     string
 	KafkaConsumerMaxAttempts int
 }
 
-// Load reads and validates configuration. DATABASE_URL is required; everything
-// else has a bounded default.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:                     8084, // must match kong/kong.yml (http://analytics-service:8084)
+		Port:                     8084,
 		DBMaxConns:               20,
 		ShutdownGrace:            15 * time.Second,
 		KafkaUserEventsTopic:     "user.events",
@@ -55,8 +49,6 @@ func Load() (Config, error) {
 		cfg.DBMaxConns = int32(n)
 	}
 
-	// KAFKA_BROKERS is required — analytics is a Kafka consumer first, an HTTP
-	// service second.
 	brokers := os.Getenv("KAFKA_BROKERS")
 	if brokers == "" {
 		return Config{}, fmt.Errorf("KAFKA_BROKERS must be set")
@@ -70,8 +62,6 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("KAFKA_BROKERS contained no usable entries")
 	}
 
-	// The publish side is now a Debezium connector routing outbox rows to
-	// `<aggregate_type>.events`; for UserCreated that is `user.events`.
 	if v := os.Getenv("KAFKA_USER_EVENTS_TOPIC"); v != "" {
 		cfg.KafkaUserEventsTopic = v
 	}

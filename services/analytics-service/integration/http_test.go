@@ -18,9 +18,6 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/usecase"
 )
 
-// newTestServer wires the real router (handler -> usecase -> postgres repo ->
-// shared test pool) exactly as cmd/main.go does, and serves it over a real
-// loopback TCP listener.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	repo := postgres.New()
@@ -58,9 +55,8 @@ func TestGetEventStats_SeededRows_Returns200WithExactBodyShape(t *testing.T) {
 	ctx := context.Background()
 
 	eventID := uuid.New()
-	otherEventID := uuid.New() // must NOT leak into the counts
+	otherEventID := uuid.New()
 
-	// 3 confirmed + 2 cancelled for eventID, plus noise for another event.
 	seedOutcome(t, ctx, eventID, "confirmed")
 	seedOutcome(t, ctx, eventID, "confirmed")
 	seedOutcome(t, ctx, eventID, "confirmed")
@@ -74,7 +70,6 @@ func TestGetEventStats_SeededRows_Returns200WithExactBodyShape(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body = %s", status, body)
 	}
 
-	// Body must match ToEventStatsResponse exactly: keys event_id/confirmed/cancelled, nothing else.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		t.Fatalf("unmarshal body %s: %v", body, err)
@@ -101,14 +96,10 @@ func TestGetEventStats_UnknownEventID_Returns200WithZeroCounts(t *testing.T) {
 	srv := newTestServer(t)
 	ctx := context.Background()
 
-	// Rows exist for OTHER events — the query must still scope to the requested
-	// event and return zeroes, not leak these counts.
 	other := uuid.New()
 	seedOutcome(t, ctx, other, "confirmed")
 	seedOutcome(t, ctx, other, "cancelled")
 
-	// A well-formed UUID with no rows of its own: repo uses COUNT(*), so this is
-	// 200 with zeroes, NOT 404. Asserting the actual (arguably surprising) behavior.
 	unknown := uuid.New()
 	status, body := getJSON(t, srv.URL+"/api/v1/analytics/events/"+unknown.String())
 	if status != http.StatusOK {
@@ -215,8 +206,6 @@ func TestGetUserRegistration_WellFormedUUIDNoRow_Returns404(t *testing.T) {
 	}
 }
 
-// seedOutcome inserts one booking_outcomes row for the given event/status with a
-// fresh, unique booking id (the column is UNIQUE).
 func seedOutcome(t *testing.T, ctx context.Context, eventID uuid.UUID, status string) {
 	t.Helper()
 	_, err := testPool.Exec(ctx,

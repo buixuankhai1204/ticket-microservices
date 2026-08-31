@@ -11,10 +11,6 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/migrations"
 )
 
-// Migrate applies every embedded .sql file under migrations/ that has not yet
-// been recorded in schema_migrations, each in its own transaction, in filename
-// order. Safe to run on every boot. This is a deliberately minimal runner — swap
-// it for golang-migrate / tern if the service outgrows it.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (

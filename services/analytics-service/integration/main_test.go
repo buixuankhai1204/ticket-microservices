@@ -1,17 +1,5 @@
 //go:build integration
 
-// Package integration holds analytics-service's real-Postgres integration tests:
-// the HTTP handler -> usecase -> repository -> Postgres path driven end to end,
-// plus the Kafka consumer's use-case surface (RecordUserRegistrationUseCase)
-// exercised against a live DB. No mocks, no in-memory fakes — every test here
-// needs the container to mean anything.
-//
-// Run with:
-//
-//	go test -tags=integration ./services/analytics-service/...
-//
-// Requires a running Docker daemon (testcontainers-go spins up one
-// postgres:16-alpine container for the whole package in TestMain).
 package integration
 
 import (
@@ -28,8 +16,6 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
 )
 
-// testPool is the shared connection pool against the throwaway container. It is
-// created once in TestMain and closed when the package's tests finish.
 var testPool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
@@ -64,8 +50,6 @@ func TestMain(m *testing.M) {
 	}
 	defer testPool.Close()
 
-	// Run the service's real migration runner: every embedded .sql under
-	// migrations/ applied in filename order, exactly as cmd/main.go does at boot.
 	if err := appdb.Migrate(ctx, testPool); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
 		os.Exit(1)
@@ -74,8 +58,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// truncateAll wipes every read-model / ledger table so each test starts from a
-// known-empty schema. schema_migrations is left intact.
 func truncateAll(t *testing.T) {
 	t.Helper()
 	_, err := testPool.Exec(context.Background(),
@@ -85,8 +67,6 @@ func truncateAll(t *testing.T) {
 	}
 }
 
-// noopLogger satisfies logger.Logger without writing anything, keeping test
-// output readable. The middleware chain still runs against it for real.
 type noopLogger struct{}
 
 func (noopLogger) Info(string, ...any)         {}

@@ -16,9 +16,6 @@ struct Claims {
 pub struct JwtTokenIssuer {
     encoding_key: EncodingKey,
     ttl: Duration,
-    /// Must match the `key` of a `jwt_secrets` credential on a Kong consumer
-    /// (see `kong/kong.yml`) — Kong's jwt plugin looks up the verification
-    /// secret by this claim, not by `sub`.
     issuer: String,
 }
 

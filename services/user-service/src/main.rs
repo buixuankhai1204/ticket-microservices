@@ -37,14 +37,6 @@ async fn main() {
         .await
         .expect("failed to run database migrations");
 
-    // Choreography saga bus: user-service publishes `UserCreated` through the
-    // transactional outbox, but there is no relay process to run here any more.
-    // The register-user flow writes (and immediately deletes) an `outbox_events`
-    // row in the same tx as the user insert; a Debezium PostgreSQL connector on
-    // Kafka Connect tails that table's WAL and publishes via the Outbox Event
-    // Router SMT (routed to `<aggregate_type>.events`). See `debezium/` and the
-    // `kafka-connect` service in docker-compose.
-
     let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let jwt_issuer_key = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
 
