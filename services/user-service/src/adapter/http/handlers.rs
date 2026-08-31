@@ -116,10 +116,6 @@ pub async fn get_user(
     Ok(Json(UserResponse::from(&user)))
 }
 
-/// Query params for `GET /api/v1/users`. Both optional: an absent value takes
-/// the domain default, a present non-integer is rejected by axum's `Query`
-/// extractor with a 400 before the handler runs, and a present negative value
-/// is rejected by `Pagination::new`.
 #[derive(Debug, Deserialize)]
 pub struct ListUsersParams {
     pub limit: Option<i64>,

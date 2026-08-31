@@ -10,16 +10,6 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
 )
 
-// These are pure-function tests for the consumer's dead-letter classification
-// decisions — they need neither Postgres nor a broker. They live under the
-// integration tag only so the whole analytics-service integration suite runs
-// with one `go test -tags=integration ./...` invocation.
-//
-// GAP: handle()'s full retry / capped-backoff / DLQ-routing loop and offset
-// commit behavior are NOT covered here. Exercising them end to end needs a Kafka
-// testcontainer, and that would be testing the segmentio/kafka-go wiring rather
-// than the classification logic these tests pin down. Flagged in the summary.
-
 func TestParseUserCreated_RejectsMalformedTransport(t *testing.T) {
 	validBody := `{"event_id":"6f9619ff-8b86-d011-b42d-00cf4fc964ff",` +
 		`"user_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8",` +
@@ -49,8 +39,6 @@ func TestParseUserCreated_RejectsMalformedTransport(t *testing.T) {
 		})
 	}
 
-	// Sanity: the valid body must still parse, so the negative cases above are
-	// meaningful and not just "everything fails".
 	if _, err := parseUserCreated([]byte(validBody)); err != nil {
 		t.Fatalf("parseUserCreated(valid body) = %v, want nil", err)
 	}
@@ -60,7 +48,6 @@ func TestIsRetryable_RepositoryErrorIsRetryable(t *testing.T) {
 	if !isRetryable(&domain.RepositoryError{Err: errors.New("connection reset")}) {
 		t.Errorf("isRetryable(*domain.RepositoryError) = false, want true")
 	}
-	// Wrapped in another error — errors.As must still find it.
 	wrapped := fmt.Errorf("record user registration: %w",
 		&domain.RepositoryError{Err: errors.New("deadlock detected")})
 	if !isRetryable(wrapped) {

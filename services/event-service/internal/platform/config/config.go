@@ -1,6 +1,3 @@
-// Package config loads the fully-resolved runtime configuration from the
-// environment once, at startup. It has no business meaning and is used only from
-// cmd/main.go.
 package config
 
 import (
@@ -17,11 +14,9 @@ type Config struct {
 	ShutdownGrace time.Duration
 }
 
-// Load reads and validates configuration. DATABASE_URL is required; everything
-// else has a bounded default.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:          8082, // must match kong/kong.yml (http://event-service:8082)
+		Port:          8082,
 		DBMaxConns:    20,
 		ShutdownGrace: 15 * time.Second,
 	}

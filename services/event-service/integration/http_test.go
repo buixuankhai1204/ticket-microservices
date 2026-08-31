@@ -24,17 +24,14 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/usecase"
 )
 
-// newTestServer wires the real router (handler -> usecase -> postgres repo ->
-// shared test pool) exactly as cmd/main.go does, and serves it over a real
-// loopback TCP listener.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 	h := httpadapter.NewHandler(
-		usecase.NewListEventsUseCase(repo),
-		usecase.NewGetEventUseCase(repo),
-		usecase.NewListEventSeatsUseCase(repo),
-		usecase.NewCreateNewEventUseCase(repo),
+		usecase.NewListEventsUseCase(testPool, repo),
+		usecase.NewGetEventUseCase(testPool, repo),
+		usecase.NewListEventSeatsUseCase(testPool, repo),
+		usecase.NewCreateNewEventUseCase(testPool, repo),
 	)
 	health := httpadapter.NewHealthHandler(testPool)
 	router := httpadapter.NewRouter(h, health,
@@ -45,8 +42,6 @@ func newTestServer(t *testing.T) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
-
-// --- HTTP helpers -----------------------------------------------------------
 
 func getJSON(t *testing.T, url string) (int, []byte) {
 	t.Helper()
@@ -82,8 +77,6 @@ func postEvent(t *testing.T, srv *httptest.Server, req httpadapter.CreateEventRe
 
 func int64p(v int64) *int64 { return &v }
 
-// baseEventReq is a well-formed create body with a single-section layout; tests
-// override Name / Layout as needed.
 func baseEventReq(name string) httpadapter.CreateEventRequest {
 	start := time.Now().UTC().Add(24 * time.Hour)
 	return httpadapter.CreateEventRequest{
@@ -120,8 +113,6 @@ func keysOf(m map[string]json.RawMessage) []string {
 	sort.Strings(ks)
 	return ks
 }
-
-// --- direct DB read helpers ----------------------------------------------------
 
 type dbSeat struct {
 	Section    string
@@ -164,24 +155,19 @@ func countRows(t *testing.T, query string, args ...any) int {
 	return n
 }
 
-// ============================================================================
-// POST /api/v1/events — layout expansion persisted correctly
-// ============================================================================
-
 func TestCreateEvent_LayoutExpansion_PersistedToSeatsTable(t *testing.T) {
 	truncateAll(t)
 	srv := newTestServer(t)
 
 	req := baseEventReq("Expansion Show")
-	// Section A: 3x3 @ 5000 (9 seats). Section B: 2x4 @ 3000 (8 seats). Total 17.
 	req.Layout = httpadapter.LayoutRequest{
 		Sections: []httpadapter.SectionRequest{
 			{Name: "A", Rows: 3, SeatsPerRow: 3, PriceMinor: 5000},
 			{Name: "B", Rows: 2, SeatsPerRow: 4, PriceMinor: 3000},
 		},
 		Exceptions: []httpadapter.ExceptionRequest{
-			{Section: "A", Row: "2", Number: "2", Remove: true},             // one seat removed -> 16
-			{Section: "B", Row: "1", Number: "1", PriceMinor: int64p(9999)}, // one seat repriced
+			{Section: "A", Row: "2", Number: "2", Remove: true},
+			{Section: "B", Row: "1", Number: "1", PriceMinor: int64p(9999)},
 		},
 	}
 
@@ -201,12 +187,10 @@ func TestCreateEvent_LayoutExpansion_PersistedToSeatsTable(t *testing.T) {
 		t.Fatalf("response event.id is the nil UUID")
 	}
 
-	// events row present with the returned id.
 	if n := countRows(t, `SELECT COUNT(*) FROM events WHERE id = $1`, created.Event.ID); n != 1 {
 		t.Fatalf("events rows for returned id = %d, want 1", n)
 	}
 
-	// exactly 16 seats rows for that event_id.
 	seats := seatsForEvent(t, created.Event.ID)
 	if len(seats) != 16 {
 		t.Fatalf("persisted seats = %d, want 16", len(seats))
@@ -216,7 +200,6 @@ func TestCreateEvent_LayoutExpansion_PersistedToSeatsTable(t *testing.T) {
 		if s.Status != domain.SeatAvailable {
 			t.Errorf("seat %s/%s/%s status = %q, want %q", s.Section, s.Row, s.Number, s.Status, domain.SeatAvailable)
 		}
-		// removed seat must be absent.
 		if s.Section == "A" && s.Row == "2" && s.Number == "2" {
 			t.Errorf("removed seat A/2/2 is still present")
 		}
@@ -238,7 +221,6 @@ func TestCreateEvent_LayoutExpansion_PersistedToSeatsTable(t *testing.T) {
 		}
 	}
 
-	// section-by-section counts: A has 9-1=8, B has 8.
 	if n := countRows(t, `SELECT COUNT(*) FROM seats WHERE event_id = $1 AND section = 'A'`, created.Event.ID); n != 8 {
 		t.Errorf("section A seats = %d, want 8", n)
 	}
@@ -257,7 +239,6 @@ func TestCreateEvent_ResponseEnvelopeShape(t *testing.T) {
 		t.Fatalf("status = %d, want 201; body = %s", status, body)
 	}
 
-	// Top level is exactly { "event": {...}, "seat_count": N }.
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		t.Fatalf("unmarshal top-level: %v", err)
@@ -272,7 +253,6 @@ func TestCreateEvent_ResponseEnvelopeShape(t *testing.T) {
 		t.Errorf("seat_count = %d, want 1", seatCount)
 	}
 
-	// event object matches ToEventResponse exactly.
 	var ev map[string]json.RawMessage
 	if err := json.Unmarshal(top["event"], &ev); err != nil {
 		t.Fatalf("unmarshal event object: %v", err)
@@ -294,20 +274,10 @@ func TestCreateEvent_ResponseEnvelopeShape(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// POST /api/v1/events — transaction atomicity
-//
-// The create path expands the layout in the domain and then does two writes in
-// ONE tx: INSERT the event row, then COPY the seats. A unit test with a mocked
-// repo can't prove the tx actually rolls back both writes as a unit when the
-// second one violates a DB constraint. These call the real repository directly
-// with a hand-built []domain.Seat that bypasses domain validation.
-// ============================================================================
-
 func TestCreateEventWithSeats_DuplicateSeatPosition_RollsBackWholeTx(t *testing.T) {
 	truncateAll(t)
 	ctx := context.Background()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 
 	ev, err := domain.NewEvent("Atomic Dup", "", "Test Arena",
 		time.Now().UTC().Add(24*time.Hour), time.Now().UTC().Add(27*time.Hour))
@@ -315,14 +285,17 @@ func TestCreateEventWithSeats_DuplicateSeatPosition_RollsBackWholeTx(t *testing.
 		t.Fatalf("NewEvent: %v", err)
 	}
 
-	// Two seats at the identical section/row/number -> hits seats_unique_position
-	// during the COPY, after the events row has already been inserted in the tx.
 	seats := []domain.Seat{
 		{ID: uuid.New(), EventID: ev.ID, Section: "A", Row: "1", Number: "1", Status: domain.SeatAvailable, PriceMinor: 1000},
 		{ID: uuid.New(), EventID: ev.ID, Section: "A", Row: "1", Number: "1", Status: domain.SeatAvailable, PriceMinor: 2000},
 	}
 
-	err = repo.CreateEventWithSeats(ctx, *ev, seats)
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	err = repo.CreateEventWithSeats(ctx, tx, *ev, seats)
+	_ = tx.Rollback(ctx)
 	if err == nil {
 		t.Fatalf("CreateEventWithSeats returned nil, want a constraint error")
 	}
@@ -337,7 +310,7 @@ func TestCreateEventWithSeats_DuplicateSeatPosition_RollsBackWholeTx(t *testing.
 func TestCreateEventWithSeats_NegativePrice_RollsBackWholeTx(t *testing.T) {
 	truncateAll(t)
 	ctx := context.Background()
-	repo := postgres.New(testPool)
+	repo := postgres.New()
 
 	ev, err := domain.NewEvent("Atomic Neg", "", "Test Arena",
 		time.Now().UTC().Add(24*time.Hour), time.Now().UTC().Add(27*time.Hour))
@@ -345,22 +318,24 @@ func TestCreateEventWithSeats_NegativePrice_RollsBackWholeTx(t *testing.T) {
 		t.Fatalf("NewEvent: %v", err)
 	}
 
-	// price_minor = -1 violates the CHECK (price_minor >= 0) on the second seat,
-	// again after the events INSERT in the same tx.
 	seats := []domain.Seat{
 		{ID: uuid.New(), EventID: ev.ID, Section: "A", Row: "1", Number: "1", Status: domain.SeatAvailable, PriceMinor: 1000},
 		{ID: uuid.New(), EventID: ev.ID, Section: "A", Row: "1", Number: "2", Status: domain.SeatAvailable, PriceMinor: -1},
 	}
 
-	if err := repo.CreateEventWithSeats(ctx, *ev, seats); err == nil {
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	err = repo.CreateEventWithSeats(ctx, tx, *ev, seats)
+	_ = tx.Rollback(ctx)
+	if err == nil {
 		t.Fatalf("CreateEventWithSeats returned nil, want a CHECK violation")
 	}
 
 	assertNothingPersisted(t, ev.ID)
 }
 
-// assertNothingPersisted proves the failed create transaction left no trace: no
-// events row (no orphan event) and no seats rows for that event id.
 func assertNothingPersisted(t *testing.T, eventID uuid.UUID) {
 	t.Helper()
 	if n := countRows(t, `SELECT COUNT(*) FROM events WHERE id = $1`, eventID); n != 0 {
@@ -369,7 +344,6 @@ func assertNothingPersisted(t *testing.T, eventID uuid.UUID) {
 	if n := countRows(t, `SELECT COUNT(*) FROM seats WHERE event_id = $1`, eventID); n != 0 {
 		t.Errorf("seats rows after failed create = %d, want 0", n)
 	}
-	// Nothing anywhere, either — the tables should be pristine.
 	if n := countRows(t, `SELECT COUNT(*) FROM events`); n != 0 {
 		t.Errorf("total events rows = %d, want 0", n)
 	}
@@ -378,21 +352,12 @@ func assertNothingPersisted(t *testing.T, eventID uuid.UUID) {
 	}
 }
 
-// ============================================================================
-// POST /api/v1/events — concurrency
-//
-// Create is deliberately NOT idempotent: there is no client-supplied key, so
-// firing the same body N times is meant to make N distinct events. This is a
-// race / isolation test — assert no rows are lost, no event ends up with a
-// partial or cross-contaminated seat map — NOT a dedup test.
-// ============================================================================
-
 func TestCreateEvent_ConcurrentRequests_NoLostOrCrossedRows(t *testing.T) {
 	truncateAll(t)
 	srv := newTestServer(t)
 
 	const n = 20
-	const seatsPerEvent = 6 // section X: 2 rows x 3 seats
+	const seatsPerEvent = 6
 
 	type result struct {
 		status int
@@ -445,7 +410,6 @@ func TestCreateEvent_ConcurrentRequests_NoLostOrCrossedRows(t *testing.T) {
 		t.Fatalf("distinct created event ids = %d, want %d", len(seen), n)
 	}
 
-	// N events rows, N x seatsPerEvent seats rows total.
 	if got := countRows(t, `SELECT COUNT(*) FROM events`); got != n {
 		t.Errorf("total events rows = %d, want %d", got, n)
 	}
@@ -453,8 +417,6 @@ func TestCreateEvent_ConcurrentRequests_NoLostOrCrossedRows(t *testing.T) {
 		t.Errorf("total seats rows = %d, want %d", got, n*seatsPerEvent)
 	}
 
-	// Each event's seat map is complete and its own — every seat carries that
-	// event's price (1000+i), positions "1".."2" x "1".."3", no bleed-over.
 	for i, r := range results {
 		if r.status != http.StatusCreated {
 			continue
@@ -489,18 +451,11 @@ func TestCreateEvent_ConcurrentRequests_NoLostOrCrossedRows(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// GET /api/v1/events — pagination
-// ============================================================================
-
 type createdEvent struct {
 	ID        uuid.UUID
 	CreatedAt time.Time
 }
 
-// seedEvents creates n events through the real POST endpoint, spaced far enough
-// apart that created_at is distinct at microsecond precision, so "newest first"
-// is a meaningful assertion. Returns them in creation order.
 func seedEvents(t *testing.T, srv *httptest.Server, n int) []createdEvent {
 	t.Helper()
 	out := make([]createdEvent, 0, n)
@@ -535,8 +490,6 @@ func TestListEvents_PageThrough_TotalStableOrderNewestFirstNoGaps(t *testing.T) 
 	const total = 7
 	seeded := seedEvents(t, srv, total)
 
-	// Expected order: created_at DESC, then id DESC as the tiebreak (matches the
-	// repo's ORDER BY exactly).
 	want := append([]createdEvent(nil), seeded...)
 	sort.Slice(want, func(i, j int) bool {
 		if !want[i].CreatedAt.Equal(want[j].CreatedAt) {
@@ -579,7 +532,6 @@ func TestListEvents_PageThrough_TotalStableOrderNewestFirstNoGaps(t *testing.T) 
 		}
 	}
 
-	// No gaps: the union of all pages is exactly the 7 seeded ids.
 	if len(seen) != total {
 		t.Fatalf("union of page data has %d distinct ids, want %d", len(seen), total)
 	}
@@ -589,7 +541,6 @@ func TestListEvents_PageThrough_TotalStableOrderNewestFirstNoGaps(t *testing.T) 
 		}
 	}
 
-	// Newest-first ordering across the concatenated pages.
 	if len(gotOrder) != len(want) {
 		t.Fatalf("concatenated pages have %d ids, want %d", len(gotOrder), len(want))
 	}
@@ -649,10 +600,6 @@ func TestListEvents_LimitAboveMax_ClampedTo100(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// GET /api/v1/events/{eventID} and /seats
-// ============================================================================
-
 func TestGetEvent_ByID_Returns200WithMatchingFields(t *testing.T) {
 	truncateAll(t)
 	srv := newTestServer(t)
@@ -700,7 +647,6 @@ func TestListEventSeats_PageThrough_TotalMatchesAndOrdered(t *testing.T) {
 	srv := newTestServer(t)
 
 	req := baseEventReq("Seat Map Show")
-	// Section A: 2x3 (6) @ 1000; Section B: 1x2 (2) @ 500. Total 8 seats.
 	req.Layout = httpadapter.LayoutRequest{
 		Sections: []httpadapter.SectionRequest{
 			{Name: "A", Rows: 2, SeatsPerRow: 3, PriceMinor: 1000},
@@ -762,8 +708,6 @@ func TestListEventSeats_PageThrough_TotalMatchesAndOrdered(t *testing.T) {
 		t.Fatalf("union of seat pages = %d distinct ids, want %d", len(seen), totalSeats)
 	}
 
-	// Ordering: section, row, number ascending across the concatenated pages
-	// (the repo query's ORDER BY section, row, number, id).
 	for i := 1; i < len(gotTuples); i++ {
 		prev, cur := gotTuples[i-1], gotTuples[i]
 		if tupleLess(cur, prev) {
@@ -803,9 +747,6 @@ func TestListEventSeats_RandomUUID_Returns404_NoSuchEvent(t *testing.T) {
 	truncateAll(t)
 	srv := newTestServer(t)
 
-	// A well-formed UUID with no event row: the repo's existence check fires
-	// FIRST, so this is 404 "no such event" — distinct from an existing event
-	// with zero seats (which the create endpoint can't even produce).
 	missing := uuid.New()
 	status, body := getJSON(t, srv.URL+"/api/v1/events/"+missing.String()+"/seats")
 	if status != http.StatusNotFound {

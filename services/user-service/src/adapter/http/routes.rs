@@ -5,8 +5,6 @@ use axum::Router;
 
 use super::handlers::{get_user, healthz, list_users, login, readyz, register, AppState};
 
-/// Route prefixes must match `kong/kong.yml` exactly: Kong routes with
-/// `strip_path: false`, so this service receives the full `/api/v1/...` path.
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))

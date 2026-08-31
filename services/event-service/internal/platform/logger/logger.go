@@ -1,6 +1,3 @@
-// Package logger sets up structured JSON logging. The inner layers depend on the
-// small Logger interface here, not on log/slog directly, so usecase / domain
-// stay framework-agnostic.
 package logger
 
 import (
@@ -18,7 +15,6 @@ type slogLogger struct {
 	l *slog.Logger
 }
 
-// New returns a JSON structured logger writing to stdout at Info level.
 func New() Logger {
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
 	return &slogLogger{l: slog.New(h)}

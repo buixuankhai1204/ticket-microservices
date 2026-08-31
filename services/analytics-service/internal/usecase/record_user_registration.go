@@ -3,31 +3,40 @@ package usecase
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/port"
 )
 
-// RecordUserRegistrationUseCase projects a UserCreated event into the
-// user_registrations read model. It is triggered by the Kafka consumer, not by
-// an HTTP request. One flow, one type; depends only on the domain.Repository
-// port injected via the constructor.
 type RecordUserRegistrationUseCase struct {
-	repo domain.Repository
+	pool *pgxpool.Pool
+	repo port.Repository
 }
 
-func NewRecordUserRegistrationUseCase(repo domain.Repository) *RecordUserRegistrationUseCase {
-	return &RecordUserRegistrationUseCase{repo: repo}
+func NewRecordUserRegistrationUseCase(pool *pgxpool.Pool, repo port.Repository) *RecordUserRegistrationUseCase {
+	return &RecordUserRegistrationUseCase{pool: pool, repo: repo}
 }
 
-// Execute records the registration. alreadyProcessed is true when this event id
-// was applied by an earlier delivery — a successful no-op the caller should
-// treat as "done" (commit the offset), not an error. A malformed event yields
-// domain.ErrInvalidUserRegistration (permanent); an infrastructure failure
-// yields *domain.RepositoryError (retryable). The idempotency check and the
-// read-model write share one transaction inside the repository.
 func (uc *RecordUserRegistrationUseCase) Execute(ctx context.Context, ev domain.UserCreated) (alreadyProcessed bool, err error) {
 	reg, err := domain.NewUserRegistration(ev.UserID, ev.Email, ev.CreatedAt)
 	if err != nil {
 		return false, err
 	}
-	return uc.repo.RecordUserRegistration(ctx, ev.EventID, *reg)
+
+	tx, err := uc.pool.Begin(ctx)
+	if err != nil {
+		return false, &domain.RepositoryError{Err: err}
+	}
+	defer tx.Rollback(ctx)
+
+	already, err := uc.repo.RecordUserRegistration(ctx, tx, ev.EventID, *reg)
+	if err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, &domain.RepositoryError{Err: err}
+	}
+	return already, nil
 }

@@ -12,8 +12,6 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/usecase"
 )
 
-// Handler holds the use cases the HTTP layer drives. It is constructed once at
-// startup and shared across every request — no per-request mutable field.
 type Handler struct {
 	listEvents     *usecase.ListEventsUseCase
 	getEvent       *usecase.GetEventUseCase
@@ -35,19 +33,17 @@ func NewHandler(
 	}
 }
 
-// ListEvents godoc
-//
-//	@Summary		List events
-//	@Description	Browse events newest first. Optionally restrict to upcoming events. Paginated with limit/offset.
-//	@Tags			events
-//	@Produce		json
-//	@Param			upcoming	query		bool	false	"only events that have not ended yet"
-//	@Param			limit		query		int		false	"page size (default 20, max 100)"
-//	@Param			offset		query		int		false	"rows to skip (default 0)"
-//	@Success		200			{object}	PaginatedEventsResponse
-//	@Failure		400			{object}	ErrorResponse	"invalid limit/offset"
-//	@Failure		500			{object}	ErrorResponse	"internal server error"
-//	@Router			/events [get]
+// @Summary		List events
+// @Description	Browse events newest first. Optionally restrict to upcoming events. Paginated with limit/offset.
+// @Tags			events
+// @Produce		json
+// @Param			upcoming	query		bool	false	"only events that have not ended yet"
+// @Param			limit		query		int		false	"page size (default 20, max 100)"
+// @Param			offset		query		int		false	"rows to skip (default 0)"
+// @Success		200			{object}	PaginatedEventsResponse
+// @Failure		400			{object}	ErrorResponse	"invalid limit/offset"
+// @Failure		500			{object}	ErrorResponse	"internal server error"
+// @Router			/events [get]
 func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -67,18 +63,16 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ToPaginatedEventsResponse(events, p, total))
 }
 
-// CreateEvent godoc
-//
-//	@Summary		Create an event with its seat map
-//	@Description	Creates a new event and expands the given seat layout (rectangular sections + per-seat exceptions) into its seat map, all in one transaction. A 100k-seat venue is a ~1KB body. The seat map is read back (paginated) via GET /api/v1/events/{eventID}/seats; this response carries only the seat count.
-//	@Tags			events
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		CreateEventRequest	true	"event fields plus the seat layout to expand"
-//	@Success		201		{object}	CreateEventResponse
-//	@Failure		400		{object}	ErrorResponse	"malformed body, invalid event, invalid or too-large layout, or no seats"
-//	@Failure		500		{object}	ErrorResponse	"internal server error"
-//	@Router			/events [post]
+// @Summary		Create an event with its seat map
+// @Description	Creates a new event and expands the given seat layout (rectangular sections + per-seat exceptions) into its seat map, all in one transaction. A 100k-seat venue is a ~1KB body. The seat map is read back (paginated) via GET /api/v1/events/{eventID}/seats; this response carries only the seat count.
+// @Tags			events
+// @Accept			json
+// @Produce		json
+// @Param			request	body		CreateEventRequest	true	"event fields plus the seat layout to expand"
+// @Success		201		{object}	CreateEventResponse
+// @Failure		400		{object}	ErrorResponse	"malformed body, invalid event, invalid or too-large layout, or no seats"
+// @Failure		500		{object}	ErrorResponse	"internal server error"
+// @Router			/events [post]
 func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	var req CreateEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -102,18 +96,16 @@ func (h *Handler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, ToCreateEventResponse(event, seats))
 }
 
-// GetEvent godoc
-//
-//	@Summary		Get one event
-//	@Description	Fetch a single event by its UUID.
-//	@Tags			events
-//	@Produce		json
-//	@Param			eventID	path		string	true	"event UUID"
-//	@Success		200		{object}	EventResponse
-//	@Failure		400		{object}	ErrorResponse	"eventID is not a UUID"
-//	@Failure		404		{object}	ErrorResponse	"no such event"
-//	@Failure		500		{object}	ErrorResponse	"internal server error"
-//	@Router			/events/{eventID} [get]
+// @Summary		Get one event
+// @Description	Fetch a single event by its UUID.
+// @Tags			events
+// @Produce		json
+// @Param			eventID	path		string	true	"event UUID"
+// @Success		200		{object}	EventResponse
+// @Failure		400		{object}	ErrorResponse	"eventID is not a UUID"
+// @Failure		404		{object}	ErrorResponse	"no such event"
+// @Failure		500		{object}	ErrorResponse	"internal server error"
+// @Router			/events/{eventID} [get]
 func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 	eventID, err := uuid.Parse(r.PathValue("eventID"))
 	if err != nil {
@@ -130,20 +122,18 @@ func (h *Handler) GetEvent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ToEventResponse(event))
 }
 
-// ListEventSeats godoc
-//
-//	@Summary		List an event's seats
-//	@Description	The seat map for one event, ordered by section/row/number. Paginated with limit/offset.
-//	@Tags			events
-//	@Produce		json
-//	@Param			eventID	path		string	true	"event UUID"
-//	@Param			limit	query		int		false	"page size (default 20, max 100)"
-//	@Param			offset	query		int		false	"rows to skip (default 0)"
-//	@Success		200		{object}	PaginatedSeatsResponse
-//	@Failure		400		{object}	ErrorResponse	"eventID is not a UUID, or invalid limit/offset"
-//	@Failure		404		{object}	ErrorResponse	"no such event"
-//	@Failure		500		{object}	ErrorResponse	"internal server error"
-//	@Router			/events/{eventID}/seats [get]
+// @Summary		List an event's seats
+// @Description	The seat map for one event, ordered by section/row/number. Paginated with limit/offset.
+// @Tags			events
+// @Produce		json
+// @Param			eventID	path		string	true	"event UUID"
+// @Param			limit	query		int		false	"page size (default 20, max 100)"
+// @Param			offset	query		int		false	"rows to skip (default 0)"
+// @Success		200		{object}	PaginatedSeatsResponse
+// @Failure		400		{object}	ErrorResponse	"eventID is not a UUID, or invalid limit/offset"
+// @Failure		404		{object}	ErrorResponse	"no such event"
+// @Failure		500		{object}	ErrorResponse	"internal server error"
+// @Router			/events/{eventID}/seats [get]
 func (h *Handler) ListEventSeats(w http.ResponseWriter, r *http.Request) {
 	eventID, err := uuid.Parse(r.PathValue("eventID"))
 	if err != nil {
@@ -165,10 +155,6 @@ func (h *Handler) ListEventSeats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ToPaginatedSeatsResponse(seats, p, total))
 }
 
-// parsePagination reads limit/offset from the query. An absent param takes the
-// domain default; a present-but-non-integer or negative value is a 400 (written
-// here) and ok is false. On success it returns an already-validated
-// domain.Pagination (limit clamped to the max).
 func parsePagination(w http.ResponseWriter, q map[string][]string) (domain.Pagination, bool) {
 	limit := domain.DefaultLimit
 	offset := 0
@@ -205,8 +191,6 @@ func firstQ(q map[string][]string, key string) string {
 	return ""
 }
 
-// writeDomainError translates a domain / repository error into an HTTP status at
-// the edge. Business rules never appear here — only transport translation.
 func writeDomainError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):

@@ -9,11 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// ---- helpers ---------------------------------------------------------------
-
 func ptrI64(v int64) *int64 { return &v }
 
-// baseTimes returns a valid (startsAt, endsAt) pair.
 func baseTimes() (time.Time, time.Time) {
 	s := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
 	return s, s.Add(2 * time.Hour)
@@ -27,8 +24,6 @@ func mustSections(t *testing.T, specs ...SectionSpec) map[string]SectionSpec {
 	}
 	return m
 }
-
-// ---- NewEvent ------------------------------------------------------------------
 
 func TestNewEvent(t *testing.T) {
 	starts, ends := baseTimes()
@@ -83,8 +78,6 @@ func TestNewEvent(t *testing.T) {
 	}
 }
 
-// ---- NewSeat -----------------------------------------------------------------
-
 func TestNewSeat(t *testing.T) {
 	evID := uuid.New()
 
@@ -133,8 +126,6 @@ func TestNewSeat(t *testing.T) {
 		})
 	}
 }
-
-// ---- Seat.Reserve / Release / IsAvailable ----------------------------------
 
 func TestSeatReserve(t *testing.T) {
 	tests := []struct {
@@ -221,8 +212,6 @@ func TestSeatIsAvailable(t *testing.T) {
 		})
 	}
 }
-
-// ---- validateSections ------------------------------------------------------
 
 func TestValidateSections(t *testing.T) {
 	tests := []struct {
@@ -332,10 +321,7 @@ func keysOf(m map[string]SectionSpec) []string {
 	return ks
 }
 
-// ---- indexExceptions -----------------------------------------------------------
-
 func TestIndexExceptions(t *testing.T) {
-	// Section "A": rows 1..5, seats 1..5. Section "B" (from " B "): rows 1..3, seats 1..3.
 	sections := mustSections(t,
 		SectionSpec{Name: "A", Rows: 5, SeatsPerRow: 5, PriceMinor: 100},
 		SectionSpec{Name: " B ", Rows: 3, SeatsPerRow: 3, PriceMinor: 200},
@@ -433,16 +419,11 @@ func TestIndexExceptionsMapContents(t *testing.T) {
 	}
 }
 
-// ---- seatKey -----------------------------------------------------------------
-
 func TestSeatKey(t *testing.T) {
-	// Same triple -> same key regardless of how it is passed.
 	if seatKey("A", "1", "2") != seatKey("A", "1", "2") {
 		t.Error("seatKey not deterministic for the same triple")
 	}
 
-	// Distinct triples -> distinct keys. Includes triples that would collide
-	// under naive concatenation without a separator.
 	triples := [][3]string{
 		{"A", "1", "2"},
 		{"A", "12", ""},
@@ -462,8 +443,6 @@ func TestSeatKey(t *testing.T) {
 		seen[k] = tr
 	}
 }
-
-// ---- expandSeats -----------------------------------------------------------
 
 func TestExpandSeatsHappyPath(t *testing.T) {
 	evID := uuid.New()
@@ -499,7 +478,6 @@ func TestExpandSeatsHappyPath(t *testing.T) {
 		}
 	}
 
-	// First section fully enumerated before the second.
 	for i, s := range seats {
 		if i < 6 && s.Section != "A" {
 			t.Errorf("seat %d = %+v, want section A", i, s)
@@ -509,7 +487,6 @@ func TestExpandSeatsHappyPath(t *testing.T) {
 		}
 	}
 
-	// Row/Number bounds and section price applied.
 	for _, s := range seats {
 		r, _ := strconv.Atoi(s.Row)
 		n, _ := strconv.Atoi(s.Number)
@@ -534,7 +511,6 @@ func TestExpandSeatsHappyPath(t *testing.T) {
 
 func TestExpandSeatsNumericOrdering(t *testing.T) {
 	evID := uuid.New()
-	// Rows 1..12 so "2" vs "10" exercises numeric (not lexical) ordering.
 	specs := []SectionSpec{
 		{Name: "A", Rows: 12, SeatsPerRow: 2, PriceMinor: 100},
 		{Name: "B", Rows: 2, SeatsPerRow: 2, PriceMinor: 200},
@@ -544,7 +520,6 @@ func TestExpandSeatsNumericOrdering(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Within a section, (row, number) is strictly ascending numerically.
 	var prevSection string
 	var prevRow, prevNum int
 	firstRow10 := -1
@@ -573,7 +548,6 @@ func TestExpandSeatsNumericOrdering(t *testing.T) {
 		t.Errorf("row 10 (idx %d) came before row 2 (idx %d): ordering is lexical, want numeric", firstRow10, lastRow2)
 	}
 
-	// Section order: all A before all B.
 	sawB := false
 	for _, s := range seats {
 		if s.Section == "B" {
@@ -602,7 +576,6 @@ func TestExpandSeatsRemoveException(t *testing.T) {
 			t.Errorf("removed seat (A,2,2) still present")
 		}
 	}
-	// Every other seat of the 3x3 grid survives.
 	want := make(map[string]bool, 8)
 	for r := 1; r <= 3; r++ {
 		for n := 1; n <= 3; n++ {
@@ -666,7 +639,6 @@ func TestExpandSeatsRemoveWinsOverPrice(t *testing.T) {
 
 func TestExpandSeatsAdjustmentKeyedByTrimmedSection(t *testing.T) {
 	evID := uuid.New()
-	// Section name is untrimmed in the spec; expandSeats trims before the lookup.
 	specs := []SectionSpec{{Name: "  A  ", Rows: 2, SeatsPerRow: 2, PriceMinor: 500}}
 	adj := map[string]seatAdjust{
 		seatKey("A", "1", "1"): {remove: true},
@@ -681,7 +653,6 @@ func TestExpandSeatsAdjustmentKeyedByTrimmedSection(t *testing.T) {
 }
 
 func TestExpandSeatsPropagatesNewSeatError(t *testing.T) {
-	// A nil eventID makes NewSeat fail; expandSeats must surface it, not swallow it.
 	specs := []SectionSpec{{Name: "A", Rows: 1, SeatsPerRow: 1, PriceMinor: 1}}
 	seats, err := expandSeats(uuid.Nil, specs, map[string]seatAdjust{})
 	if !errors.Is(err, ErrInvalidSeat) {
@@ -691,8 +662,6 @@ func TestExpandSeatsPropagatesNewSeatError(t *testing.T) {
 		t.Errorf("seats = %v, want nil on error", seats)
 	}
 }
-
-// ---- NewEventWithSeats ---------------------------------------------------------
 
 func TestNewEventWithSeatsHappyPath(t *testing.T) {
 	starts, ends := baseTimes()
@@ -752,14 +721,14 @@ func TestNewEventWithSeatsCountMinusRemovals(t *testing.T) {
 	starts, ends := baseTimes()
 	layout := LayoutSpec{
 		Sections: []SectionSpec{
-			{Name: "A", Rows: 4, SeatsPerRow: 5, PriceMinor: 100}, // 20
-			{Name: "B", Rows: 3, SeatsPerRow: 3, PriceMinor: 200}, // 9
+			{Name: "A", Rows: 4, SeatsPerRow: 5, PriceMinor: 100},
+			{Name: "B", Rows: 3, SeatsPerRow: 3, PriceMinor: 200},
 		},
 		Exceptions: []SeatException{
 			{Section: "A", Row: "1", Number: "1", Remove: true},
 			{Section: "A", Row: "4", Number: "5", Remove: true},
 			{Section: "B", Row: "2", Number: "2", Remove: true},
-			{Section: "B", Row: "3", Number: "3", PriceMinor: ptrI64(999)}, // reprice, not a removal
+			{Section: "B", Row: "3", Number: "3", PriceMinor: ptrI64(999)},
 		},
 	}
 	_, seats, err := NewEventWithSeats("Concert", "d", "Arena", starts, ends, layout)
@@ -770,7 +739,6 @@ func TestNewEventWithSeatsCountMinusRemovals(t *testing.T) {
 	if len(seats) != want {
 		t.Fatalf("len(seats) = %d, want %d (total minus 3 removals)", len(seats), want)
 	}
-	// The repriced seat is present with the override; its section-mates keep 200.
 	var found bool
 	for _, s := range seats {
 		if s.Section == "B" && s.Row == "3" && s.Number == "3" {

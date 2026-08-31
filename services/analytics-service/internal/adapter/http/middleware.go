@@ -10,10 +10,8 @@ import (
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
 )
 
-// Middleware is the standard net/http decorator shape.
 type Middleware func(http.Handler) http.Handler
 
-// Chain applies middlewares so that mw[0] is the outermost layer.
 func Chain(h http.Handler, mw ...Middleware) http.Handler {
 	for i := len(mw) - 1; i >= 0; i-- {
 		h = mw[i](h)
@@ -25,9 +23,6 @@ type ctxKey string
 
 const requestIDKey ctxKey = "request_id"
 
-// RequestID assigns each request a UUID (or reuses an inbound X-Request-Id),
-// echoes it in the response header, and stashes it on the context so downstream
-// logging / tracing can correlate across services.
 func RequestID() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +37,6 @@ func RequestID() Middleware {
 	}
 }
 
-// RequestIDFromContext returns the request ID assigned by RequestID, if present.
 func RequestIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey).(string)
 	return id
@@ -58,7 +52,6 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// AccessLog emits one structured JSON line per request, carrying the request ID.
 func AccessLog(log logger.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

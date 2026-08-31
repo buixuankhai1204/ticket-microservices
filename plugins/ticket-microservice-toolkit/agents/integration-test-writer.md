@@ -7,8 +7,19 @@ model: sonnet
 
 Scope: the real path — HTTP handler through to a real Postgres instance, no mocks. See
 `@CLAUDE.md` for the layering, saga, and endpoint conventions these tests exercise end to end.
-Single-layer logic with mocked dependencies is `unit-test-writer`'s job — don't duplicate it
-here; every test in this agent's output should need the real DB to mean anything.
+Pure `domain` entity/invariant logic is `unit-test-writer`'s job — don't duplicate it here;
+every test in this agent's output should need the real DB to mean anything.
+
+**Use-case orchestration lives here, not in `unit-test-writer`.** In this repo the use case
+owns the transaction boundary (it holds the pool and calls `Begin`/`Commit`), so its behavior
+can only be tested against a real Postgres. Cover, per use case: a repository error
+propagates unchanged (not swallowed, not re-wrapped into something the HTTP layer can't map);
+a "not found" from the DB becomes the use case's own not-found error; every domain error the
+entity can produce reaches the caller intact; if the flow prepares a saga event, its fields
+are correct on success and no event/outbox row exists on failure; and CPU-bound work (Argon2
+hashing) happens before `Begin` (assert via timing or by confirming no connection is pinned
+during the hash). Drive these through the use case's public `Execute`/`execute`, not the
+handler, when the HTTP layer adds nothing to the case.
 
 ## Infrastructure
 

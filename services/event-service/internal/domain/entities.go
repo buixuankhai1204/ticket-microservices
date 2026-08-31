@@ -8,20 +8,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// Seat lifecycle. A seat starts SeatAvailable; the seat-reservation saga step
-// (wired later with /add-go-saga-step, when booking-service publishes
-// BookingRequested) moves it to SeatReserved and then SeatBooked, or back to
-// SeatAvailable on a compensation. The HTTP surface this skill scaffolds is
-// read-only — it never transitions a seat.
 const (
 	SeatAvailable = "available"
 	SeatReserved  = "reserved"
 	SeatBooked    = "booked"
 )
 
-// Event is a happening people can book seats for — large or small, a stadium
-// concert or a 20-seat workshop. The size difference is just the number of
-// Seat rows that belong to it; there is no separate "large event" type.
 type Event struct {
 	ID          uuid.UUID
 	Name        string
@@ -32,10 +24,6 @@ type Event struct {
 	CreatedAt   time.Time
 }
 
-// NewEvent constructs an Event, enforcing its invariants at the point of
-// creation rather than leaving callers to remember to validate. The ID is
-// generated here (UUID, never a sequential int — same type as a saga event's
-// aggregate_id) so the record has an identity before its first insert.
 func NewEvent(name, description, venue string, startsAt, endsAt time.Time) (*Event, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, ErrInvalidEvent
@@ -57,14 +45,8 @@ func NewEvent(name, description, venue string, startsAt, endsAt time.Time) (*Eve
 	}, nil
 }
 
-// MaxSeatsPerEvent caps how many seats one create request may expand to, so a
-// tiny layout body can't blow up into an unbounded number of rows. Comfortably
-// above the largest real venues (~110k seats).
 const MaxSeatsPerEvent = 200_000
 
-// SectionSpec describes one rectangular block of seats to generate: rows
-// numbered "1".."Rows", each with SeatsPerRow seats numbered "1".."SeatsPerRow",
-// all at PriceMinor unless a SeatException reprices a specific seat.
 type SectionSpec struct {
 	Name        string
 	Rows        int
@@ -72,11 +54,6 @@ type SectionSpec struct {
 	PriceMinor  int64
 }
 
-// SeatException adjusts one generated seat, addressed by Section/Row/Number with
-// the same string values the grid produces. It must do something: Remove the
-// seat, or override its price (PriceMinor non-nil), or both. This is where the
-// irregular parts of a real venue live (seats physically removed, one-off
-// prices) without turning the whole layout into a hand-written list.
 type SeatException struct {
 	Section    string
 	Row        string
@@ -85,46 +62,20 @@ type SeatException struct {
 	PriceMinor *int64
 }
 
-// LayoutSpec is the entire seat map as a compact description — a handful of
-// rectangular sections plus per-seat exceptions — that the domain expands into
-// individual Seat rows. A 100k-seat venue is a ~1KB request.
 type LayoutSpec struct {
 	Sections   []SectionSpec
 	Exceptions []SeatException
 }
 
-// seatAdjust is the effect one SeatException has on the seat it addresses.
 type seatAdjust struct {
 	remove bool
 	price  *int64
 }
 
-// seatKey joins a section/row/number into the string used to address one seat
-// within a layout. The NUL separator can't occur in any part, so distinct
-// triples never collide.
 func seatKey(section, row, number string) string {
 	return section + "\x00" + row + "\x00" + number
 }
 
-// NewEventWithSeats builds a new Event together with its seat map in one step,
-// so the rule "an event is always created with its seat map" lives in the
-// domain rather than in the usecase. It runs three steps, each its own function
-// so the failure modes can be unit-tested in isolation: validate the sections
-// (validateSections), index the exceptions against them (indexExceptions),
-// expand the grid (expandSeats). Between them they enforce:
-//   - every Event invariant (via NewEvent),
-//   - a well-formed layout: >=1 section, unique section names, Rows and
-//     SeatsPerRow >= 1, PriceMinor >= 0 (ErrInvalidLayout),
-//   - the expanded map fits under MaxSeatsPerEvent (ErrLayoutTooLarge),
-//   - every exception targets a seat the grid actually produces, no two
-//     exceptions target the same seat, and each exception removes or reprices
-//     (ErrInvalidLayout),
-//   - at least one seat survives removals (ErrEventRequiresSeats).
-//
-// Uniqueness of section/row/number is guaranteed by construction here — the
-// grid enumerates distinct triples and section names are checked unique — so
-// there is no per-seat dedup pass and the DB unique constraint is only a
-// backstop.
 func NewEventWithSeats(name, description, venue string, startsAt, endsAt time.Time, layout LayoutSpec) (*Event, []Seat, error) {
 	event, err := NewEvent(name, description, venue, startsAt, endsAt)
 	if err != nil {
@@ -151,10 +102,6 @@ func NewEventWithSeats(name, description, venue string, startsAt, endsAt time.Ti
 	return event, seats, nil
 }
 
-// validateSections checks each section, rejects a duplicate (trimmed) name, and
-// enforces MaxSeatsPerEvent on the running seat total before anything is
-// allocated. It returns the sections indexed by trimmed name for the exception
-// step. An empty slice is ErrEventRequiresSeats.
 func validateSections(specs []SectionSpec) (map[string]SectionSpec, error) {
 	if len(specs) == 0 {
 		return nil, ErrEventRequiresSeats
@@ -180,10 +127,6 @@ func validateSections(specs []SectionSpec) (map[string]SectionSpec, error) {
 	return byName, nil
 }
 
-// indexExceptions validates every SeatException against the already-validated
-// sections and returns them keyed by the seat they address. An exception that
-// falls outside the grid, duplicates another, or would do nothing (neither
-// removes nor reprices) is an ErrInvalidLayout.
 func indexExceptions(exceptions []SeatException, sections map[string]SectionSpec) (map[string]seatAdjust, error) {
 	byKey := make(map[string]seatAdjust, len(exceptions))
 	for _, ex := range exceptions {
@@ -211,9 +154,6 @@ func indexExceptions(exceptions []SeatException, sections map[string]SectionSpec
 	return byKey, nil
 }
 
-// expandSeats walks each section's grid in row/number order, applies any
-// adjustment for a seat (skipping one marked remove), and builds the Seat
-// entities against eventID.
 func expandSeats(eventID uuid.UUID, specs []SectionSpec, adjustments map[string]seatAdjust) ([]Seat, error) {
 	total := 0
 	for _, s := range specs {
@@ -249,9 +189,6 @@ func expandSeats(eventID uuid.UUID, specs []SectionSpec, adjustments map[string]
 	return seats, nil
 }
 
-// Seat is one bookable position within an Event. The invariant that a seat can
-// only be reserved when it is free lives on the entity itself (Reserve), not in
-// the caller — see CLAUDE.md's domain-layer rule.
 type Seat struct {
 	ID         uuid.UUID
 	EventID    uuid.UUID
@@ -259,11 +196,9 @@ type Seat struct {
 	Row        string
 	Number     string
 	Status     string
-	PriceMinor int64 // seat price in minor currency units (e.g. cents)
+	PriceMinor int64
 }
 
-// NewSeat constructs an available Seat for an event. ID is generated here for
-// the same reason NewEvent generates its own.
 func NewSeat(eventID uuid.UUID, section, row, number string, priceMinor int64) (*Seat, error) {
 	if eventID == uuid.Nil {
 		return nil, ErrInvalidSeat
@@ -285,10 +220,6 @@ func NewSeat(eventID uuid.UUID, section, row, number string, priceMinor int64) (
 	}, nil
 }
 
-// Reserve moves a free seat to reserved. It returns ErrSeatUnavailable if the
-// seat is already reserved or booked — the entity enforces the rule, not the
-// caller. Kept here now (unused by the read-only HTTP surface) so the
-// seat-reservation saga step added later has the invariant to call.
 func (s *Seat) Reserve() error {
 	if s.Status != SeatAvailable {
 		return ErrSeatUnavailable
@@ -297,8 +228,6 @@ func (s *Seat) Reserve() error {
 	return nil
 }
 
-// Release moves a reserved seat back to available — the compensating action for
-// Reserve when a downstream saga step fails.
 func (s *Seat) Release() error {
 	if s.Status != SeatReserved {
 		return ErrSeatUnavailable
@@ -307,5 +236,4 @@ func (s *Seat) Release() error {
 	return nil
 }
 
-// IsAvailable reports whether the seat can currently be reserved.
 func (s *Seat) IsAvailable() bool { return s.Status == SeatAvailable }
