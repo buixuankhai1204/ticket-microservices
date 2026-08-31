@@ -189,6 +189,14 @@ confirmation). Fire-and-forget / loss-tolerant traffic does **not** go through t
      `<service-name>-<EventName>` using `rdkafka`'s `StreamConsumer`,
      `enable.auto.commit=false` (manual commit — the offset advances only after a message is
      fully processed). Deserialize into the `<EventName>` domain type via `serde_json`.
+   - **A topic can carry more than one event type** — an `<aggregate_type>.events` topic gets
+     every event about that aggregate (e.g. `user.events` carries `UserCreated` *and*
+     `UserLoggedIn`), with one consumer group per `<EventName>`. Guard on the `event_type`
+     header: if it's set and isn't `<EventName>`, the message belongs to a sibling group —
+     **ack it and move on (commit the offset), never dead-letter it**. Only a message whose
+     `event_type` *is* `<EventName>` (or is header-less) and won't deserialize is poison → DLQ.
+     If you're adding the *second* consumer to an existing topic, change the first consumer's
+     `event_type` mismatch branch from DLQ to skip in the same pass.
    - Idempotency: `<UseCaseName>UseCase` (step 2) opens one read-write `tx` and, on `&mut *tx`,
      checks a `processed_events` table (unique constraint on event ID) **before** the side
      effect, skipping if already present — check and side effect on the same `tx`. The consumer
@@ -216,13 +224,14 @@ confirmation). Fire-and-forget / loss-tolerant traffic does **not** go through t
    added and what the user must still fill in (persistence columns, validation rules).
 
 ## Reference (already implemented)
-`user-service` writes a `UserCreated` `outbox_events` row (`aggregate_type = "user"`) on the
-`RegisterUserUseCase` transaction, deleting it in the same txn; the Debezium
-`user-service-outbox` connector routes it to `user.events` — no relay code. →
-`analytics-service` (Go) consumes `user.events` (group `analytics-service-UserCreated`),
-projects a `user_registrations` read-model row behind a `processed_events` check, and
-dead-letters poison / permanently-failing / retry-exhausted / unexpected-`event_type` messages
-to `user.events.dlq`.
+`user-service` writes `outbox_events` rows with `aggregate_type = "user"` — `UserCreated` on
+the `RegisterUserUseCase` transaction, `UserLoggedIn` on the `LoginUserUseCase` transaction —
+each deleted in the same txn; the Debezium `user-service-outbox` connector routes both to
+`user.events` — no relay code. → `analytics-service` (Go) consumes `user.events` with two
+groups (`analytics-service-UserCreated` → `user_registrations`, `analytics-service-UserLoggedIn`
+→ `user_logins`); each projects its read-model row behind a `processed_events` check,
+**acks-and-skips the other group's `event_type`**, and dead-letters poison / permanently-failing
+/ retry-exhausted messages to `user.events.dlq`.
 
 Sketched next: `event-service`
 `consume:BookingRequested:booking.events publish:SeatReserved:seat_reservation` (or

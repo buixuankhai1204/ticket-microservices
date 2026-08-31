@@ -177,17 +177,21 @@ Wiring a publish or consume step is folded into `/new-go-api-endpoint` /
 `publish:` the skill first asks which delivery guarantee the event needs and which services
 will consume it.
 
-Implemented so far (reference these when wiring a new step): `user-service`'s
-`RegisterUserUseCase` opens one read-write transaction, and on it the repository inserts the
-users row and writes+deletes the `UserCreated` `outbox_events` row (`aggregate_type = "user"`)
-before the use case commits; the Debezium `user-service-outbox` connector tails the WAL and
-routes it to the `user.events` topic → `analytics-service`'s `RecordUserRegistrationUseCase`
-consumes `user.events` (group `analytics-service-UserCreated`), and on its own single
-transaction the repository does the `processed_events` check and projects a
-`user_registrations` read-model row; the consumer dead-letters poison / permanently-failing /
-retry-exhausted / unexpected-`event_type` messages to `user.events.dlq`. Both Go services
-(`event-service`, `analytics-service`) follow the usecase-owns-the-transaction shape with the
-`Repository` port in `internal/platform/port/`.
+Implemented so far (reference these when wiring a new step): `user-service` emits two events on
+`aggregate_type = "user"` → the `user.events` topic — `UserCreated` on the
+`RegisterUserUseCase` transaction (which also inserts the users row) and `UserLoggedIn` on the
+`LoginUserUseCase` transaction (a second, read-write txn after the credential check) — each
+written+deleted via the repository `write_outbox` on that same transaction before the use case
+commits; the Debezium `user-service-outbox` connector tails the WAL and routes both to
+`user.events`. `analytics-service` consumes `user.events` with **two** consumer groups —
+`analytics-service-UserCreated` (`RecordUserRegistrationUseCase` → `user_registrations`) and
+`analytics-service-UserLoggedIn` (`RecordUserLoginUseCase` → `user_logins`) — each on its own
+single transaction doing the `processed_events` check before projecting its read-model row.
+Because one topic now carries two event types, each consumer **acks-and-skips** the other
+group's `event_type` (guard on the header) rather than dead-lettering it; only poison of its
+*own* type, permanent failures, and retry-exhausted messages go to `user.events.dlq`. Both Go
+services (`event-service`, `analytics-service`) follow the usecase-owns-the-transaction shape
+with the `Repository` port in `internal/platform/port/`.
 
 Sketched next: `booking-service` publishes `BookingRequested` → `event-service` reserves the
 seat and publishes `SeatReserved`/`SeatReservationFailed` → `booking-service` confirms or

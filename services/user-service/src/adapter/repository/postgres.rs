@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::domain::{Pagination, User, UserError};
+use crate::domain::{DomainEvent, Pagination, User, UserError};
 use crate::platform::port::UserRepository;
 
 #[derive(Default)]
@@ -99,25 +99,29 @@ impl UserRepository for PostgresUserRepository {
         .map_err(repo_err)?;
 
         for event in user.pending_events() {
-            sqlx::query(
-                "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
-                 VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(event.event_id())
-            .bind(event.aggregate_id())
-            .bind(event.aggregate_type())
-            .bind(event.event_type())
-            .bind(event.payload())
-            .execute(&mut *conn)
-            .await
-            .map_err(repo_err)?;
-
-            sqlx::query("DELETE FROM outbox_events WHERE id = $1")
-                .bind(event.event_id())
-                .execute(&mut *conn)
-                .await
-                .map_err(repo_err)?;
+            self.write_outbox(&mut *conn, event).await?;
         }
+
+        Ok(())
+    }
+
+    async fn write_outbox(
+        &self,
+        conn: &mut PgConnection,
+        event: &DomainEvent,
+    ) -> Result<(), UserError> {
+        sqlx::query(
+            "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(event.event_id())
+        .bind(event.aggregate_id())
+        .bind(event.aggregate_type())
+        .bind(event.event_type())
+        .bind(event.payload())
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
 
         Ok(())
     }

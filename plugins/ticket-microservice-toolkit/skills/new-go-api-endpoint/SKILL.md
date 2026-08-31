@@ -193,6 +193,14 @@ confirmation). Fire-and-forget / loss-tolerant traffic does **not** go through t
      group `<service-name>-<EventName>` via `segmentio/kafka-go`; `FetchMessage` +
      `CommitMessages` with `CommitInterval: 0` (manual commit — the offset advances only after
      a message is fully processed). Deserialize into the `<EventName>` domain type.
+   - **A topic can carry more than one event type** — an `<aggregate_type>.events` topic gets
+     every event about that aggregate (e.g. `user.events` carries `UserCreated` *and*
+     `UserLoggedIn`), with one consumer group per `<EventName>`. Guard on the `event_type`
+     header: if it's set and isn't `<EventName>`, the message belongs to a sibling group —
+     **ack it and move on (commit the offset), never dead-letter it**. Only a message whose
+     `event_type` *is* `<EventName>` (or is header-less) and won't deserialize is poison → DLQ.
+     If you're adding the *second* consumer to an existing topic, change the first consumer's
+     `event_type` mismatch branch from DLQ to skip in the same pass.
    - Idempotency: `<UseCaseName>UseCase` (step 2) opens one read-write `tx` and, on it, checks a
      `processed_events` table (unique constraint on event ID) **before** the side effect,
      skipping if already present — check and side effect on the same `tx`. The consumer calls
@@ -220,15 +228,16 @@ confirmation). Fire-and-forget / loss-tolerant traffic does **not** go through t
    added and what the user must still fill in (persistence columns, validation rules).
 
 ## Reference (already implemented)
-`analytics-service` consumes `UserCreated` off `user.events` in
-`internal/adapter/messaging/kafka/consumer.go` (group `analytics-service-UserCreated`): manual
-offset commit, `event_type` header guard, `processed_events` idempotency check,
-`RecordUserRegistrationUseCase` projecting into `user_registrations`, bounded
-retry-with-backoff on `*domain.RepositoryError`, and a `kafka.Writer` dead-lettering poison /
-permanently-failing / retry-exhausted / unexpected-`event_type` messages to
-`user.events.dlq`. Publish side: `user-service` (Rust) writes an `outbox_events` row with
-`aggregate_type = "user"`; the Debezium `user-service-outbox` connector routes it to
-`user.events` — no relay code.
+`analytics-service` consumes `user.events` with two consumer groups:
+`analytics-service-UserCreated` (`consumer.go`, `RecordUserRegistrationUseCase` →
+`user_registrations`) and `analytics-service-UserLoggedIn` (`consumer_user_loggedin.go`,
+`RecordUserLoginUseCase` → `user_logins`). Each: manual offset commit, `event_type` header
+guard that **acks-and-skips the other group's events** (only its own undeserializable messages
+are poison), `processed_events` idempotency check, bounded retry-with-backoff on
+`*domain.RepositoryError`, and a `kafka.Writer` dead-lettering poison / permanently-failing /
+retry-exhausted messages to `user.events.dlq`. Publish side: `user-service` (Rust) writes an
+`outbox_events` row with `aggregate_type = "user"` (both `UserCreated` and `UserLoggedIn`);
+the Debezium `user-service-outbox` connector routes them to `user.events` — no relay code.
 
 Sketched next: `booking-service` `publish:BookingRequested:booking` → `event-service`
 `consume:BookingRequested:booking.events publish:SeatReserved:seat_reservation` (or

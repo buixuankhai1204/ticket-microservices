@@ -60,6 +60,7 @@ func run(log logger.Logger) error {
 	getEventStats := usecase.NewGetEventStatsUseCase(pool, repo)
 	getUserRegistration := usecase.NewGetUserRegistrationUseCase(pool, repo)
 	recordUserRegistration := usecase.NewRecordUserRegistrationUseCase(pool, repo)
+	recordUserLogin := usecase.NewRecordUserLoginUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(getEventStats, getUserRegistration)
 	health := httpadapter.NewHealthHandler(pool)
@@ -81,11 +82,26 @@ func run(log logger.Logger) error {
 	}, recordUserRegistration, log)
 	defer func() { _ = consumer.Close() }()
 
+	loginConsumer := kafkaconsumer.NewUserLoggedInConsumer(kafkaconsumer.UserLoggedInConfig{
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       cfg.KafkaUserEventsTopic,
+		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
+	}, recordUserLogin, log)
+	defer func() { _ = loginConsumer.Close() }()
+
 	consumerDone := make(chan struct{})
 	go func() {
 		defer close(consumerDone)
 		if err := consumer.Run(ctx); err != nil {
 			log.Error("kafka consumer exited with error", "err", err.Error())
+		}
+	}()
+
+	loginConsumerDone := make(chan struct{})
+	go func() {
+		defer close(loginConsumerDone)
+		if err := loginConsumer.Run(ctx); err != nil {
+			log.Error("kafka login consumer exited with error", "err", err.Error())
 		}
 	}()
 
@@ -111,5 +127,6 @@ func run(log logger.Logger) error {
 	}
 
 	<-consumerDone
+	<-loginConsumerDone
 	return nil
 }
