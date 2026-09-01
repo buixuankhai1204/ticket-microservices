@@ -75,18 +75,16 @@ func run(log logger.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	consumer := kafkaconsumer.NewConsumer(kafkaconsumer.Config{
+	kafkaCfg := kafkaconsumer.Config{
 		Brokers:     cfg.KafkaBrokers,
 		Topic:       cfg.KafkaUserEventsTopic,
 		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
-	}, recordUserRegistration, log)
+	}
+
+	consumer := kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.UserCreatedSpec(recordUserRegistration), log)
 	defer func() { _ = consumer.Close() }()
 
-	loginConsumer := kafkaconsumer.NewUserLoggedInConsumer(kafkaconsumer.UserLoggedInConfig{
-		Brokers:     cfg.KafkaBrokers,
-		Topic:       cfg.KafkaUserEventsTopic,
-		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
-	}, recordUserLogin, log)
+	loginConsumer := kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.UserLoggedInSpec(recordUserLogin), log)
 	defer func() { _ = loginConsumer.Close() }()
 
 	consumerDone := make(chan struct{})

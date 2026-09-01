@@ -2,23 +2,34 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	segkafka "github.com/segmentio/kafka-go"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
 )
 
-const consumerGroup = "analytics-service-UserCreated"
+// Recorder is the use case a consumer drives: it owns the transaction and the
+// processed_events idempotency check, returning alreadyProcessed=true for a
+// duplicate.
+type Recorder[E any] interface {
+	Execute(ctx context.Context, ev E) (alreadyProcessed bool, err error)
+}
 
-type userCreatedRecorder interface {
-	Execute(ctx context.Context, ev domain.UserCreated) (alreadyProcessed bool, err error)
+// EventSpec is everything that differs between the consumer groups sharing one
+// topic. The engine below is otherwise identical for every event type.
+type EventSpec[E any] struct {
+	Group      string                  // Kafka consumer group id
+	EventType  string                  // "event_type" header value this group owns
+	Component  string                  // logger component tag
+	SuccessMsg string                  // logged on a fresh (non-duplicate) apply
+	Parse      func([]byte) (E, error) // wire bytes -> domain event
+	LogFields  func(E) []any           // structured log context, e.g. event_id/user_id
+	Record     Recorder[E]
 }
 
 type Config struct {
@@ -27,23 +38,23 @@ type Config struct {
 	MaxAttempts int
 }
 
-type Consumer struct {
+type Consumer[E any] struct {
 	reader      *segkafka.Reader
 	dlq         *segkafka.Writer
-	record      userCreatedRecorder
+	spec        EventSpec[E]
 	log         logger.Logger
 	maxAttempts int
 }
 
-func NewConsumer(cfg Config, record userCreatedRecorder, log logger.Logger) *Consumer {
+func NewConsumer[E any](cfg Config, spec EventSpec[E], log logger.Logger) *Consumer[E] {
 	maxAttempts := cfg.MaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = 5
 	}
-	return &Consumer{
+	return &Consumer[E]{
 		reader: segkafka.NewReader(segkafka.ReaderConfig{
 			Brokers:        cfg.Brokers,
-			GroupID:        consumerGroup,
+			GroupID:        spec.Group,
 			Topic:          cfg.Topic,
 			MinBytes:       1,
 			MaxBytes:       10 * 1024 * 1024,
@@ -56,14 +67,14 @@ func NewConsumer(cfg Config, record userCreatedRecorder, log logger.Logger) *Con
 			Balancer:     &segkafka.Hash{},
 			RequiredAcks: segkafka.RequireAll,
 		},
-		record:      record,
-		log:         log.With("component", "user_created_consumer", "topic", cfg.Topic),
+		spec:        spec,
+		log:         log.With("component", spec.Component, "topic", cfg.Topic),
 		maxAttempts: maxAttempts,
 	}
 }
 
-func (c *Consumer) Run(ctx context.Context) error {
-	c.log.Info("consumer started", "group", consumerGroup, "max_attempts", c.maxAttempts)
+func (c *Consumer[E]) Run(ctx context.Context) error {
+	c.log.Info("consumer started", "group", c.spec.Group, "max_attempts", c.maxAttempts)
 
 	for {
 		m, err := c.reader.FetchMessage(ctx)
@@ -99,33 +110,33 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Consumer) Close() error {
+func (c *Consumer[E]) Close() error {
 	return errors.Join(c.reader.Close(), c.dlq.Close())
 }
 
-func (c *Consumer) handle(ctx context.Context, m segkafka.Message) error {
-	if t := headerValue(m, "event_type"); t != "" && t != "UserCreated" {
+func (c *Consumer[E]) handle(ctx context.Context, m segkafka.Message) error {
+	if t := headerValue(m, "event_type"); t != "" && t != c.spec.EventType {
 		c.log.Info("event_type not handled by this consumer, skipping", "event_type", t, "offset", m.Offset)
 		return nil
 	}
 
-	ev, parseErr := parseUserCreated(m.Value)
+	ev, parseErr := c.spec.Parse(m.Value)
 	if parseErr != nil {
 		c.log.Error("undeserializable message -> dlq", "err", parseErr.Error(), "offset", m.Offset)
 		return c.toDLQ(ctx, m, "parse: "+parseErr.Error())
 	}
 
-	log := c.log.With("event_id", ev.EventID.String(), "user_id", ev.UserID.String(), "offset", m.Offset)
+	log := c.log.With(append(c.spec.LogFields(ev), "offset", m.Offset)...)
 	backoff := 250 * time.Millisecond
 
 	for attempt := 1; ; attempt++ {
-		already, err := c.record.Execute(ctx, ev)
+		already, err := c.spec.Record.Execute(ctx, ev)
 		switch {
 		case err == nil:
 			if already {
 				log.Info("duplicate event skipped")
 			} else {
-				log.Info("user registration recorded")
+				log.Info(c.spec.SuccessMsg)
 			}
 			return nil
 
@@ -152,7 +163,7 @@ func (c *Consumer) handle(ctx context.Context, m segkafka.Message) error {
 	}
 }
 
-func (c *Consumer) toDLQ(ctx context.Context, m segkafka.Message, reason string) error {
+func (c *Consumer[E]) toDLQ(ctx context.Context, m segkafka.Message, reason string) error {
 	dead := segkafka.Message{
 		Key:   m.Key,
 		Value: m.Value,
@@ -194,36 +205,4 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-type userCreatedWire struct {
-	EventID   string `json:"event_id"`
-	UserID    string `json:"user_id"`
-	Email     string `json:"email"`
-	CreatedAt string `json:"created_at"`
-}
-
-func parseUserCreated(b []byte) (domain.UserCreated, error) {
-	var w userCreatedWire
-	if err := json.Unmarshal(b, &w); err != nil {
-		return domain.UserCreated{}, fmt.Errorf("unmarshal UserCreated: %w", err)
-	}
-	eventID, err := uuid.Parse(w.EventID)
-	if err != nil {
-		return domain.UserCreated{}, fmt.Errorf("bad event_id %q: %w", w.EventID, err)
-	}
-	userID, err := uuid.Parse(w.UserID)
-	if err != nil {
-		return domain.UserCreated{}, fmt.Errorf("bad user_id %q: %w", w.UserID, err)
-	}
-	createdAt, err := time.Parse(time.RFC3339, w.CreatedAt)
-	if err != nil {
-		return domain.UserCreated{}, fmt.Errorf("bad created_at %q: %w", w.CreatedAt, err)
-	}
-	return domain.UserCreated{
-		EventID:   eventID,
-		UserID:    userID,
-		Email:     w.Email,
-		CreatedAt: createdAt,
-	}, nil
 }
