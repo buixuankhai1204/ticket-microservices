@@ -51,3 +51,27 @@ impl User {
         &self.pending_events
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_creation() {
+        let email = String::from("test@example.com");
+        let password_hash = String::from("hashed_password");
+
+        let user = User::new(email, password_hash).unwrap();
+        assert_eq!(user.email, "test@example.com");
+        assert_eq!(user.password_hash, "hashed_password");
+    }
+
+    #[test]
+    fn test_invalid_email() {
+        let email = String::from("invalid_email");
+        let password_hash = String::from("hashed_password");
+
+        let result = User::new(email, password_hash);
+        assert!(result.is_err());
+    }
+}

@@ -92,7 +92,7 @@ func NewEventWithSeats(name, description, venue string, startsAt, endsAt time.Ti
 		return nil, nil, err
 	}
 
-	seats, err := expandSeats(event.ID, layout.Sections, adjustments)
+	seats, err := initSeats(event.ID, layout.Sections, adjustments)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -154,7 +154,7 @@ func indexExceptions(exceptions []SeatException, sections map[string]SectionSpec
 	return byKey, nil
 }
 
-func expandSeats(eventID uuid.UUID, specs []SectionSpec, adjustments map[string]seatAdjust) ([]Seat, error) {
+func initSeats(eventID uuid.UUID, specs []SectionSpec, adjustments map[string]seatAdjust) ([]Seat, error) {
 	total := 0
 	for _, s := range specs {
 		total += s.Rows * s.SeatsPerRow

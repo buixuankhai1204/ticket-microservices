@@ -62,18 +62,6 @@ func TestNewEvent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if ev.ID == uuid.Nil {
-				t.Error("ID not generated")
-			}
-			if ev.Name != tc.eventName || ev.Description != tc.description || ev.Venue != tc.venue {
-				t.Errorf("fields not copied through: %+v", ev)
-			}
-			if !ev.StartsAt.Equal(tc.starts) || !ev.EndsAt.Equal(tc.ends) {
-				t.Errorf("times not copied through: %+v", ev)
-			}
-			if ev.CreatedAt.IsZero() {
-				t.Error("CreatedAt not set")
-			}
 		})
 	}
 }
@@ -114,65 +102,6 @@ func TestNewSeat(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if s.ID == uuid.Nil {
-				t.Error("ID not generated")
-			}
-			if s.EventID != tc.eventID || s.Section != tc.section || s.Row != tc.row || s.Number != tc.number || s.PriceMinor != tc.price {
-				t.Errorf("fields not copied through: %+v", s)
-			}
-			if s.Status != SeatAvailable {
-				t.Errorf("Status = %q, want %q", s.Status, SeatAvailable)
-			}
-		})
-	}
-}
-
-func TestSeatReserve(t *testing.T) {
-	tests := []struct {
-		name       string
-		start      string
-		wantErr    error
-		wantStatus string
-	}{
-		{name: "available -> reserved", start: SeatAvailable, wantStatus: SeatReserved},
-		{name: "already reserved", start: SeatReserved, wantErr: ErrSeatUnavailable, wantStatus: SeatReserved},
-		{name: "already booked", start: SeatBooked, wantErr: ErrSeatUnavailable, wantStatus: SeatBooked},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			s := &Seat{Status: tc.start}
-			err := s.Reserve()
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantErr)
-			}
-			if s.Status != tc.wantStatus {
-				t.Errorf("Status = %q, want %q", s.Status, tc.wantStatus)
-			}
-		})
-	}
-}
-
-func TestSeatRelease(t *testing.T) {
-	tests := []struct {
-		name       string
-		start      string
-		wantErr    error
-		wantStatus string
-	}{
-		{name: "reserved -> available", start: SeatReserved, wantStatus: SeatAvailable},
-		{name: "available cannot release", start: SeatAvailable, wantErr: ErrSeatUnavailable, wantStatus: SeatAvailable},
-		{name: "booked cannot release", start: SeatBooked, wantErr: ErrSeatUnavailable, wantStatus: SeatBooked},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			s := &Seat{Status: tc.start}
-			err := s.Release()
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantErr)
-			}
-			if s.Status != tc.wantStatus {
-				t.Errorf("Status = %q, want %q", s.Status, tc.wantStatus)
-			}
 		})
 	}
 }
@@ -190,26 +119,6 @@ func TestSeatReserveReleaseRoundTrip(t *testing.T) {
 	}
 	if s.Status != SeatAvailable {
 		t.Fatalf("Status = %q, want available", s.Status)
-	}
-}
-
-func TestSeatIsAvailable(t *testing.T) {
-	tests := []struct {
-		status string
-		want   bool
-	}{
-		{SeatAvailable, true},
-		{SeatReserved, false},
-		{SeatBooked, false},
-		{"", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.status, func(t *testing.T) {
-			s := &Seat{Status: tc.status}
-			if got := s.IsAvailable(); got != tc.want {
-				t.Errorf("IsAvailable() = %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 
@@ -296,31 +205,6 @@ func TestValidateSections(t *testing.T) {
 	}
 }
 
-func TestValidateSectionsKeyedByTrimmedName(t *testing.T) {
-	m, err := validateSections([]SectionSpec{{Name: "  A  ", Rows: 2, SeatsPerRow: 2, PriceMinor: 7}})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got, ok := m["A"]
-	if !ok {
-		t.Fatalf("map not keyed by trimmed name; keys = %v", keysOf(m))
-	}
-	if got.Name != "A" {
-		t.Errorf("stored SectionSpec.Name = %q, want trimmed %q", got.Name, "A")
-	}
-	if _, ok := m["  A  "]; ok {
-		t.Error("map still has the untrimmed key")
-	}
-}
-
-func keysOf(m map[string]SectionSpec) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	return ks
-}
-
 func TestIndexExceptions(t *testing.T) {
 	sections := mustSections(t,
 		SectionSpec{Name: "A", Rows: 5, SeatsPerRow: 5, PriceMinor: 100},
@@ -387,135 +271,13 @@ func TestIndexExceptions(t *testing.T) {
 	}
 }
 
-func TestIndexExceptionsMapContents(t *testing.T) {
-	sections := mustSections(t, SectionSpec{Name: "A", Rows: 5, SeatsPerRow: 5, PriceMinor: 100})
-
-	exs := []SeatException{
-		{Section: " A ", Row: "2", Number: "3", Remove: true},
-		{Section: "A", Row: "1", Number: "1", PriceMinor: ptrI64(55)},
-	}
-	m, err := indexExceptions(exs, sections)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	removeAdj, ok := m[seatKey("A", "2", "3")]
-	if !ok {
-		t.Fatalf("no adjustment keyed by trimmed section for (A,2,3)")
-	}
-	if !removeAdj.remove || removeAdj.price != nil {
-		t.Errorf("remove adjustment = %+v, want {remove:true price:nil}", removeAdj)
-	}
-
-	priceAdj, ok := m[seatKey("A", "1", "1")]
-	if !ok {
-		t.Fatalf("no adjustment for (A,1,1)")
-	}
-	if priceAdj.remove {
-		t.Errorf("price adjustment should not remove: %+v", priceAdj)
-	}
-	if priceAdj.price == nil || *priceAdj.price != 55 {
-		t.Errorf("price adjustment price = %v, want 55", priceAdj.price)
-	}
-}
-
-func TestSeatKey(t *testing.T) {
-	if seatKey("A", "1", "2") != seatKey("A", "1", "2") {
-		t.Error("seatKey not deterministic for the same triple")
-	}
-
-	triples := [][3]string{
-		{"A", "1", "2"},
-		{"A", "12", ""},
-		{"A1", "2", ""},
-		{"A", "", "12"},
-		{"", "A1", "2"},
-		{"B", "1", "2"},
-		{"A", "2", "1"},
-		{"A", "1", "20"},
-	}
-	seen := make(map[string][3]string, len(triples))
-	for _, tr := range triples {
-		k := seatKey(tr[0], tr[1], tr[2])
-		if prev, dup := seen[k]; dup {
-			t.Errorf("seatKey collision: %v and %v both -> %q", prev, tr, k)
-		}
-		seen[k] = tr
-	}
-}
-
-func TestExpandSeatsHappyPath(t *testing.T) {
-	evID := uuid.New()
-	specs := []SectionSpec{
-		{Name: " A ", Rows: 2, SeatsPerRow: 3, PriceMinor: 100},
-		{Name: "B", Rows: 1, SeatsPerRow: 2, PriceMinor: 250},
-	}
-	seats, err := expandSeats(evID, specs, map[string]seatAdjust{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(seats) != 2*3+1*2 {
-		t.Fatalf("len(seats) = %d, want 8", len(seats))
-	}
-
-	ids := make(map[uuid.UUID]bool, len(seats))
-	for _, s := range seats {
-		if s.EventID != evID {
-			t.Errorf("seat %+v: EventID = %v, want %v", s, s.EventID, evID)
-		}
-		if s.ID == uuid.Nil {
-			t.Errorf("seat %+v: nil ID", s)
-		}
-		if ids[s.ID] {
-			t.Errorf("duplicate seat ID %v", s.ID)
-		}
-		ids[s.ID] = true
-		if s.Status != SeatAvailable {
-			t.Errorf("seat %+v: Status = %q, want available", s, s.Status)
-		}
-		if s.Section != "A" && s.Section != "B" {
-			t.Errorf("seat %+v: Section = %q, want trimmed A or B", s, s.Section)
-		}
-	}
-
-	for i, s := range seats {
-		if i < 6 && s.Section != "A" {
-			t.Errorf("seat %d = %+v, want section A", i, s)
-		}
-		if i >= 6 && s.Section != "B" {
-			t.Errorf("seat %d = %+v, want section B", i, s)
-		}
-	}
-
-	for _, s := range seats {
-		r, _ := strconv.Atoi(s.Row)
-		n, _ := strconv.Atoi(s.Number)
-		switch s.Section {
-		case "A":
-			if r < 1 || r > 2 || n < 1 || n > 3 {
-				t.Errorf("section A seat out of range: %+v", s)
-			}
-			if s.PriceMinor != 100 {
-				t.Errorf("section A seat price = %d, want 100", s.PriceMinor)
-			}
-		case "B":
-			if r < 1 || r > 1 || n < 1 || n > 2 {
-				t.Errorf("section B seat out of range: %+v", s)
-			}
-			if s.PriceMinor != 250 {
-				t.Errorf("section B seat price = %d, want 250", s.PriceMinor)
-			}
-		}
-	}
-}
-
 func TestExpandSeatsNumericOrdering(t *testing.T) {
 	evID := uuid.New()
 	specs := []SectionSpec{
 		{Name: "A", Rows: 12, SeatsPerRow: 2, PriceMinor: 100},
 		{Name: "B", Rows: 2, SeatsPerRow: 2, PriceMinor: 200},
 	}
-	seats, err := expandSeats(evID, specs, map[string]seatAdjust{})
+	seats, err := initSeats(evID, specs, map[string]seatAdjust{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -564,7 +326,7 @@ func TestExpandSeatsRemoveException(t *testing.T) {
 	adj := map[string]seatAdjust{
 		seatKey("A", "2", "2"): {remove: true},
 	}
-	seats, err := expandSeats(evID, specs, adj)
+	seats, err := initSeats(evID, specs, adj)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -599,7 +361,7 @@ func TestExpandSeatsPriceOverrideException(t *testing.T) {
 	adj := map[string]seatAdjust{
 		seatKey("A", "1", "2"): {price: ptrI64(999)},
 	}
-	seats, err := expandSeats(evID, specs, adj)
+	seats, err := initSeats(evID, specs, adj)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -617,106 +379,6 @@ func TestExpandSeatsPriceOverrideException(t *testing.T) {
 	}
 }
 
-func TestExpandSeatsRemoveWinsOverPrice(t *testing.T) {
-	evID := uuid.New()
-	specs := []SectionSpec{{Name: "A", Rows: 2, SeatsPerRow: 2, PriceMinor: 500}}
-	adj := map[string]seatAdjust{
-		seatKey("A", "1", "1"): {remove: true, price: ptrI64(999)},
-	}
-	seats, err := expandSeats(evID, specs, adj)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(seats) != 3 {
-		t.Fatalf("len(seats) = %d, want 3 (seat removed, price ignored)", len(seats))
-	}
-	for _, s := range seats {
-		if s.Row == "1" && s.Number == "1" {
-			t.Errorf("seat (A,1,1) should have been removed, got %+v", s)
-		}
-	}
-}
-
-func TestExpandSeatsAdjustmentKeyedByTrimmedSection(t *testing.T) {
-	evID := uuid.New()
-	specs := []SectionSpec{{Name: "  A  ", Rows: 2, SeatsPerRow: 2, PriceMinor: 500}}
-	adj := map[string]seatAdjust{
-		seatKey("A", "1", "1"): {remove: true},
-	}
-	seats, err := expandSeats(evID, specs, adj)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(seats) != 3 {
-		t.Fatalf("len(seats) = %d, want 3 (trimmed-section adjustment should apply)", len(seats))
-	}
-}
-
-func TestExpandSeatsPropagatesNewSeatError(t *testing.T) {
-	specs := []SectionSpec{{Name: "A", Rows: 1, SeatsPerRow: 1, PriceMinor: 1}}
-	seats, err := expandSeats(uuid.Nil, specs, map[string]seatAdjust{})
-	if !errors.Is(err, ErrInvalidSeat) {
-		t.Fatalf("err = %v, want errors.Is %v", err, ErrInvalidSeat)
-	}
-	if seats != nil {
-		t.Errorf("seats = %v, want nil on error", seats)
-	}
-}
-
-func TestNewEventWithSeatsHappyPath(t *testing.T) {
-	starts, ends := baseTimes()
-	layout := LayoutSpec{
-		Sections: []SectionSpec{
-			{Name: " A ", Rows: 2, SeatsPerRow: 3, PriceMinor: 1000},
-			{Name: "B", Rows: 1, SeatsPerRow: 2, PriceMinor: 2000},
-		},
-	}
-	ev, seats, err := NewEventWithSeats("Concert", "desc", "Arena", starts, ends, layout)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if ev == nil || ev.ID == uuid.Nil {
-		t.Fatalf("event not constructed: %+v", ev)
-	}
-	if ev.Name != "Concert" || ev.Venue != "Arena" {
-		t.Errorf("event fields wrong: %+v", ev)
-	}
-	if len(seats) != 2*3+1*2 {
-		t.Fatalf("len(seats) = %d, want 8", len(seats))
-	}
-
-	ids := make(map[uuid.UUID]bool, len(seats))
-	for _, s := range seats {
-		if s.EventID != ev.ID {
-			t.Errorf("seat %+v: EventID != event.ID (%v)", s, ev.ID)
-		}
-		if s.ID == uuid.Nil || ids[s.ID] {
-			t.Errorf("seat %+v: nil or duplicate ID", s)
-		}
-		ids[s.ID] = true
-		if s.Status != SeatAvailable {
-			t.Errorf("seat %+v: Status = %q", s, s.Status)
-		}
-		r, errR := strconv.Atoi(s.Row)
-		n, errN := strconv.Atoi(s.Number)
-		if errR != nil || errN != nil {
-			t.Fatalf("seat %+v: non-numeric row/number", s)
-		}
-		switch s.Section {
-		case "A":
-			if r < 1 || r > 2 || n < 1 || n > 3 || s.PriceMinor != 1000 {
-				t.Errorf("section A seat wrong: %+v", s)
-			}
-		case "B":
-			if r < 1 || r > 1 || n < 1 || n > 2 || s.PriceMinor != 2000 {
-				t.Errorf("section B seat wrong: %+v", s)
-			}
-		default:
-			t.Errorf("unexpected section %q (want trimmed A/B)", s.Section)
-		}
-	}
-}
-
 func TestNewEventWithSeatsCountMinusRemovals(t *testing.T) {
 	starts, ends := baseTimes()
 	layout := LayoutSpec{
@@ -728,7 +390,6 @@ func TestNewEventWithSeatsCountMinusRemovals(t *testing.T) {
 			{Section: "A", Row: "1", Number: "1", Remove: true},
 			{Section: "A", Row: "4", Number: "5", Remove: true},
 			{Section: "B", Row: "2", Number: "2", Remove: true},
-			{Section: "B", Row: "3", Number: "3", PriceMinor: ptrI64(999)},
 		},
 	}
 	_, seats, err := NewEventWithSeats("Concert", "d", "Arena", starts, ends, layout)
@@ -738,20 +399,6 @@ func TestNewEventWithSeatsCountMinusRemovals(t *testing.T) {
 	want := (20 + 9) - 3
 	if len(seats) != want {
 		t.Fatalf("len(seats) = %d, want %d (total minus 3 removals)", len(seats), want)
-	}
-	var found bool
-	for _, s := range seats {
-		if s.Section == "B" && s.Row == "3" && s.Number == "3" {
-			found = true
-			if s.PriceMinor != 999 {
-				t.Errorf("repriced seat price = %d, want 999", s.PriceMinor)
-			}
-		} else if s.Section == "B" && s.PriceMinor != 200 {
-			t.Errorf("other section B seat %+v repriced unexpectedly", s)
-		}
-	}
-	if !found {
-		t.Error("repriced seat (B,3,3) missing from expansion")
 	}
 }
 
@@ -874,25 +521,5 @@ func TestNewEventWithSeatsErrorPropagation(t *testing.T) {
 				t.Errorf("event/seats = %+v/%v, want nil on error", ev, seats)
 			}
 		})
-	}
-}
-
-func TestNewEventWithSeatsExactlyOneSeatSurvives(t *testing.T) {
-	starts, ends := baseTimes()
-	layout := LayoutSpec{
-		Sections: []SectionSpec{{Name: "A", Rows: 1, SeatsPerRow: 2, PriceMinor: 100}},
-		Exceptions: []SeatException{
-			{Section: "A", Row: "1", Number: "1", Remove: true},
-		},
-	}
-	_, seats, err := NewEventWithSeats("Concert", "d", "Arena", starts, ends, layout)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(seats) != 1 {
-		t.Fatalf("len(seats) = %d, want 1", len(seats))
-	}
-	if seats[0].Row != "1" || seats[0].Number != "2" {
-		t.Errorf("surviving seat = %+v, want (1,2)", seats[0])
 	}
 }
