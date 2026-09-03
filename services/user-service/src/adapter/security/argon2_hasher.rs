@@ -32,3 +32,31 @@ impl PasswordHasher for Argon2PasswordHasher {
             .is_ok())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_and_verify() {
+        let hasher = Argon2PasswordHasher::new();
+        let password = "my_secure_password";
+        let hash = hasher.hash(password).expect("Hashing failed");
+        assert!(hasher.verify(password, &hash).expect("Verification failed"));
+        assert!(!hasher
+            .verify("wrong_password", &hash)
+            .expect("Verification failed"));
+    }
+
+    #[test]
+    fn test_hash_uniqueness() {
+        let hasher = Argon2PasswordHasher::new();
+        let password = "my_secure_password";
+        let hash1 = hasher.hash(password).expect("Hashing failed");
+        let hash2 = hasher.hash(password).expect("Hashing failed");
+        assert_ne!(
+            hash1, hash2,
+            "Hashes should be unique due to different salts"
+        );
+    }
+}
