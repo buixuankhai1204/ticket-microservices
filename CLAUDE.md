@@ -4,9 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This repository is in early scaffolding: it currently contains only the Kong API Gateway
-configuration (`kong/kong.yml`). No service code exists yet. There are no build, lint, or
-test commands to run until services are added — do not invent any.
+Three services exist: `user-service` (Rust/axum — register, login, profile, list; publishes
+`UserCreated` + `UserLoggedIn` through the outbox), `event-service` (Go — events + seat reads,
+paginated), and `analytics-service` (Go — consumes `user.events` into read models). Each has
+its own `go.mod` / `Cargo.toml` — build/lint per service (`go build ./...` + `go vet` +
+`gofmt` for Go; `cargo build` + `cargo clippy -- -D warnings` + `cargo fmt` for Rust). The
+whole stack runs via `docker-compose.yml` (Kong, a Postgres per service, single-node Kafka,
+Kafka Connect + Debezium). `booking-service` — the core seat-reservation saga — is **not yet
+built**.
 
 ## Architecture (as defined by the gateway)
 
@@ -67,7 +72,9 @@ Every service (Go or Rust) follows Clean Architecture, dependencies pointing inw
   and owns the process lifecycle (server startup, graceful shutdown).
 
 Use `/new-go-service` or `/new-rust-service` to scaffold a service in this shape; use
-`/new-go-api-endpoint` / `/new-rust-api-endpoint` to add an endpoint to one afterward, and
+`/new-go-api-endpoint` / `/new-rust-api-endpoint` to add an operation to one afterward
+(run `/design-saga` first for anything cross-service); `/new-migration` for a schema change;
+`/add-caching`, `/add-resilience`, `/add-observability` to layer in those concerns; and
 `/scalability-review` / `/review-concurrency` to audit one.
 
 ### Endpoint conventions: entity IDs, response mapping, transactions, pagination
@@ -110,6 +117,43 @@ add, not just the ones that happen to need them:
   `{ "data": [...], "pagination": { "limit", "offset", "total", "has_more" } }` — never a bare
   array, so a client can tell it's paginated without reading the docs.
 
+### Schema migrations: zero-downtime, expand/contract
+
+Migrations are timestamped SQL files under `services/<svc>/migrations/`, applied on startup
+(Go: an embedded runner wrapping each file in one transaction + `schema_migrations`; Rust:
+`sqlx::migrate!`). A deploy runs the new schema while old-version pods still serve, so a
+migration must be safe for the **currently running** code:
+
+- **Additive changes ship in one file** — a new table; a nullable column, or `NOT NULL` with
+  a constant `DEFAULT`; a `CHECK`/`FK` added `NOT VALID` then `VALIDATE`d later; a new index.
+- **Breaking changes are expand/contract across ≥2 deploys** — never `DROP`/`RENAME` a
+  column/table, narrow a type, or add a validated constraint in the same migration as (or
+  before) the code that stops depending on the old shape. Split: expand (add new, keep old) →
+  backfill → switch code → contract (drop old).
+- Index every FK column and every column a list endpoint filters/sorts on. `CREATE INDEX
+  CONCURRENTLY` needs a `-- +migrate NoTransaction` first line and a runner that honours it.
+- IDs are `UUID DEFAULT gen_random_uuid()`; money is integer minor units; enums are `TEXT` +
+  `CHECK`. `outbox_events` has no `published_at`; `processed_events` is unique on the event id.
+
+Author with `/new-migration`; `migration-reviewer` and the `migration-safety-check.sh` hook
+enforce the above.
+
+### Observability: request IDs and trace context that survive the Kafka hop
+
+Every service (per scaffold, or retrofit with `/add-observability`):
+
+- Emits **one structured access-log line per request** with a `request_id` (inbound
+  `X-Request-Id` reused or a fresh UUID, echoed back and put on the context) — not just
+  process start/stop. Never logs the `Authorization` header, a raw JWT, or a PII/payment body.
+- Runs an **OTel server span that continues the inbound W3C `traceparent`** (Kong/the client
+  started the trace), plus spans per use case and per repo call, exported over OTLP.
+- Carries **trace context across the saga**: the publishing use case writes the current
+  `traceparent` into the outbox row's `tracecontext` column; the Debezium SMT maps it to a
+  Kafka header; the consumer extracts it and starts its processing span from that remote
+  context. Without this, a client action is two disconnected traces, not one.
+- Exposes Prometheus `/metrics` (RED on HTTP; processed/retried/dead-lettered counters and
+  lag for consumers), separate from `/healthz` and `/readyz`.
+
 ## Cross-service communication: choreography saga over Kafka
 
 Cross-service state changes (e.g. a booking needing a seat reserved in `event-service`) go
@@ -148,10 +192,11 @@ Three supporting patterns are required, not optional, for any publish/consume co
   Connect reads the WAL via a logical replication slot and publishes each insert through the
   **Outbox Event Router SMT** — sub-second latency, near-zero query load on the write DB,
   scaling independently of the write path. Table shape: `id, aggregate_id, aggregate_type,
-  event_type, payload JSONB, created_at` (no `published_at` — nothing stamps rows). The SMT
-  maps `aggregate_id` → Kafka message key (so a partition preserves per-aggregate order),
-  `aggregate_type` → topic **`<aggregate_type>.events`**, `event_type`/`id` → headers,
-  `payload` → the message value (unwrapped). The connector is set `skipped.operations=u,d,t`
+  event_type, payload JSONB, created_at` (no `published_at` — nothing stamps rows; plus an
+  optional nullable `tracecontext TEXT` once `/add-observability` has run). The SMT maps
+  `aggregate_id` → Kafka message key (so a partition preserves per-aggregate order),
+  `aggregate_type` → topic **`<aggregate_type>.events`**, `event_type`/`id` (and
+  `tracecontext` → `traceparent`) → headers, `payload` → the message value (unwrapped). The connector is set `skipped.operations=u,d,t`
   (inserts only), so a service writes the row and **deletes it again in the same transaction**
   to keep the table empty — the WAL still carries the insert. Connector defs live in
   `debezium/`, registered by the `connect-init` one-shot in `docker-compose`.
@@ -171,11 +216,17 @@ Client libraries: `segmentio/kafka-go` for Go services, `rdkafka` for Rust servi
 **consumers**. The publish side is CDC (Debezium), so there is no producer client library on
 the publish path.
 
-Wiring a publish or consume step is folded into `/new-go-api-endpoint` /
-`/new-rust-api-endpoint` — pass `publish:<EventName>:<aggregate_type>` and/or
-`consume:<EventName>:<topic>` alongside (or instead of) `http:<METHOD>:<path>`. For a
-`publish:` the skill first asks which delivery guarantee the event needs and which services
-will consume it.
+**Design the saga before wiring it.** Any state change that spans services goes through
+`/design-saga <name>` first — it writes `docs/sagas/<name>.md` with the event catalog
+(name, `aggregate_type`, topic, delivery guarantee, payload), the happy path, **every**
+failure sequence, the compensation map (a compensation is a new forward transaction, not a
+rollback), the stuck-saga timeout/reaper policy, and the topic/connector infra delta. That
+artifact is what `saga-consistency-reviewer` and `e2e-saga-tester` check the implementation
+against. Skip it only for a plain `http:` operation on one service.
+
+Wiring each step is then `/new-go-api-endpoint` / `/new-rust-api-endpoint` — pass
+`publish:<EventName>:<aggregate_type>` and/or `consume:<EventName>:<topic>` alongside (or
+instead of) `http:<METHOD>:<path>`, once per participant step listed in the design.
 
 Implemented so far (reference these when wiring a new step): `user-service` emits two events on
 `aggregate_type = "user"` → the `user.events` topic — `UserCreated` on the
@@ -193,113 +244,107 @@ group's `event_type` (guard on the header) rather than dead-lettering it; only p
 services (`event-service`, `analytics-service`) follow the usecase-owns-the-transaction shape
 with the `Repository` port in `internal/platform/port/`.
 
-Sketched next: `booking-service` publishes `BookingRequested` → `event-service` reserves the
-seat and publishes `SeatReserved`/`SeatReservationFailed` → `booking-service` confirms or
-compensates (cancels) the booking → `analytics-service` consumes the final outcome as a read
-model only.
+Sketched next (design it with `/design-saga seat-reservation` before wiring): `booking-service`
+publishes `BookingRequested` → `event-service` reserves the seat and publishes
+`SeatReserved`/`SeatReservationFailed` → `booking-service` confirms or compensates (cancels)
+the booking → `analytics-service` consumes the final outcome as a read model only.
 
-## Claude Code tooling already set up for this repo
+## Claude Code tooling set up for this repo
 
-Skills (`.claude/skills/`, invoked as `/name`):
+All of it lives in `.claude/` (skills, agents, hooks) — the zero-setup config anyone who
+clones this repo gets. There is **no plugin mirror**; a new convention updates CLAUDE.md and
+the affected skill(s)/agent(s), nothing else.
+
+### Skills (`.claude/skills/`, invoked as `/name`)
 
 | Skill | Use for |
 |---|---|
-| `new-go-service` / `new-rust-service` | Scaffold a new service in Clean Architecture |
-| `new-go-api-endpoint` / `new-rust-api-endpoint` | Add a business operation to a service: a REST endpoint (`http:`), a Kafka saga step (`publish:` / `consume:`), or both |
-| `scalability-review` | Read-only audit: statelessness, pool sizing, N+1, missing caching |
-| `review-concurrency` | Read-only audit: race conditions, oversell/double-booking |
+| `new-go-service` / `new-rust-service` | Scaffold a new service in Clean Architecture, with pooling, health, graceful shutdown, request-ID logging, OTel tracing, `/metrics`, and the migrations runner wired in |
+| `design-saga` | **Before** any cross-service `publish:`/`consume:` — writes `docs/sagas/<name>.md`: event catalog, happy + failure sequences, compensation map, stuck-saga policy, infra delta |
+| `new-go-api-endpoint` / `new-rust-api-endpoint` | Wire one operation through the layers: a REST endpoint (`http:`), a saga step (`publish:` / `consume:`), or both |
+| `new-migration` | Author a timestamped SQL migration, expand/contract-safe, indexed, reversible |
+| `add-caching` | Cache-aside Redis behind a `domain` port on a hot read path — TTL+jitter, fail-open, per-user keys, invalidation |
+| `add-resilience` | Timeout + capped retry-with-jitter + circuit breaker + bulkhead on an outbound `domain` port |
+| `add-observability` | Retrofit request-ID logs + OTel traces + `traceparent` across the outbox→Kafka→consumer hop + RED/consumer metrics |
+| `scalability-review` | Read-only audit: statelessness, pool sizing, N+1, missing caching/metrics, tx scope, shutdown |
+| `review-concurrency` | Read-only audit: race conditions, oversell/double-booking, tx ownership |
 
-Subagents (`.claude/agents/`, invoked via the Agent tool or by name):
+### Subagents (`.claude/agents/`, invoked via the Agent tool or by name)
 
 | Agent | Use for |
 |---|---|
-| `security-reviewer` | Read-only audit: injection, secrets, JWT/IDOR, log leakage |
-| `api-contract-reviewer` | Read-only, whole-repo audit: routes vs `kong.yml` drift |
-| `api-doc-sync` | Writer: generates/updates `docs/openapi/*.yaml` and the Postman collection from actual handler code |
-| `unit-test-writer` | Writer: unit tests for `domain` only (pure entities/invariants, no mocks, no DB), exhaustive edge cases |
-| `integration-test-writer` | Writer: integration tests against real Postgres — concurrency, idempotency, transaction atomicity |
+| `security-reviewer` | Read-only: injection, secrets, JWT trust boundary, IDOR, unsafe consumers, log/trace leakage, Kong footguns |
+| `api-contract-reviewer` | Read-only, whole-repo: HTTP routes vs `kong.yml` (path, method, port, auth, rate-limit plausibility) |
+| `saga-consistency-reviewer` | Read-only, whole-repo: the choreography graph — orphan events, missing topics/DLQs/connectors, missing compensations, non-idempotent consumers, partition-wedge risk, stuck sagas |
+| `migration-reviewer` | Read-only: migration files for rolling-deploy safety — lock-heavy DDL, breaking changes without expand/contract, `CONCURRENTLY` in a txn, missing indexes |
+| `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
+| `unit-test-writer` | Writer: `domain`-only unit tests (pure entities/invariants, no mocks, no DB), exhaustive edge cases |
+| `integration-test-writer` | Writer: integration tests vs real Postgres — oversell, idempotency, tx atomicity, compensation, reaper |
+| `e2e-saga-tester` | Drives an already-running `docker compose` stack through a saga via Kong and asserts DB + DLQ state, happy path and compensation path |
 
-`api-doc-sync` is the only writing agent — it keeps `docs/openapi/<service>.yaml` and
-`docs/postman/ticket-platform.postman_collection.json` in sync with implemented handlers,
-code always wins over the spec. It doesn't overlap with `api-contract-reviewer`, which checks
-code against `kong.yml`, not against API docs.
+`api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
+`docs/sagas/` artifact, checked by `saga-consistency-reviewer`. `api-contract-reviewer`
+checks code against `kong.yml`, not against the API docs — the two don't overlap.
 
-`/new-go-api-endpoint` and `/new-rust-api-endpoint` also bootstrap `swaggo`/`utoipa` on a
-service's first endpoint and annotate every endpoint after — this gives each service its own
-live, interactive Swagger UI (`/swagger/` for Go, `/swagger-ui` for Rust) independent of
-`api-doc-sync`, which currently reads source instead of that live endpoint. The two aren't
-wired together right now; ask before assuming `api-doc-sync` should switch to curling
-`swagger/doc.json`/`openapi.json` instead of parsing source.
+`/new-*-api-endpoint` bootstraps `swaggo`/`utoipa` on a service's first endpoint (live
+Swagger UI at `/swagger/` for Go, `/swagger-ui` for Rust). `api-doc-sync` still generates
+from source, not by curling that live endpoint — ask before changing that.
 
-`unit-test-writer` and `integration-test-writer` split by test *type*, not by language (both
-branch internally for Go/Rust, like the review agents do) — the two need genuinely different
-infrastructure (pure `domain` calls + no Docker vs. real Postgres via `testcontainers`), so
-keeping them separate stops a "quick unit test" request from accidentally pulling in Docker,
-and vice versa. `usecase` orchestration is `integration-test-writer`'s job now, not
-`unit-test-writer`'s: the use case owns the transaction, so a `pgx.Tx` / `PgConnection` can't
-be meaningfully faked. Use `unit-test-writer` after any `domain` change; use
-`integration-test-writer` after any `usecase` change and once a service has real endpoints or
-saga steps, since it needs something real to hit.
+`unit-test-writer` and `integration-test-writer` split by test *type*, not language.
+`usecase` orchestration is `integration-test-writer`'s job (the use case owns the
+transaction, so a `pgx.Tx` / `PgConnection` can't be faked). `e2e-saga-tester` is a third
+tier — the running multi-service stack, driven through Kong; it assumes the user brought the
+stack up. Use `unit-test-writer` after a `domain` change, `integration-test-writer` after a
+`usecase` change, `e2e-saga-tester` after a saga's steps are all wired.
 
-There is deliberately no "service builder" subagent — `new-go-service`/`new-rust-service` and
-the `new-*-api-endpoint` skills already cover guided code generation with the repo's
-conventions loaded as context; a separate subagent would duplicate them without adding
-isolation or safety benefits worth the redundancy.
+### Hooks (`.claude/settings.json` + `.claude/hooks/`)
 
-Hooks (`.claude/settings.json` + `.claude/hooks/`):
+- `pre-commit-check.sh` (`PreToolUse` on `Bash`) — only acts on a `git commit`. Lints/formats
+  the Go and Rust services with staged changes (`gofmt`/`go vet`,
+  `cargo fmt --check`/`cargo clippy -- -D warnings`), scoped to each service's own
+  `go.mod`/`Cargo.toml`; blocks the commit (exit 2) on failure. Missing toolchains are
+  skipped, not failed.
+- `clean-architecture-check.sh` (`PostToolUse` on `Write`/`Edit`) — for a file under a
+  service's `domain/`, `platform/port/`, `usecase/`, `adapter/http/`, `adapter/repository/`,
+  `adapter/cache/`, or `adapter/messaging/`, greps for imports that break the dependency rule
+  (`domain/` importing a driver/framework or `platform/port`; `platform/port/` importing
+  `usecase/`/`adapter/`; `usecase/` importing `adapter/`; `adapter/http/` or
+  `adapter/cache/` reaching into `adapter/repository/`). `cmd/main.go` / `main.rs` (the
+  composition root) is exempt.
+- `migration-safety-check.sh` (`PostToolUse` on `Write`/`Edit`) — for a just-written
+  `services/*/migrations/*.sql`, flags the grep-obvious rolling-deploy hazards (`ADD COLUMN
+  … NOT NULL` with no `DEFAULT`, `DROP COLUMN`, `ALTER COLUMN … TYPE`, `RENAME`,
+  `ADD CONSTRAINT` without `NOT VALID`, `CONCURRENTLY` without the `-- +migrate
+  NoTransaction` marker) with the expand/contract fix. `migration-reviewer` covers the rest.
 
-- `pre-commit-check.sh` (`PreToolUse` on `Bash`) — only acts when the command is a
-  `git commit`. Lints/formats just the Go and Rust services with staged changes
-  (`gofmt`/`go vet`, `cargo fmt --check`/`cargo clippy -- -D warnings`), scoped to each
-  service's own `go.mod`/`Cargo.toml`, and blocks the commit (exit 2) on failure. Missing
-  toolchains are skipped, not treated as failures.
-- `clean-architecture-check.sh` (`PostToolUse` on `Write`/`Edit`) — for any file under a
-  service's `domain/`, `platform/port/`, `usecase/`, `adapter/http/`, or `adapter/repository/`,
-  greps the just-written file for imports that violate the dependency rule above (e.g. `domain/`
-  importing `pgx`/`sqlx`/`net/http`/`axum` or `platform/port`, `platform/port/` importing
-  `usecase/`/`adapter/`, `usecase/` importing `adapter/` (it *may* import `pgx`/`pgxpool`/`sqlx`
-  now — it owns the transaction), `adapter/http/` reaching into `adapter/repository/` instead
-  of going through `usecase`).
-  Can't undo the edit (it already happened by the time `PostToolUse` fires) but surfaces the
-  violation to Claude immediately via exit 2, so it's fixed in the same turn instead of
-  surviving until a later review. `cmd/main.go`/`main.rs` (the composition root) is
-  intentionally exempt — it's allowed to import everything.
+`PostToolUse` hooks can't undo the write, but exit 2 surfaces the issue to Claude in the same
+turn. All three only gate actions Claude takes inside a Claude Code session — not edits or
+commits made directly in a terminal; a real `.git/hooks/pre-commit` would be needed for that
+and hasn't been added.
 
-Both only gate actions Claude takes inside a Claude Code session — they do not run for edits
-or commits made directly in a terminal/editor outside Claude Code; a real
-`.git/hooks/pre-commit` would be needed for that and hasn't been added.
-
-## `plugins/ticket-microservice-toolkit/`: the same tooling, packaged for distribution
-
-`.claude/` above is this repo's own zero-setup config. `plugins/ticket-microservice-toolkit/`
-repackages the same skills/agents/hooks as an installable Claude Code plugin
-(`.claude-plugin/plugin.json` + `skills/` + `agents/` + `hooks/hooks.json`, hook commands
-using `${CLAUDE_PLUGIN_ROOT}` instead of `$CLAUDE_PROJECT_DIR`) so the conventions can be
-reused in a sibling repo instead of copy-pasted. See that directory's own `README.md` for
-prerequisites and how to test it locally (`claude --plugin-dir
-./plugins/ticket-microservice-toolkit`). The two currently duplicate content on purpose —
-`.claude/` isn't wired to reference the plugin instead, since that wasn't verified to
-auto-load without an explicit `/plugin install` step.
+There is deliberately no "service builder" subagent — the scaffold skills already cover
+guided generation with the repo's conventions as context.
 
 ## Recommended Claude Code workflow for this repo
 
-These are built-in Claude Code features, not project config — noted here so the right one
-gets reached for instead of skipped:
+`docs/development-workflow.md` is the full SDLC — which skill/agent/hook runs at each step
+for a new service, a new saga, an endpoint, a migration, and the pre-PR review gate. The
+notes below are just the built-in Claude Code features it leans on:
 
 - **Plan mode** (`/plan`, or `Shift+Tab` to cycle modes) — use before `/new-go-service`,
   `/new-rust-service`, or a `/new-*-api-endpoint` invocation carrying `publish:` / `consume:`
   (a saga step touches multiple files across layers plus Debezium / topic-init config in one
   action), so reviewing the plan first is cheaper than reviewing the diff after. Not needed for
   a plain `http:` `/new-*-api-endpoint` on an existing, well-understood service.
-- **Extended thinking** (`/effort high`, or the word "ultrathink" in a prompt) — worth reaching
-  for on the genuinely hard design calls in this domain: the seat-reservation locking strategy
-  in `booking-service` (see `/review-concurrency`), or working out a new saga's event sequence
-  and compensation path before wiring it with a `/new-*-api-endpoint` `publish:` / `consume:`
-  step. Not needed for routine CRUD endpoints.
+- **Extended thinking** (`/effort high`, or the word "ultrathink" in a prompt) — `/design-saga`
+  runs with it by default (the failure sequences and compensation ordering are the hard part);
+  also reach for it on the seat-reservation locking strategy (see `/review-concurrency`).
+  Not needed for routine CRUD endpoints or a scaffold.
 - **Background tasks** — once services exist, run each service's test suite as a background
   task when working across more than one service at a time (e.g. verifying `booking-service`
   and `event-service` both still pass after a saga change), instead of blocking on one before
-  starting the next.
+  starting the next. `e2e-saga-tester` against a running stack is a good background job while
+  you keep editing.
 - **Checkpoints** (`Esc` `Esc`, or `/rewind`) — useful for backing out of an exploratory
   scaffold that went the wrong direction, but they don't replace git and don't capture
   filesystem changes made outside Claude Code (`rm`/`mv`/`cp` in a terminal, edits in another

@@ -1,9 +1,0 @@
-{
-  "name": "ticket-microservice-toolkit",
-  "description": "Clean Architecture + Kafka choreography-saga scaffolding, review, and enforcement for the Go/Rust ticket-booking microservices in this org",
-  "version": "1.0.0",
-  "author": {
-    "name": "khaibuixuan"
-  },
-  "keywords": ["clean-architecture", "microservices", "go", "rust", "kafka", "saga", "kong"]
-}

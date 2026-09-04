@@ -99,9 +99,18 @@ failure — don't block on a missing local tool. `docs/curl-examples.md` is plai
 no schema to validate against; instead re-read it and confirm every fenced command actually
 matches the route/DTO you just scanned.
 
+## Scope boundary
+
+You document the **synchronous HTTP surface** only. The Kafka side of the platform —
+event schemas, topics, consumer groups, the compensation flow — is captured in
+`docs/sagas/*.md` by `/design-saga` and audited by `saga-consistency-reviewer`; do not
+duplicate or try to own it. You still generate docs from **source code**, not by curling the
+live `/swagger/doc.json` / `/api-docs/openapi.json` — that switch hasn't been decided (see
+the repo's swaggo notes); if you think it's worth doing, raise it, don't just do it.
+
 ## Output
 
 Summarize what was added, updated, and flagged, per service, across all three outputs
 (OpenAPI, Postman, curl-examples). Note for the user: `api-contract-reviewer` checks that
-service code matches `kong.yml`; this agent's job is keeping docs *about* that code in sync —
-the two don't overlap, and neither replaces the other.
+service code matches `kong.yml`; this agent keeps docs *about* that code in sync — the two
+don't overlap, and neither replaces the other.

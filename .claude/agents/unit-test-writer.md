@@ -38,7 +38,8 @@ For the `domain` layer (entity constructors, methods, invariants):
 - Value objects like `Pagination`: `NewPagination` rejects `offset < 0` and `limit < 1`,
   clamps `limit` to `MaxLimit`, and applies the documented defaults for absent input.
 - If an entity constructor mints a UUID or records a pending event, assert the ID is a v4
-  UUID (not zero) and the event's fields match the entity's.
+  UUID (not zero) and the event's fields (`event_id`, `aggregate_id`, and the payload keys
+  the `docs/sagas/*.md` catalog lists) match the entity's.
 
 ## After writing
 

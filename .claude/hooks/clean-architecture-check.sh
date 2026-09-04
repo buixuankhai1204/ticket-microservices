@@ -1,7 +1,8 @@
 #!/bin/bash
 # PostToolUse hook: after Claude writes/edits a file, checks the Clean Architecture
-# dependency rule (see CLAUDE.md) for files under domain/, usecase/, adapter/http/, or
-# adapter/repository/ in any Go or Rust service. Runs after the write already happened
+# dependency rule (see CLAUDE.md) for files under domain/, platform/port/, usecase/,
+# adapter/http/, adapter/repository/, adapter/cache/, or adapter/messaging/ in any Go or
+# Rust service. Runs after the write already happened
 # (PostToolUse can't block it like PreToolUse can), so it can't undo the edit — but exit
 # 2 surfaces the violation to Claude immediately, so it gets fixed in the same turn
 # instead of surviving until a later /scalability-review or PR review.
@@ -27,6 +28,8 @@ case "$REL_PATH" in
   */usecase/*) LAYER=usecase ;;
   */adapter/http/*) LAYER=http ;;
   */adapter/repository/*) LAYER=repository ;;
+  */adapter/cache/*) LAYER=cache ;;
+  */adapter/messaging/*) LAYER=messaging ;;
   *) exit 0 ;;
 esac
 
@@ -63,6 +66,17 @@ if [ "$LANG" = "go" ]; then
     repository)
       hit '"[^"]*/usecase/|"[^"]*/adapter/http/' && add_violation "adapter/repository/ imports usecase/ or adapter/http/ — repository adapters must only depend on domain (the interface they implement), never on outer layers."
       ;;
+    cache)
+      # The cache adapter implements a pure domain port (Cache) against Redis. It may
+      # import the redis driver + domain; it must not reach into usecase or sibling adapters.
+      hit '"[^"]*/usecase(/|")|"[^"]*/adapter/http(/|")|"[^"]*/adapter/repository(/|")' && add_violation "adapter/cache/ imports usecase or a sibling adapter — a cache adapter only implements a domain port (Cache), so it may depend on domain (and the redis driver), never on outer or sibling layers."
+      ;;
+    messaging)
+      # The messaging adapter (Kafka consumer/DLQ) is an inbound adapter: it may hold the
+      # Kafka client and call the usecase, like adapter/http does. It must not bypass the
+      # usecase to touch the repository directly.
+      hit '"[^"]*/adapter/repository(/|")' && add_violation "adapter/messaging/ imports adapter/repository/ directly — a consumer must drive its use case (which owns the transaction and the processed_events check), not call the repository itself."
+      ;;
   esac
 else
   DRIVER_OR_FRAMEWORK='use[[:space:]]+axum|use[[:space:]]+sqlx|use[[:space:]]+rdkafka|use[[:space:]]+tokio::net'
@@ -86,6 +100,12 @@ else
       ;;
     repository)
       hit 'use[[:space:]]+crate::usecase|use[[:space:]]+crate::adapter::http' && add_violation "adapter/repository/ imports usecase or adapter::http — repository adapters must only depend on domain (the trait they implement), never on outer layers."
+      ;;
+    cache)
+      hit 'use[[:space:]]+crate::usecase|use[[:space:]]+crate::adapter::http|use[[:space:]]+crate::adapter::repository' && add_violation "adapter/cache/ imports usecase or a sibling adapter — a cache adapter only implements a domain port (Cache), so it may depend on crate::domain (and the redis driver), never on outer or sibling layers."
+      ;;
+    messaging)
+      hit 'use[[:space:]]+crate::adapter::repository' && add_violation "adapter/messaging/ imports adapter::repository directly — a consumer must drive its use case (which owns the transaction and the processed_events check), not call the repository itself."
       ;;
   esac
 fi

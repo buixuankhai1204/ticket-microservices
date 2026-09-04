@@ -20,6 +20,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/clean-architecture-check.sh",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/migration-safety-check.sh",
+            "timeout": 15
           }
         ]
       }

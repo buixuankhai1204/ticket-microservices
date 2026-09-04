@@ -1,112 +1,117 @@
 ---
 name: new-rust-service
-description: Scaffold a new Rust microservice for this repo in Clean Architecture (domain / usecase / adapter / main), with connection pooling, health checks, graceful shutdown, and structured logging already wired in. Use when starting a brand-new Rust service (e.g. event-service).
+description: Scaffold a new Rust microservice for this repo in Clean Architecture (domain / platform/port / usecase / adapter / main) with connection pooling, health + readiness endpoints, graceful shutdown, structured per-request logging with x-request-id, OpenTelemetry tracing, a Prometheus /metrics endpoint, and sqlx migrations already wired in. Use when starting a brand-new Rust service.
 argument-hint: <service-name> [port]
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
 
-# New Rust Service
+# New Rust service
 
 ## Context
 - Gateway routing source of truth: @kong/kong.yml
 - Project conventions: @CLAUDE.md
-- Existing services: !`ls services 2>/dev/null || echo "(none yet)"`
+- Existing Rust service to mirror: !`ls -d services/*/Cargo.toml 2>/dev/null | xargs -n1 dirname 2>/dev/null || echo "(none yet)"`
 
 ## Arguments
-`$ARGUMENTS` — first token is the service name (must match a `name:` entry under
-`services:` in `kong/kong.yml`, e.g. `event-service`); optional second token overrides the
-port.
+`$ARGUMENTS` — first token is the service name (must match a `name:` under `services:` in
+`kong/kong.yml`); optional second token overrides the port.
 
 ## Instructions
 
-1. Look up `$ARGUMENTS`'s service name in `kong/kong.yml`. Use the `url` there for the port
-   and the route `paths` for the API prefix this service must handle itself
-   (`strip_path: false`, so do not strip the prefix in your router). If the service name isn't
-   in `kong.yml` yet, stop and tell the user to add it there first — the gateway config is the
-   source of truth for ports/routes in this repo.
-2. Scaffold under `services/<service-name>/` as its own crate, in **Clean Architecture**
-   layers. The dependency rule is strict: arrows only point inward, expressed in Rust as
-   "inner modules never `use` an outer module's concrete types, only traits they themselves
-   declare":
-   - `src/domain/` — entities (plain structs) and domain errors (e.g. `enum BookingError {
-     SeatUnavailable, .. }`), plus any **pure outbound-gateway trait** that names no driver
-     type (e.g. `trait PaymentGateway`), using `#[async_trait]` (crate `async-trait`) where
-     async so they're usable as `Arc<dyn Trait + Send + Sync>`. Zero imports of
-     `sqlx`/`axum`/`tokio` here. Business invariants live as methods on the entity (e.g.
-     `Seat::reserve(&mut self) -> Result<(), BookingError>`) — the entity enforces the rule,
-     not the caller. The `SeatRepository` trait does **not** live here: it names the DB
-     connection handle (`&mut PgConnection`), so it belongs in `src/platform/port.rs`.
-   - `src/platform/port.rs` — the port traits that name the connection handle, `SeatRepository`
-     above all. `mod port` may `use sqlx` (for `PgConnection`) and `crate::domain`; it must not
-     `use crate::adapter` or `crate::usecase`. Every method takes `&mut self`-free
-     `conn: &mut PgConnection` alongside its domain args.
-   - `src/usecase/` — one struct per use case (e.g. `BookSeatUseCase`), holding `Arc<dyn
-     SeatRepository>` (and other ports) **and a `PgPool`**, injected via `new()`. It **owns the
-     transaction boundary**: `let mut tx = self.db_pool.begin().await?;` (for a read, then
-     `sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?;`), threads `&mut *tx`
-     through every repository call, then `tx.commit().await?`. All non-DB work (entity
-     construction, Argon2 hashing, payload building) happens **before** `begin()` so a pooled
-     connection is never pinned across CPU-bound work. `use`s `domain`, `crate::platform::port`,
-     and `sqlx`; never `adapter`. See `/review-concurrency` for why one threaded `tx` matters
-     for booking-service specifically.
-   - `src/adapter/http/` — `axum` handlers and request/response DTOs. Depend on the `usecase`
-     struct through its public method signatures (or a small trait if you need to mock it in
-     handler tests); translate transport (status codes, JSON) at the edge, no business rules.
-   - `src/adapter/repository/postgres.rs` — implements the `crate::platform::port::SeatRepository`
-     trait using `sqlx`. Every method runs on the `&mut PgConnection` the usecase hands it (via
-     `&mut *tx`) and **never begins or commits a transaction of its own**. This is the only
-     module allowed to import `sqlx` — the DB driver is a detail, not something
-     `usecase`/`domain` should know exists (`usecase` names only `PgPool` / `PgConnection`, not
-     query APIs).
-   - `src/platform/` — cross-cutting infrastructure with no business meaning: DB pool
-     construction, tracing/logging setup, config loading (used only from `main.rs`), plus the
-     `port` module above (imported by `usecase` and the postgres adapter).
-   - `src/main.rs` — the **composition root**: the only file that wires every layer together
-     (`let repo: Arc<dyn SeatRepository> = Arc::new(PostgresSeatRepository::new());`,
-     `let uc = BookSeatUseCase::new(pool.clone(), repo);`, then builds the `axum::Router` with
-     `uc` in its state) plus the process lifecycle (below). No business logic here, only
-     construction, routing, and shutdown.
-   - `Cargo.toml` — `axum` for HTTP, `tokio` (full features) for the runtime, `sqlx` (postgres,
-     runtime-tokio-rustls) for DB access, `async-trait` for the port traits, `tracing` +
-     `tracing-subscriber` for logging.
-3. Wire in these scalability/stability patterns, placed in the layer that owns them — do not
-   let infrastructure concerns leak into `domain`/`usecase`:
-   - **DB connection pool**: built once in `src/platform/db.rs` via
-     `sqlx::postgres::PgPoolOptions` with an explicit `.max_connections(N)` from an env var
-     (bounded, not the default) — never construct raw connections per-request. Constructed in
-     `main.rs`, passed into **each use case** (the use case owns the transaction boundary); the
-     postgres adapter holds no pool, and `domain` never sees `PgPool`.
-   - **Health check endpoints**: `GET /healthz` (liveness, no DB touch) and `GET /readyz`
-     (pings the pool) in `src/adapter/http` — needed for safe rolling deploys. `/readyz` may
-     reach `platform::db` directly since liveness/readiness is an infra concern, not a business
-     use case.
-   - **Graceful shutdown**: in `main.rs` —
-     `axum::serve(...).with_graceful_shutdown(shutdown_signal())` where `shutdown_signal` awaits
-     `tokio::signal::ctrl_c()` and SIGTERM via `tokio::signal::unix::signal`, with in-flight
-     requests allowed to finish.
-   - **Structured logging**: `tracing_subscriber::fmt().json()` set up in `src/platform/`,
-     accessed via the `tracing` macros (already decoupled by design — `tracing` spans work from
-     any layer without a passed-in logger object) with a request-scoped span carrying a request
-     ID, for later correlation across services.
-   - **Statelessness**: `usecase` and adapter structs are constructed once at startup
-     (`Arc`-wrapped where shared across requests) — no `Mutex`-guarded field that a request
-     mutates as part of normal handling. Anything that looks like shared state belongs in
-     Postgres or Redis, accessed through a `domain` port trait, never in process memory.
-   - **Timeouts on outbound calls**: any `reqwest`/tonic client to another service is a
-     `domain` port trait (e.g. `PaymentGateway`) implemented in `src/adapter/`, and that
-     implementation must set an explicit timeout — never rely on the default (which may be
-     unbounded).
-4. Add a minimal `Dockerfile` (multi-stage: `cargo build --release` builder stage, slim
-   `debian` or `distroless/cc` runtime stage).
-5. Confirm the route prefix implemented in the router matches `kong.yml` exactly. Also verify
-   the dependency rule wasn't violated: `domain` has no `use` of `sqlx`/`axum`/other local
-   modules, `usecase` `use`s `domain` + `crate::platform::port` + `sqlx` (for the tx boundary
-   it owns) but never `adapter`, `crate::platform::port` `use`s only `crate::domain` + `sqlx`,
-   `adapter::http` and `adapter::repository` don't depend on each other — grep for cross-module
-   `use` statements if unsure. Then tell the user
-   what was scaffolded and what they still need to fill in (actual entities/use cases/DB
-   schema).
+### 1. Read the gateway contract
+Look up the service name in `kong/kong.yml`. Take the port from its `url` and the API prefix
+from the route `paths`. Routes are `strip_path: false`, so the router registers the **full**
+`/api/v1/...` path. If the name isn't in `kong.yml`, stop and tell the user to add it there
+first.
 
-Do not add a message queue, cache, or circuit breaker here unless asked — this command
-produces the base skeleton; use `/add-caching` or `/add-circuit-breaker` for those once the
-service has real logic to wrap.
+### 2. Scaffold the Clean Architecture layers
+Under `services/<service-name>/` as its own crate, dependency arrows pointing inward only —
+in Rust: an inner module never `use`s an outer module's concrete types, only traits it
+declares itself.
+
+- **`src/domain/`** — entities (plain structs) and domain errors (`enum BookingError {
+  SeatUnavailable, NotFound, .. }`), invariants as methods on the entity
+  (`Seat::reserve(&mut self) -> Result<(), BookingError>`), a shared `Pagination` value type,
+  and **pure** outbound-gateway traits naming no driver type (`trait PasswordHasher`,
+  `trait Cache`), `#[async_trait]` where async so they're usable as `Arc<dyn Trait + Send +
+  Sync>`. Entity IDs are `uuid::Uuid` (`uuid` crate, feature `v4`), minted with
+  `Uuid::new_v4()` in the constructor. Zero `use` of `sqlx`/`axum`/`tokio`.
+- **`src/platform/port.rs`** (`mod port`) — the port traits that name the connection handle,
+  `Repository` above all. May `use sqlx` (for `PgConnection`) and `crate::domain`; never
+  `crate::adapter` or `crate::usecase`. Every method takes `conn: &mut PgConnection`
+  alongside its domain args.
+- **`src/usecase/`** — one struct per use case (`BookSeatUseCase`), holding `Arc<dyn
+  Repository>` (and other ports) **and a `PgPool`**, injected via `new()`. It **owns the
+  transaction boundary**: `let mut tx = self.db_pool.begin().await?;` (for a read, then
+  `sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?;`), threads `&mut *tx`
+  through every repository call, then `tx.commit().await?` (drop = rollback on early `?`). All
+  non-DB work (entity construction, Argon2 hashing, payload building) runs **before**
+  `begin()`. `use`s `domain`, `crate::platform::port`, `sqlx`; never `adapter`.
+- **`src/adapter/http/`** — `axum` handlers + request/response DTOs with `serde` derives (no
+  domain types on the wire) + a named mapper (`impl From<&domain::Booking> for
+  BookingResponse`) next to the DTO. Maps domain error variants to status codes explicitly.
+  Transport only.
+- **`src/adapter/repository/postgres.rs`** — implements `crate::platform::port::Repository`
+  with `sqlx`, on the `&mut PgConnection` it's handed; **never** `pool.begin()` /
+  `tx.commit()`. The only module allowed to import `sqlx` query APIs. Holds no pool.
+- **`src/platform/`** — cross-cutting infra: `db` (pool + migrations), `logging`,
+  `config`, `observability` (tracer + metrics), plus the `port` module above.
+- **`src/main.rs`** — the composition root: wires every layer
+  (`let repo: Arc<dyn Repository> = Arc::new(PostgresRepository::new());`
+  `let uc = BookSeatUseCase::new(pool.clone(), repo);`), builds the `axum::Router`, owns the
+  process lifecycle. No business logic.
+- **`Cargo.toml`** — `axum`, `tokio` (full), `sqlx` (postgres, `runtime-tokio-rustls`,
+  `migrate`), `async-trait`, `serde`, `uuid` (v4), `tracing` + `tracing-subscriber`,
+  `tracing-opentelemetry` + `opentelemetry-otlp`, `metrics` + `metrics-exporter-prometheus`,
+  `tower-http` (trace, request-id).
+
+### 3. Wire the platform baseline
+
+- **DB pool** — `src/platform/db.rs`, `PgPoolOptions::new().max_connections(N)` with `N` from
+  an env var (bounded, not the default). Constructed in `main.rs`, passed into **each use
+  case**; the repository holds no pool; `domain` never sees `PgPool`.
+- **Migrations** — `migrations/` applied via `sqlx::migrate!()` on startup. Add migrations
+  with `/new-migration`. A saga participant's first migrations are the canonical
+  `outbox_events` (no `published_at`) and `processed_events` tables.
+- **Health** — `GET /healthz` (liveness) and `GET /readyz` (pings the pool) in
+  `src/adapter/http`.
+- **Graceful shutdown** — `axum::serve(...).with_graceful_shutdown(shutdown_signal())`
+  awaiting `ctrl_c()` and SIGTERM; flush the tracer before exit.
+- **Structured logging + request id** — `tracing_subscriber::fmt().json()` in
+  `src/platform/logging.rs`. `tower_http::request_id` to read/generate `x-request-id` and
+  echo it, plus a `tower_http::trace::TraceLayer` (or a small middleware) that records
+  `request_id, method, path, status, latency` as one JSON line per request for **every**
+  route — never the `authorization` header or body.
+- **Tracing** — `src/platform/observability.rs`: an OTLP exporter + `tracing-opentelemetry`
+  layer from env (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`). The HTTP server span
+  **continues the inbound W3C `traceparent`**. Deeper spans and cross-Kafka propagation are
+  `/add-observability`'s job.
+- **Metrics** — `GET /metrics` via `metrics-exporter-prometheus`, distinct from health:
+  request/error counts + duration histogram, labelled by route pattern (low cardinality).
+- **Statelessness** — `usecase` and adapter structs constructed once at startup (`Arc`-wrapped
+  where shared); no `Mutex`-guarded field a request mutates in normal handling.
+- **Outbound timeouts** — any `reqwest`/`tonic` client is a `domain` port trait implemented
+  in `src/adapter/`, with an explicit timeout — never the default. `/add-resilience` adds a
+  breaker/retry later.
+
+### 4. Dockerfile
+Multi-stage: `cargo build --release` builder, slim `debian` or `distroless/cc` runtime.
+Non-root user.
+
+### 5. Verify and hand off
+- `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check` from the service dir.
+- Route prefix matches `kong.yml` exactly.
+- Dependency rule intact: `domain` has no `use` of `sqlx`/`axum`/other local modules;
+  `platform::port` `use`s only `crate::domain` + `sqlx`; `usecase` `use`s `domain` +
+  `crate::platform::port` + `sqlx` but never `adapter`; `adapter::http` and
+  `adapter::repository` don't `use` each other. The `clean-architecture-check.sh` hook checks
+  this on every write.
+- Add the service (and its `postgres-<name>`, plus an `otel-collector` if not present) to
+  `docker-compose.yml` on `ticket-network`. If it publishes events, its Postgres needs
+  `wal_level=logical` in its `command:`.
+- Tell the user what was scaffolded and what they still fill in (entities, use cases, schema
+  via `/new-migration`, endpoints via `/new-rust-api-endpoint`).
+
+Do not add a message queue, cache, or circuit breaker here. Use `/add-caching`,
+`/add-resilience`, `/add-observability` once there's real logic, and `/new-rust-api-endpoint`
+(after `/design-saga` for anything cross-service) to add operations.
