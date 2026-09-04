@@ -72,6 +72,10 @@ services:
           --topic ${KAFKA_USER_EVENTS_TOPIC:-user.events} --partitions 3 --replication-factor 1
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
           --topic ${KAFKA_USER_EVENTS_TOPIC:-user.events}.dlq --partitions 1 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events} --partitions 3 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events}.dlq --partitions 1 --replication-factor 1
         echo "saga topics ready:"
         kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks:
@@ -88,6 +92,8 @@ services:
       kafka:
         condition: service_healthy
       postgres-user:
+        condition: service_healthy
+      postgres-booking:
         condition: service_healthy
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
@@ -130,12 +136,14 @@ services:
       - -c
       - |
         set -e
-        code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
-          -H 'Content-Type: application/json' \
-          --data @/debezium/user-service-outbox.json \
-          http://kafka-connect:8083/connectors)
-        echo "connector register HTTP $$code"; cat /tmp/resp; echo
-        case "$$code" in 200|201|409) echo "connector ready"; exit 0;; *) exit 1;; esac
+        for f in /debezium/user-service-outbox.json /debezium/booking-service-outbox.json; do
+          code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            --data @$$f \
+            http://kafka-connect:8083/connectors)
+          echo "connector register ($$f) HTTP $$code"; cat /tmp/resp; echo
+          case "$$code" in 200|201|409) echo "connector ready";; *) exit 1;; esac
+        done
     networks:
       - ticket-network
 
@@ -276,8 +284,10 @@ services:
       DATABASE_URL: postgres://${BOOKING_DB_USER:-booking_service}:${BOOKING_DB_PASSWORD:-booking_service}@postgres-booking:5432/${BOOKING_DB_NAME:-booking_service}
       PORT: "8083"
       DB_MAX_CONNECTIONS: ${BOOKING_DB_MAX_CONNECTIONS:-10}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-user-service}
     ports:
-      - "8083:8083"
+      - "8085:8083"
     depends_on:
       postgres-booking:
         condition: service_healthy

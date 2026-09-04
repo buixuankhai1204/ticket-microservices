@@ -1,13 +1,13 @@
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-use super::dto::{BookingResponse, ErrorResponse};
+use super::dto::{BookingResponse, CreateBookingRequest, ErrorResponse};
 use super::handlers;
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(handlers::get_booking),
-    components(schemas(BookingResponse, ErrorResponse)),
+    paths(handlers::create_booking, handlers::get_booking),
+    components(schemas(CreateBookingRequest, BookingResponse, ErrorResponse)),
     modifiers(&SecurityAddon)
 )]
 pub struct ApiDoc;

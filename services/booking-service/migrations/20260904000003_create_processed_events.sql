@@ -5,6 +5,8 @@
 -- the side effect and skips any event whose id is already present. event_ids are
 -- globally unique UUIDs minted by the publishing service, so one table serves
 -- every consumer group in this service.
+--
+-- Additive: a brand-new table. Down path: DROP TABLE IF EXISTS processed_events;
 CREATE TABLE IF NOT EXISTS processed_events (
     event_id     UUID PRIMARY KEY,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT now()

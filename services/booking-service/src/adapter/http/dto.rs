@@ -1,9 +1,15 @@
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::domain::Booking;
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateBookingRequest {
+    pub event_id: Uuid,
+    pub seat_ids: Vec<Uuid>,
+}
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BookingResponse {

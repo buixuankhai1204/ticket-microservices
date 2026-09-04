@@ -13,7 +13,7 @@ use adapter::http::{build_router, ApiDoc, AppState};
 use adapter::repository::postgres::PostgresBookingRepository;
 use platform::db;
 use platform::port::BookingRepository;
-use usecase::GetBookingUseCase;
+use usecase::{CreateBookingUseCase, GetBookingUseCase};
 
 #[tokio::main]
 async fn main() {
@@ -34,11 +34,17 @@ async fn main() {
         .await
         .expect("failed to run database migrations");
 
+    let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let jwt_issuer = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
+
     let booking_repository: Arc<dyn BookingRepository> = Arc::new(PostgresBookingRepository::new());
 
     let state = Arc::new(AppState {
-        get_booking: GetBookingUseCase::new(pool.clone(), booking_repository),
+        get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
+        create_booking: CreateBookingUseCase::new(pool.clone(), booking_repository),
         db_pool: pool,
+        jwt_secret,
+        jwt_issuer,
     });
 
     let app = build_router(state)
