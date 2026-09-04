@@ -237,53 +237,6 @@ services:
     networks:
       - ticket-network
 
-  postgres-booking:
-    image: postgres:16-alpine
-    container_name: postgres-booking
-    # wal_level=logical: booking-service publishes seat-reservation saga events
-    # via the Debezium CDC outbox (docs/sagas/seat-reservation.md §9), which
-    # tails this DB's WAL through a logical replication slot. Set now so the
-    # connector can be registered later without a DB restart.
-    command:
-      - "postgres"
-      - "-c"
-      - "wal_level=logical"
-      - "-c"
-      - "max_wal_senders=10"
-      - "-c"
-      - "max_replication_slots=10"
-    environment:
-      POSTGRES_USER: ${BOOKING_DB_USER:-booking_service}
-      POSTGRES_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_service}
-      POSTGRES_DB: ${BOOKING_DB_NAME:-booking_service}
-    ports:
-      - "5436:5432"
-    volumes:
-      - postgres_booking_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${BOOKING_DB_USER:-booking_service}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - ticket-network
-
-  booking-service:
-    build:
-      context: ./services/booking-service
-    container_name: booking-service
-    environment:
-      DATABASE_URL: postgres://${BOOKING_DB_USER:-booking_service}:${BOOKING_DB_PASSWORD:-booking_service}@postgres-booking:5432/${BOOKING_DB_NAME:-booking_service}
-      PORT: "8083"
-      DB_MAX_CONNECTIONS: ${BOOKING_DB_MAX_CONNECTIONS:-10}
-    ports:
-      - "8083:8083"
-    depends_on:
-      postgres-booking:
-        condition: service_healthy
-    networks:
-      - ticket-network
-
   kong:
     image: kong:3.6
     container_name: kong
@@ -305,7 +258,6 @@ services:
       - user-service
       - analytics-service
       - event-service
-      - booking-service
     networks:
       - ticket-network
 
@@ -313,7 +265,6 @@ volumes:
   postgres_user_data:
   postgres_analytics_data:
   postgres_event_data:
-  postgres_booking_data:
 
 networks:
   ticket-network:
