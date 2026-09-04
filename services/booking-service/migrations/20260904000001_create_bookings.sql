@@ -7,6 +7,8 @@
 -- type end to end. `user_id` and `event_id` are bare cross-service UUIDs with
 -- no FK -- the owning services (user-service, event-service) are separate
 -- databases. Money/price never lives here; that stays in event-service's seats.
+--
+-- Additive: a brand-new table. Down path: DROP TABLE IF EXISTS bookings;
 CREATE TABLE IF NOT EXISTS bookings (
     id             UUID PRIMARY KEY,
     user_id        UUID        NOT NULL,

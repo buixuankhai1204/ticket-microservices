@@ -41,3 +41,11 @@ ignored on the wire.
   `heartbeat.interval.ms` (and create its `__debezium-heartbeat.userdb` topic,
   since broker auto-create is off here).
 - Connector status: `curl -s localhost:8083/connectors/user-service-outbox/status`.
+
+## `booking-service-outbox.json`
+
+Same shape as `user-service-outbox.json`, pointed at `postgres-booking` /
+`booking_service` (`slot.name=booking_service_outbox`,
+`publication.name=dbz_booking_outbox`, `topic.prefix=bookingdb`).
+`aggregate_type=booking` routes to `booking.events`. Status:
+`curl -s localhost:8083/connectors/booking-service-outbox/status`.

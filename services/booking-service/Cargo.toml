@@ -15,6 +15,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
+jsonwebtoken = "9"
 utoipa = { version = "4", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "6", features = ["axum"] }
 

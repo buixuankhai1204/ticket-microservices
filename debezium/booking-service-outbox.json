@@ -1,0 +1,39 @@
+{
+  "name": "booking-service-outbox",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "postgres-booking",
+    "database.port": "5432",
+    "database.user": "booking_service",
+    "database.password": "booking_service",
+    "database.dbname": "booking_service",
+    "topic.prefix": "bookingdb",
+
+    "plugin.name": "pgoutput",
+    "slot.name": "booking_service_outbox",
+    "publication.name": "dbz_booking_outbox",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "public.outbox_events",
+
+    "snapshot.mode": "no_data",
+    "skipped.operations": "u,d,t",
+    "tombstones.on.delete": "false",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "id",
+    "transforms.outbox.table.field.event.key": "aggregate_id",
+    "transforms.outbox.table.field.event.type": "event_type",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.route.by.field": "aggregate_type",
+    "transforms.outbox.route.topic.replacement": "${routedByValue}.events",
+    "transforms.outbox.table.fields.additional.placement": "event_type:header:event_type,id:header:event_id"
+  }
+}

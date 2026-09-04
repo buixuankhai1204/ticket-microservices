@@ -13,6 +13,8 @@
 -- each insert to `<aggregate_type>.events` via the Outbox Event Router SMT:
 -- aggregate_id -> message key, aggregate_type -> topic, event_type/id -> headers,
 -- payload -> message value.
+--
+-- Additive: a brand-new table. Down path: DROP TABLE IF EXISTS outbox_events;
 CREATE TABLE IF NOT EXISTS outbox_events (
     id             UUID PRIMARY KEY,
     aggregate_id   UUID  NOT NULL,

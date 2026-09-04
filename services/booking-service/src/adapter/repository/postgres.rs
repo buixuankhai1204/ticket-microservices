@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::domain::{Booking, BookingError, BookingStatus};
+use crate::domain::{Booking, BookingError, BookingStatus, DomainEvent};
 use crate::platform::port::BookingRepository;
 
 #[derive(Default)]
@@ -64,5 +64,55 @@ impl BookingRepository for PostgresBookingRepository {
             Some(row) => Booking::try_from(row),
             None => Err(BookingError::NotFound),
         }
+    }
+
+    async fn create(&self, conn: &mut PgConnection, booking: &Booking) -> Result<(), BookingError> {
+        sqlx::query(
+            "INSERT INTO bookings (id, user_id, event_id, seat_ids, status, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(booking.id)
+        .bind(booking.user_id)
+        .bind(booking.event_id)
+        .bind(&booking.seat_ids)
+        .bind(booking.status.as_str())
+        .bind(booking.created_at)
+        .bind(booking.updated_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        for event in booking.pending_events() {
+            self.write_outbox(&mut *conn, event).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn write_outbox(
+        &self,
+        conn: &mut PgConnection,
+        event: &DomainEvent,
+    ) -> Result<(), BookingError> {
+        sqlx::query(
+            "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(event.event_id())
+        .bind(event.aggregate_id())
+        .bind(event.aggregate_type())
+        .bind(event.event_type())
+        .bind(event.payload())
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        sqlx::query("DELETE FROM outbox_events WHERE id = $1")
+            .bind(event.event_id())
+            .execute(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+
+        Ok(())
     }
 }

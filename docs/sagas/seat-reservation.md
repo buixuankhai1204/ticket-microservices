@@ -475,7 +475,7 @@ is up.
 /new-rust-api-endpoint booking-service  ListBookings  http:GET:/api/v1/bookings   # paginated envelope, filtered to the JWT subject; adds domain::Pagination
 
 # --- saga steps (run /plan first; each touches many files + infra) -------------
-/new-rust-api-endpoint booking-service  CreateBooking   http:POST:/api/v1/bookings              publish:BookingRequested:booking
+# DONE  CreateBooking  http:POST:/api/v1/bookings  publish:BookingRequested:booking
 /new-go-api-endpoint   event-service    ReserveSeat     consume:BookingRequested:booking.events publish:SeatReserved:seat_reservation publish:SeatReservationFailed:seat_reservation
 /new-rust-api-endpoint booking-service  ConfirmBooking  consume:SeatReserved:seat_reservation.events          publish:BookingConfirmed:booking
 /new-rust-api-endpoint booking-service  CancelBooking   consume:SeatReservationFailed:seat_reservation.events publish:BookingCancelled:booking
@@ -490,20 +490,21 @@ is up.
 
 Consumer-scaffolding status per step:
 
-- **booking-service** — scaffolded (Rust/axum) with `GetBooking` + the three
-  migrations. It has **no `usecase` write path, no `domain::Pagination`, no
-  messaging adapter, and no `events`/outbox-write code yet** — each arrives with
-  the endpoint that needs it. Its first `consume:` step (`ConfirmBooking`) must
-  build a Kafka consumer in **Rust with `rdkafka`** (CLAUDE.md): booking-service
-  is the repo's **first Rust Kafka consumer**, so there is no existing Rust
-  engine to copy — the Go `analytics-service` generic consumer
-  (`internal/adapter/messaging/kafka/consumer.go`: FetchMessage → use case →
-  commit-after-side-effect, `event_type` ack-and-skip, capped jittered backoff to
-  `MAX_ATTEMPTS`, DLQ writer with `x-dlq-*` headers) is the **reference for the
-  shape**, to be re-implemented against `rdkafka`. First `publish:` step
-  (`CreateBooking`) adds the `outbox_events` write/delete + needs the new
-  `debezium/booking-service-outbox.json` connector (§9); `postgres-booking`
-  already has `wal_level=logical`.
+- **booking-service** — `GetBooking` and `CreateBooking` are wired.
+  `CreateBooking` verifies the caller's JWT itself (HS256 signature + `exp` +
+  `iss`, `jsonwebtoken`) rather than trusting the Kong-forwarded header, mints
+  the booking + `BookingRequested` event, and writes+deletes the outbox row on
+  one read-write transaction; `debezium/booking-service-outbox.json` is
+  registered in `connect-init` and `booking.events`/`.dlq` are created in
+  `kafka-init`. It still has **no `domain::Pagination` and no messaging
+  adapter** — those arrive with `ListBookings` and `ConfirmBooking`. Its first
+  `consume:` step (`ConfirmBooking`) must build a Kafka consumer in **Rust with
+  `rdkafka`** (CLAUDE.md): booking-service is the repo's **first Rust Kafka
+  consumer**, so there is no existing Rust engine to copy — the Go
+  `analytics-service` generic consumer (`internal/adapter/messaging/kafka/consumer.go`:
+  FetchMessage → use case → commit-after-side-effect, `event_type` ack-and-skip,
+  capped jittered backoff to `MAX_ATTEMPTS`, DLQ writer with `x-dlq-*` headers)
+  is the **reference for the shape**, to be re-implemented against `rdkafka`.
 - **event-service** — has **no** consumer today: `ReserveSeat` scaffolds its
   messaging adapter + consumer engine from scratch (Go, copy `analytics-service`'s
   generic engine). It also becomes a CDC publisher for the first time — new
