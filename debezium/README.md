@@ -49,3 +49,11 @@ Same shape as `user-service-outbox.json`, pointed at `postgres-booking` /
 `publication.name=dbz_booking_outbox`, `topic.prefix=bookingdb`).
 `aggregate_type=booking` routes to `booking.events`. Status:
 `curl -s localhost:8083/connectors/booking-service-outbox/status`.
+
+## `event-service-outbox.json`
+
+Same shape as `user-service-outbox.json`, pointed at `postgres-event` /
+`event_service` (`slot.name=event_service_outbox`,
+`publication.name=dbz_event_outbox`, `topic.prefix=eventdb`).
+`aggregate_type=seat_reservation` routes to `seat_reservation.events`. Status:
+`curl -s localhost:8083/connectors/event-service-outbox/status`.

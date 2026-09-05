@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,13 +13,19 @@ type Config struct {
 	DatabaseURL   string
 	DBMaxConns    int32
 	ShutdownGrace time.Duration
+
+	KafkaBrokers             []string
+	KafkaBookingEventsTopic  string
+	KafkaConsumerMaxAttempts int
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:          8082,
-		DBMaxConns:    20,
-		ShutdownGrace: 15 * time.Second,
+		Port:                     8082,
+		DBMaxConns:               20,
+		ShutdownGrace:            15 * time.Second,
+		KafkaBookingEventsTopic:  "booking.events",
+		KafkaConsumerMaxAttempts: 5,
 	}
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -40,6 +47,31 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid DB_MAX_CONNS %q", v)
 		}
 		cfg.DBMaxConns = int32(n)
+	}
+
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers == "" {
+		return Config{}, fmt.Errorf("KAFKA_BROKERS must be set")
+	}
+	for _, b := range strings.Split(brokers, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			cfg.KafkaBrokers = append(cfg.KafkaBrokers, b)
+		}
+	}
+	if len(cfg.KafkaBrokers) == 0 {
+		return Config{}, fmt.Errorf("KAFKA_BROKERS contained no usable entries")
+	}
+
+	if v := os.Getenv("KAFKA_BOOKING_EVENTS_TOPIC"); v != "" {
+		cfg.KafkaBookingEventsTopic = v
+	}
+
+	if v := os.Getenv("KAFKA_CONSUMER_MAX_ATTEMPTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return Config{}, fmt.Errorf("invalid KAFKA_CONSUMER_MAX_ATTEMPTS %q", v)
+		}
+		cfg.KafkaConsumerMaxAttempts = n
 	}
 
 	return cfg, nil

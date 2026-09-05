@@ -76,6 +76,10 @@ services:
           --topic ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events} --partitions 3 --replication-factor 1
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
           --topic ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events}.dlq --partitions 1 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_SEAT_RESERVATION_EVENTS_TOPIC:-seat_reservation.events} --partitions 3 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_SEAT_RESERVATION_EVENTS_TOPIC:-seat_reservation.events}.dlq --partitions 1 --replication-factor 1
         echo "saga topics ready:"
         kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks:
@@ -94,6 +98,8 @@ services:
       postgres-user:
         condition: service_healthy
       postgres-booking:
+        condition: service_healthy
+      postgres-event:
         condition: service_healthy
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
@@ -136,7 +142,7 @@ services:
       - -c
       - |
         set -e
-        for f in /debezium/user-service-outbox.json /debezium/booking-service-outbox.json; do
+        for f in /debezium/user-service-outbox.json /debezium/booking-service-outbox.json /debezium/event-service-outbox.json; do
           code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
             -H 'Content-Type: application/json' \
             --data @$$f \
@@ -213,6 +219,17 @@ services:
   postgres-event:
     image: postgres:16-alpine
     container_name: postgres-event
+    # wal_level=logical: event-service publishes seat-reservation saga events via
+    # the Debezium CDC outbox (docs/sagas/seat-reservation.md §9), tailing this
+    # DB's WAL through a logical replication slot.
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
     environment:
       POSTGRES_USER: ${EVENT_DB_USER:-event_service}
       POSTGRES_PASSWORD: ${EVENT_DB_PASSWORD:-event_service}
@@ -237,11 +254,20 @@ services:
       DATABASE_URL: postgres://${EVENT_DB_USER:-event_service}:${EVENT_DB_PASSWORD:-event_service}@postgres-event:5432/${EVENT_DB_NAME:-event_service}
       PORT: "8082"
       DB_MAX_CONNS: ${EVENT_DB_MAX_CONNS:-20}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_BOOKING_EVENTS_TOPIC: ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events}
+      KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "8082:8082"
     depends_on:
       postgres-event:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      connect-init:
+        condition: service_completed_successfully
     networks:
       - ticket-network
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	httpadapter "github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/http"
+	kafkaconsumer "github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/messaging/kafka"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/repository/postgres"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/config"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/db"
@@ -57,6 +58,7 @@ func run(log logger.Logger) error {
 	getEvent := usecase.NewGetEventUseCase(pool, repo)
 	listEventSeats := usecase.NewListEventSeatsUseCase(pool, repo)
 	createNewEvent := usecase.NewCreateNewEventUseCase(pool, repo)
+	reserveSeat := usecase.NewReserveSeatUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
 	health := httpadapter.NewHealthHandler(pool)
@@ -70,6 +72,22 @@ func run(log logger.Logger) error {
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	kafkaCfg := kafkaconsumer.Config{
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       cfg.KafkaBookingEventsTopic,
+		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
+	}
+	consumer := kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingRequestedSpec(reserveSeat), log)
+	defer func() { _ = consumer.Close() }()
+
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		if err := consumer.Run(ctx); err != nil {
+			log.Error("kafka consumer exited with error", "err", err.Error())
+		}
+	}()
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -88,5 +106,10 @@ func run(log logger.Logger) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+
+	<-consumerDone
+	return nil
 }
