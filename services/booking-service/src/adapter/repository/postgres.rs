@@ -48,22 +48,49 @@ fn repo_err(e: sqlx::Error) -> BookingError {
     BookingError::Repository(e.to_string())
 }
 
+impl PostgresBookingRepository {
+    async fn fetch_booking(
+        &self,
+        conn: &mut PgConnection,
+        sql: &str,
+        id: Uuid,
+    ) -> Result<Booking, BookingError> {
+        let row = sqlx::query_as::<_, BookingRow>(sql)
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+
+        row.map(Booking::try_from)
+            .transpose()?
+            .ok_or(BookingError::NotFound)
+    }
+}
+
 #[async_trait]
 impl BookingRepository for PostgresBookingRepository {
     async fn find_by_id(&self, conn: &mut PgConnection, id: Uuid) -> Result<Booking, BookingError> {
-        let row = sqlx::query_as::<_, BookingRow>(
+        self.fetch_booking(
+            conn,
             "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
              FROM bookings WHERE id = $1",
+            id,
         )
-        .bind(id)
-        .fetch_optional(&mut *conn)
         .await
-        .map_err(repo_err)?;
+    }
 
-        match row {
-            Some(row) => Booking::try_from(row),
-            None => Err(BookingError::NotFound),
-        }
+    async fn find_for_update(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<Booking, BookingError> {
+        self.fetch_booking(
+            conn,
+            "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
+             FROM bookings WHERE id = $1 FOR UPDATE",
+            id,
+        )
+        .await
     }
 
     async fn create(&self, conn: &mut PgConnection, booking: &Booking) -> Result<(), BookingError> {
@@ -87,6 +114,41 @@ impl BookingRepository for PostgresBookingRepository {
         }
 
         Ok(())
+    }
+
+    async fn update_status(
+        &self,
+        conn: &mut PgConnection,
+        booking: &Booking,
+    ) -> Result<(), BookingError> {
+        sqlx::query(
+            "UPDATE bookings SET status = $1, failure_reason = $2, updated_at = $3 WHERE id = $4",
+        )
+        .bind(booking.status.as_str())
+        .bind(&booking.failure_reason)
+        .bind(booking.updated_at)
+        .bind(booking.id)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn mark_processed(
+        &self,
+        conn: &mut PgConnection,
+        event_id: Uuid,
+    ) -> Result<bool, BookingError> {
+        let result = sqlx::query(
+            "INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        )
+        .bind(event_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(result.rows_affected() == 0)
     }
 
     async fn write_outbox(

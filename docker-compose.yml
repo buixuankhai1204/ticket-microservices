@@ -312,11 +312,20 @@ services:
       DB_MAX_CONNECTIONS: ${BOOKING_DB_MAX_CONNECTIONS:-10}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       JWT_ISSUER: ${JWT_ISSUER:-user-service}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_SEAT_RESERVATION_EVENTS_TOPIC: ${KAFKA_SEAT_RESERVATION_EVENTS_TOPIC:-seat_reservation.events}
+      KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "8085:8083"
     depends_on:
       postgres-booking:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      connect-init:
+        condition: service_completed_successfully
     networks:
       - ticket-network
 

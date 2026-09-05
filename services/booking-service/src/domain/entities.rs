@@ -102,6 +102,18 @@ impl Booking {
         }
     }
 
+    pub fn confirm(&mut self) -> Result<(), BookingError> {
+        match self.status {
+            BookingStatus::Pending => {
+                self.status = BookingStatus::Confirmed;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingStatus::Confirmed => Ok(()),
+            BookingStatus::Cancelled => Err(BookingError::AlreadyTerminal),
+        }
+    }
+
     pub fn record_event(&mut self, event: DomainEvent) {
         self.pending_events.push(event);
     }
@@ -191,5 +203,40 @@ mod tests {
             b.created_at,
         )));
         assert_eq!(b.pending_events().len(), 1);
+    }
+
+    #[test]
+    fn confirm_moves_pending_to_confirmed() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        let before = b.updated_at;
+        b.confirm().unwrap();
+        assert_eq!(b.status, BookingStatus::Confirmed);
+        assert!(b.updated_at >= before);
+    }
+
+    #[test]
+    fn confirm_is_idempotent_when_already_confirmed() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.confirm().unwrap();
+        b.confirm().unwrap();
+        assert_eq!(b.status, BookingStatus::Confirmed);
+    }
+
+    #[test]
+    fn confirm_rejects_a_cancelled_booking() {
+        let mut b = Booking::from_persisted(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            seats(1),
+            BookingStatus::Cancelled,
+            Some("seat_unavailable".to_string()),
+            Utc::now(),
+            Utc::now(),
+        );
+        assert!(matches!(
+            b.confirm().unwrap_err(),
+            BookingError::AlreadyTerminal
+        ));
     }
 }
