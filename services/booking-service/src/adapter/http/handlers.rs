@@ -26,6 +26,7 @@ fn map_error(err: BookingError) -> (StatusCode, Json<ErrorResponse>) {
         BookingError::NoSeats | BookingError::DuplicateSeats | BookingError::TooManySeats(_) => {
             StatusCode::BAD_REQUEST
         }
+        BookingError::AlreadyTerminal => StatusCode::CONFLICT,
         BookingError::InvalidStatus(_) | BookingError::Repository(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }

@@ -4,4 +4,4 @@ pub mod events;
 
 pub use entities::{Booking, BookingStatus};
 pub use errors::BookingError;
-pub use events::{BookingRequested, DomainEvent};
+pub use events::{BookingConfirmed, BookingRequested, DomainEvent, SeatReserved};

@@ -1,4 +1,8 @@
 FROM rust:1-bookworm AS builder
+# rdkafka builds a vendored librdkafka from C source: needs a C/C++ toolchain.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src

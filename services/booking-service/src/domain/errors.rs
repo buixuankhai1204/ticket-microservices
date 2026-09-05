@@ -10,6 +10,8 @@ pub enum BookingError {
     DuplicateSeats,
     #[error("a booking may hold at most {0} seats")]
     TooManySeats(usize),
+    #[error("booking is already in a terminal state")]
+    AlreadyTerminal,
     #[error("unknown booking status {0:?}")]
     InvalidStatus(String),
     #[error("repository error: {0}")]

@@ -6,14 +6,16 @@ mod usecase;
 use std::env;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use adapter::http::{build_router, ApiDoc, AppState};
+use adapter::messaging::kafka::{ConfirmBookingHandler, SagaConsumer};
 use adapter::repository::postgres::PostgresBookingRepository;
 use platform::db;
 use platform::port::BookingRepository;
-use usecase::{CreateBookingUseCase, GetBookingUseCase};
+use usecase::{ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase};
 
 #[tokio::main]
 async fn main() {
@@ -37,15 +39,41 @@ async fn main() {
     let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let jwt_issuer = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
 
+    let kafka_brokers = env::var("KAFKA_BROKERS").expect("KAFKA_BROKERS must be set");
+    let seat_reservation_topic = env::var("KAFKA_SEAT_RESERVATION_EVENTS_TOPIC")
+        .unwrap_or_else(|_| "seat_reservation.events".to_string());
+    let max_attempts: u32 = env::var("KAFKA_CONSUMER_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+
     let booking_repository: Arc<dyn BookingRepository> = Arc::new(PostgresBookingRepository::new());
+
+    let confirm_booking = Arc::new(ConfirmBookingUseCase::new(
+        pool.clone(),
+        Arc::clone(&booking_repository),
+    ));
 
     let state = Arc::new(AppState {
         get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
-        create_booking: CreateBookingUseCase::new(pool.clone(), booking_repository),
+        create_booking: CreateBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
         db_pool: pool,
         jwt_secret,
         jwt_issuer,
     });
+
+    let consumer = SagaConsumer::new(
+        &kafka_brokers,
+        &seat_reservation_topic,
+        max_attempts,
+        ConfirmBookingHandler {
+            use_case: confirm_booking,
+        },
+    )
+    .expect("failed to create kafka consumer");
+
+    let shutdown = CancellationToken::new();
+    let consumer_task = tokio::spawn(consumer.run(shutdown.clone()));
 
     let app = build_router(state)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
@@ -60,10 +88,16 @@ async fn main() {
 
     tracing::info!(port, "booking-service listening");
 
+    let server_shutdown = shutdown.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            server_shutdown.cancel();
+        })
         .await
         .expect("server error");
+
+    let _ = consumer_task.await;
 }
 
 async fn shutdown_signal() {
