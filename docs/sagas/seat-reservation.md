@@ -466,9 +466,7 @@ is up.
 # --- scaffold + schema -----------------------------------------------------------
 # DONE  /new-rust-service    booking-service                    # Rust/axum, port 8083, /api/v1/bookings (matches kong.yml)
 # DONE  migrations           booking-service  bookings, outbox_events, processed_events  (services/booking-service/migrations/)
-/new-migration       event-service    outbox_events          # canonical (new to event-service)
-/new-migration       event-service    processed_events       # new to event-service
-/new-migration       event-service    seat_reservations      # booking_id PK, event_id, seat_ids UUID[], status held|finalized|released, timestamps + (status,created_at) index
+# DONE  migrations           event-service    outbox_events, processed_events, seat_reservations  (services/event-service/migrations/)
 
 # --- read + poll endpoints on the initiator (Rust) -----------------------------
 # DONE  GetBooking  http:GET:/api/v1/bookings/{id}  — scaffolded (not yet owner-scoped; add JWT-sub check with the auth work below)
@@ -476,7 +474,7 @@ is up.
 
 # --- saga steps (run /plan first; each touches many files + infra) -------------
 # DONE  CreateBooking  http:POST:/api/v1/bookings  publish:BookingRequested:booking
-/new-go-api-endpoint   event-service    ReserveSeat     consume:BookingRequested:booking.events publish:SeatReserved:seat_reservation publish:SeatReservationFailed:seat_reservation
+# DONE  ReserveSeat    consume:BookingRequested:booking.events  publish:SeatReserved|SeatReservationFailed:seat_reservation  (event-service, Go)
 /new-rust-api-endpoint booking-service  ConfirmBooking  consume:SeatReserved:seat_reservation.events          publish:BookingConfirmed:booking
 /new-rust-api-endpoint booking-service  CancelBooking   consume:SeatReservationFailed:seat_reservation.events publish:BookingCancelled:booking
 /new-go-api-endpoint   event-service    FinalizeSeat    consume:BookingConfirmed:booking.events
@@ -505,11 +503,15 @@ Consumer-scaffolding status per step:
   FetchMessage → use case → commit-after-side-effect, `event_type` ack-and-skip,
   capped jittered backoff to `MAX_ATTEMPTS`, DLQ writer with `x-dlq-*` headers)
   is the **reference for the shape**, to be re-implemented against `rdkafka`.
-- **event-service** — has **no** consumer today: `ReserveSeat` scaffolds its
-  messaging adapter + consumer engine from scratch (Go, copy `analytics-service`'s
-  generic engine). It also becomes a CDC publisher for the first time — new
-  Debezium connector + `wal_level=logical` on `postgres-event` (§9).
-  `FinalizeSeat` / `ReleaseSeat` add two more consumer groups on `booking.events`.
+- **event-service** — `ReserveSeat` is wired: the generic Go consumer engine is
+  copied into `internal/adapter/messaging/kafka/` (group `event-service-BookingRequested`
+  on `booking.events`), `ReserveSeatUseCase` owns one read-write txn (dedupe on
+  `processed_events`, `SELECT … FOR UPDATE` the seats in id order, then emit
+  `SeatReserved` or `SeatReservationFailed` through `WriteOutbox`). It is now a
+  CDC publisher: `debezium/event-service-outbox.json` (registered in `connect-init`),
+  `wal_level=logical` on `postgres-event`, `seat_reservation.events`/`.dlq` in
+  `kafka-init`. `FinalizeSeat` / `ReleaseSeat` will add two more consumer groups on
+  `booking.events` (they reuse the same engine, no new infra).
 - **analytics-service** — already runs the generic engine on `user.events`:
   `RecordBookingOutcome` adds a second reader on `booking.events` plus two new
   `EventSpec`s (`BookingConfirmed`, `BookingCancelled`) and their groups. No new

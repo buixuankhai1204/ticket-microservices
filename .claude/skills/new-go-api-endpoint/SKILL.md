@@ -49,7 +49,15 @@ Follow @CLAUDE.md's layer rules. Concretely:
   call, `tx.Commit(ctx)` at the end. Any `publish:` makes it a write flow.
 - **`internal/adapter/repository/postgres/`** — implement the new `Repository` method(s).
   Each takes `ctx, tx pgx.Tx, …` and runs on that `tx`; **never** `Begin`/`Commit` inside the
-  adapter; the adapter holds no pool.
+  adapter; the adapter holds no pool. If a new method scans the **same entity shape** as an
+  existing method (e.g. a new `LockSeatsForReservation` alongside `ListSeatsForEvent`), extract
+  a shared `scan<Entity>(row rowScanner) (domain.<Entity>, error)` helper (`rowScanner` =
+  `interface{ Scan(dest ...any) error }`, satisfied by both `pgx.Rows` and `pgx.Row`) and
+  refactor the existing method onto it too — do not copy the inline `rows.Scan(&x.A, &x.B, …)`
+  column list into a second place. Keep failure classification (which missing row means which
+  domain outcome) out of the repo where it's a saga-specific judgment — return the raw rows /
+  a `bool`, let the `usecase` branch on it; only reuse an already-established sentinel like
+  `domain.ErrNotFound` for a plain "parent row absent".
 
 ## Step 2 — paginate if it returns a list (with `http:`)
 Never an unbounded result set.
