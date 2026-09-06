@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::domain::Booking;
+use crate::domain::{Booking, Pagination};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateBookingRequest {
@@ -34,6 +34,36 @@ impl From<&Booking> for BookingResponse {
             failure_reason: booking.failure_reason.clone(),
             created_at: booking.created_at,
             updated_at: booking.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PaginationMeta {
+    pub limit: i64,
+    pub offset: i64,
+    pub total: i64,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PaginatedBookingsResponse {
+    pub data: Vec<BookingResponse>,
+    pub pagination: PaginationMeta,
+}
+
+impl PaginatedBookingsResponse {
+    pub fn new(bookings: &[Booking], pagination: &Pagination, total: i64) -> Self {
+        let data: Vec<BookingResponse> = bookings.iter().map(BookingResponse::from).collect();
+        let has_more = pagination.has_more(data.len(), total);
+        Self {
+            data,
+            pagination: PaginationMeta {
+                limit: pagination.limit,
+                offset: pagination.offset,
+                total,
+                has_more,
+            },
         }
     }
 }

@@ -17,6 +17,7 @@ use platform::db;
 use platform::port::BookingRepository;
 use usecase::{
     CancelBookingUseCase, ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase,
+    ListBookingsUseCase,
 };
 
 #[tokio::main]
@@ -62,6 +63,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
+        list_bookings: ListBookingsUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
         create_booking: CreateBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
         db_pool: pool,
         jwt_secret,

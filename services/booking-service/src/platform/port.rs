@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::domain::{Booking, BookingError, DomainEvent};
+use crate::domain::{Booking, BookingError, DomainEvent, Pagination};
 
 #[async_trait]
 pub trait BookingRepository: Send + Sync {
@@ -12,6 +12,12 @@ pub trait BookingRepository: Send + Sync {
         conn: &mut PgConnection,
         id: Uuid,
     ) -> Result<Booking, BookingError>;
+    async fn list_for_user(
+        &self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        pagination: Pagination,
+    ) -> Result<(Vec<Booking>, i64), BookingError>;
     async fn create(&self, conn: &mut PgConnection, booking: &Booking) -> Result<(), BookingError>;
     async fn update_status(
         &self,

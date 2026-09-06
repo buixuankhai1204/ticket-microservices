@@ -1,19 +1,23 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::domain::BookingError;
+use crate::domain::{BookingError, Pagination, DEFAULT_LIMIT};
 use crate::platform::db::DbPool;
-use crate::usecase::{CreateBookingInput, CreateBookingUseCase, GetBookingUseCase};
+use crate::usecase::{
+    CreateBookingInput, CreateBookingUseCase, GetBookingUseCase, ListBookingsUseCase,
+};
 
 use super::auth::AuthUser;
-use super::dto::{BookingResponse, CreateBookingRequest, ErrorResponse};
+use super::dto::{BookingResponse, CreateBookingRequest, ErrorResponse, PaginatedBookingsResponse};
 
 pub struct AppState {
     pub get_booking: GetBookingUseCase,
+    pub list_bookings: ListBookingsUseCase,
     pub create_booking: CreateBookingUseCase,
     pub db_pool: DbPool,
     pub jwt_secret: String,
@@ -23,9 +27,10 @@ pub struct AppState {
 fn map_error(err: BookingError) -> (StatusCode, Json<ErrorResponse>) {
     let status = match err {
         BookingError::NotFound => StatusCode::NOT_FOUND,
-        BookingError::NoSeats | BookingError::DuplicateSeats | BookingError::TooManySeats(_) => {
-            StatusCode::BAD_REQUEST
-        }
+        BookingError::NoSeats
+        | BookingError::DuplicateSeats
+        | BookingError::TooManySeats(_)
+        | BookingError::InvalidPagination => StatusCode::BAD_REQUEST,
         BookingError::AlreadyTerminal => StatusCode::CONFLICT,
         BookingError::InvalidStatus(_) | BookingError::Repository(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
@@ -77,6 +82,7 @@ pub async fn create_booking(
     ),
     responses(
         (status = 200, description = "Booking found", body = BookingResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
         (status = 404, description = "Booking not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
@@ -84,10 +90,60 @@ pub async fn create_booking(
 )]
 pub async fn get_booking(
     State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<BookingResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let booking = state.get_booking.execute(id).await.map_err(map_error)?;
+    let booking = state
+        .get_booking
+        .execute(user_id, id)
+        .await
+        .map_err(map_error)?;
     Ok(Json(BookingResponse::from(&booking)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListBookingsParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/bookings",
+    params(
+        ("limit" = Option<i64>, Query, description = "Page size, default 20, max 100"),
+        ("offset" = Option<i64>, Query, description = "Rows to skip, default 0"),
+    ),
+    responses(
+        (status = 200, description = "Page of the caller's bookings", body = PaginatedBookingsResponse),
+        (status = 400, description = "Invalid pagination parameters", body = ErrorResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn list_bookings(
+    State(state): State<Arc<AppState>>,
+    AuthUser(user_id): AuthUser,
+    Query(params): Query<ListBookingsParams>,
+) -> Result<Json<PaginatedBookingsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let pagination = Pagination::new(
+        params.limit.unwrap_or(DEFAULT_LIMIT),
+        params.offset.unwrap_or(0),
+    )
+    .map_err(map_error)?;
+
+    let (bookings, total) = state
+        .list_bookings
+        .execute(user_id, pagination)
+        .await
+        .map_err(map_error)?;
+
+    Ok(Json(PaginatedBookingsResponse::new(
+        &bookings,
+        &pagination,
+        total,
+    )))
 }
 
 pub async fn healthz() -> StatusCode {
