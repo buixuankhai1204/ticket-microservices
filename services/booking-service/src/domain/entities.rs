@@ -109,6 +109,19 @@ impl Booking {
             BookingStatus::Cancelled => Err(BookingError::AlreadyTerminal),
         }
     }
+
+    pub fn cancel(&mut self, reason: impl Into<String>) -> Result<(), BookingError> {
+        match self.status {
+            BookingStatus::Pending => {
+                self.status = BookingStatus::Cancelled;
+                self.failure_reason = Some(reason.into());
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingStatus::Cancelled => Ok(()),
+            BookingStatus::Confirmed => Err(BookingError::AlreadyTerminal),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +221,33 @@ mod tests {
         );
         assert!(matches!(
             b.confirm().unwrap_err(),
+            BookingError::AlreadyTerminal
+        ));
+    }
+
+    #[test]
+    fn cancel_moves_pending_to_cancelled_with_reason() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.cancel("seat_not_found").unwrap();
+        assert_eq!(b.status, BookingStatus::Cancelled);
+        assert_eq!(b.failure_reason.as_deref(), Some("seat_not_found"));
+    }
+
+    #[test]
+    fn cancel_is_idempotent_and_keeps_the_first_reason() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.cancel("seat_unavailable").unwrap();
+        b.cancel("something_else").unwrap();
+        assert_eq!(b.status, BookingStatus::Cancelled);
+        assert_eq!(b.failure_reason.as_deref(), Some("seat_unavailable"));
+    }
+
+    #[test]
+    fn cancel_rejects_a_confirmed_booking() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.confirm().unwrap();
+        assert!(matches!(
+            b.cancel("too_late").unwrap_err(),
             BookingError::AlreadyTerminal
         ));
     }

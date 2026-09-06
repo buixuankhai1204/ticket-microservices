@@ -9,8 +9,8 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::{BookingError, SeatReserved};
-use crate::usecase::ConfirmBookingUseCase;
+use crate::domain::{BookingError, SeatReservationFailed, SeatReserved};
+use crate::usecase::{CancelBookingUseCase, ConfirmBookingUseCase};
 
 pub enum HandlerError {
     Transient(String),
@@ -214,6 +214,30 @@ impl SagaHandler for ConfirmBookingHandler {
     }
 
     async fn handle(&self, ev: &SeatReserved) -> Result<bool, HandlerError> {
+        self.use_case.execute(ev).await.map_err(|e| match e {
+            BookingError::Repository(m) => HandlerError::Transient(m),
+            other => HandlerError::Permanent(other.to_string()),
+        })
+    }
+}
+
+pub struct CancelBookingHandler {
+    pub use_case: Arc<CancelBookingUseCase>,
+}
+
+#[async_trait]
+impl SagaHandler for CancelBookingHandler {
+    type Event = SeatReservationFailed;
+
+    fn group_id(&self) -> &str {
+        "booking-service-SeatReservationFailed"
+    }
+
+    fn event_type(&self) -> &str {
+        "SeatReservationFailed"
+    }
+
+    async fn handle(&self, ev: &SeatReservationFailed) -> Result<bool, HandlerError> {
         self.use_case.execute(ev).await.map_err(|e| match e {
             BookingError::Repository(m) => HandlerError::Transient(m),
             other => HandlerError::Permanent(other.to_string()),
