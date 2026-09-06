@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::errors::BookingError;
-use super::events::DomainEvent;
 
 pub const MAX_SEATS_PER_BOOKING: usize = 20;
 
@@ -42,7 +41,6 @@ pub struct Booking {
     pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pending_events: Vec<DomainEvent>,
 }
 
 impl Booking {
@@ -74,7 +72,6 @@ impl Booking {
             failure_reason: None,
             created_at: now,
             updated_at: now,
-            pending_events: Vec::new(),
         })
     }
 
@@ -98,7 +95,6 @@ impl Booking {
             failure_reason,
             created_at,
             updated_at,
-            pending_events: Vec::new(),
         }
     }
 
@@ -112,14 +108,6 @@ impl Booking {
             BookingStatus::Confirmed => Ok(()),
             BookingStatus::Cancelled => Err(BookingError::AlreadyTerminal),
         }
-    }
-
-    pub fn record_event(&mut self, event: DomainEvent) {
-        self.pending_events.push(event);
-    }
-
-    pub fn pending_events(&self) -> &[DomainEvent] {
-        &self.pending_events
     }
 }
 
@@ -149,11 +137,10 @@ mod tests {
     }
 
     #[test]
-    fn request_starts_pending_with_no_pending_events() {
+    fn request_starts_pending() {
         let b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(2)).unwrap();
         assert_eq!(b.status, BookingStatus::Pending);
         assert!(b.failure_reason.is_none());
-        assert!(b.pending_events().is_empty());
     }
 
     #[test]
@@ -188,21 +175,6 @@ mod tests {
         let b =
             Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(MAX_SEATS_PER_BOOKING)).unwrap();
         assert_eq!(b.seat_ids.len(), MAX_SEATS_PER_BOOKING);
-    }
-
-    #[test]
-    fn record_event_queues_it_for_the_outbox() {
-        use super::super::events::BookingRequested;
-
-        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
-        b.record_event(DomainEvent::BookingRequested(BookingRequested::new(
-            b.id,
-            b.user_id,
-            b.event_id,
-            b.seat_ids.clone(),
-            b.created_at,
-        )));
-        assert_eq!(b.pending_events().len(), 1);
     }
 
     #[test]
