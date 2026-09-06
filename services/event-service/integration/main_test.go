@@ -60,7 +60,8 @@ func TestMain(m *testing.M) {
 
 func truncateAll(t *testing.T) {
 	t.Helper()
-	_, err := testPool.Exec(context.Background(), `TRUNCATE seats, events`)
+	_, err := testPool.Exec(context.Background(),
+		`TRUNCATE seats, events, seat_reservations, outbox_events, processed_events`)
 	if err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
