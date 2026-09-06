@@ -4,15 +4,15 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::tx_err;
-use crate::domain::{Booking, BookingError};
+use crate::domain::{Booking, BookingError, Pagination};
 use crate::platform::port::BookingRepository;
 
-pub struct GetBookingUseCase {
+pub struct ListBookingsUseCase {
     db_pool: PgPool,
     booking_repository: Arc<dyn BookingRepository>,
 }
 
-impl GetBookingUseCase {
+impl ListBookingsUseCase {
     pub fn new(db_pool: PgPool, booking_repository: Arc<dyn BookingRepository>) -> Self {
         Self {
             db_pool,
@@ -22,21 +22,19 @@ impl GetBookingUseCase {
 
     pub async fn execute(
         &self,
-        requesting_user_id: Uuid,
-        id: Uuid,
-    ) -> Result<Booking, BookingError> {
+        user_id: Uuid,
+        pagination: Pagination,
+    ) -> Result<(Vec<Booking>, i64), BookingError> {
         let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
         sqlx::query("SET TRANSACTION READ ONLY")
             .execute(&mut *tx)
             .await
             .map_err(tx_err)?;
-        let booking = self.booking_repository.find_by_id(&mut tx, id).await?;
+        let page = self
+            .booking_repository
+            .list_for_user(&mut tx, user_id, pagination)
+            .await?;
         tx.commit().await.map_err(tx_err)?;
-
-        if booking.user_id != requesting_user_id {
-            return Err(BookingError::NotFound);
-        }
-
-        Ok(booking)
+        Ok(page)
     }
 }

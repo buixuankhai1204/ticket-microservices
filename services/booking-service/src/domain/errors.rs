@@ -12,6 +12,8 @@ pub enum BookingError {
     TooManySeats(usize),
     #[error("booking is already in a terminal state")]
     AlreadyTerminal,
+    #[error("invalid pagination parameters")]
+    InvalidPagination,
     #[error("unknown booking status {0:?}")]
     InvalidStatus(String),
     #[error("repository error: {0}")]

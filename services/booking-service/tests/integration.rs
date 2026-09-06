@@ -249,7 +249,10 @@ async fn get_booking_returns_matching_persisted_fields() {
         .await
         .expect("create should succeed");
 
-    let fetched = get.execute(created.id).await.expect("get should succeed");
+    let fetched = get
+        .execute(user_id, created.id)
+        .await
+        .expect("get should succeed");
 
     assert_eq!(fetched.id, created.id);
     assert_eq!(fetched.user_id, user_id);
@@ -282,11 +285,41 @@ async fn get_booking_not_found_returns_not_found() {
     let get = GetBookingUseCase::new(pool.clone(), repo());
 
     let err = get
-        .execute(Uuid::new_v4())
+        .execute(Uuid::new_v4(), Uuid::new_v4())
         .await
         .expect_err("a random id must not resolve to a booking");
 
     assert!(matches!(err, BookingError::NotFound), "got {err:?}");
+}
+
+#[tokio::test]
+async fn get_booking_another_users_booking_is_not_found() {
+    let pool = fresh_db().await;
+    let create = CreateBookingUseCase::new(pool.clone(), repo());
+    let get = GetBookingUseCase::new(pool.clone(), repo());
+
+    let owner_id = Uuid::new_v4();
+    let created = create
+        .execute(CreateBookingInput {
+            user_id: owner_id,
+            event_id: Uuid::new_v4(),
+            seat_ids: vec![Uuid::new_v4()],
+        })
+        .await
+        .expect("create should succeed");
+
+    let err = get
+        .execute(Uuid::new_v4(), created.id)
+        .await
+        .expect_err("another user must not read this booking");
+
+    assert!(matches!(err, BookingError::NotFound), "got {err:?}");
+
+    let fetched = get
+        .execute(owner_id, created.id)
+        .await
+        .expect("the owner still reads it");
+    assert_eq!(fetched.id, created.id);
 }
 
 #[tokio::test]

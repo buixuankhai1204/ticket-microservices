@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::domain::{Booking, BookingError, BookingStatus, DomainEvent};
+use crate::domain::{Booking, BookingError, BookingStatus, DomainEvent, Pagination};
 use crate::platform::port::BookingRepository;
 
 #[derive(Default)]
@@ -91,6 +91,37 @@ impl BookingRepository for PostgresBookingRepository {
             id,
         )
         .await
+    }
+
+    async fn list_for_user(
+        &self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        pagination: Pagination,
+    ) -> Result<(Vec<Booking>, i64), BookingError> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bookings WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+
+        let rows = sqlx::query_as::<_, BookingRow>(
+            "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
+             FROM bookings WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(user_id)
+        .bind(pagination.limit)
+        .bind(pagination.offset)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        let bookings = rows
+            .into_iter()
+            .map(Booking::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok((bookings, total))
     }
 
     async fn create(&self, conn: &mut PgConnection, booking: &Booking) -> Result<(), BookingError> {

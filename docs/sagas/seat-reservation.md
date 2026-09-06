@@ -469,8 +469,8 @@ is up.
 # DONE  migrations           event-service    outbox_events, processed_events, seat_reservations  (services/event-service/migrations/)
 
 # --- read + poll endpoints on the initiator (Rust) -----------------------------
-# DONE  GetBooking  http:GET:/api/v1/bookings/{id}  — scaffolded (not yet owner-scoped; add JWT-sub check with the auth work below)
-/new-rust-api-endpoint booking-service  ListBookings  http:GET:/api/v1/bookings   # paginated envelope, filtered to the JWT subject; adds domain::Pagination
+# DONE  GetBooking   http:GET:/api/v1/bookings/{id}  — owner-scoped: usecase checks booking.user_id == JWT sub, else BookingError::NotFound (no existence leak)
+# DONE  ListBookings http:GET:/api/v1/bookings       — paginated envelope, WHERE user_id = JWT sub; adds domain::Pagination (limit/offset, default 20/0, clamp 100)
 
 # --- saga steps (run /plan first; each touches many files + infra) -------------
 # DONE  CreateBooking  http:POST:/api/v1/bookings  publish:BookingRequested:booking
@@ -488,8 +488,13 @@ is up.
 
 Consumer-scaffolding status per step:
 
-- **booking-service** — `GetBooking`, `CreateBooking`, `ConfirmBooking`, `CancelBooking`
-  are wired. `CreateBooking` verifies the caller's JWT itself (HS256 signature +
+- **booking-service** — `GetBooking`, `ListBookings`, `CreateBooking`, `ConfirmBooking`,
+  `CancelBooking` are wired. `GetBooking` and `ListBookings` both scope to the
+  caller's JWT `sub`: `GetBooking` reads by id then returns `NotFound` if
+  `booking.user_id` isn't the caller (no 403, no existence leak); `ListBookings`
+  filters `WHERE user_id = $sub` and returns the `{ data, pagination }` envelope
+  (`domain::Pagination` — `limit`/`offset`, default 20/0, clamp 100, `has_more`).
+  `CreateBooking` verifies the caller's JWT itself (HS256 signature +
   `exp` + `iss`, `jsonwebtoken`), mints the booking + `BookingRequested`;
   `debezium/booking-service-outbox.json` is registered in `connect-init`,
   `booking.events`/`.dlq` in `kafka-init`. All outbox writes are done from the use
@@ -507,7 +512,8 @@ Consumer-scaffolding status per step:
   / BookingCancelled)`; if already terminal: commit-and-skip. `BookingCancelled.reason`
   on this path is the coarse `seat_unavailable` (design §3 enum); the specific
   upstream `SeatReservationFailed.reason` is kept in `bookings.failure_reason`.
-  Still **no `domain::Pagination`** — that arrives with `ListBookings`.
+  `domain::Pagination` now exists (added by `ListBookings`), mirroring
+  user-service's shape.
 - **event-service** — `ReserveSeat` is wired: the generic Go consumer engine is
   copied into `internal/adapter/messaging/kafka/` (group `event-service-BookingRequested`
   on `booking.events`), `ReserveSeatUseCase` owns one read-write txn (dedupe on
