@@ -96,16 +96,23 @@ Delivery guarantee and consumer list come from `docs/sagas/*.md` (step 0). Publi
 log-tailing CDC — you write the outbox row, no producer code.
 - **`src/domain/`** — define `<EventName>` as a plain `serde`-serializable struct with
   snake_case fields (`SeatReserved { event_id, booking_id, reserved_at }`), no Kafka types —
-  it becomes the Kafka message value verbatim. Include `event_id: Uuid`. Give the usecase
-  result / aggregate a way to carry pending events and the event enum an `aggregate_type()`
-  method (see `services/user-service/src/domain/events.rs`).
+  it becomes the Kafka message value verbatim. Include `event_id: Uuid`. Add the variant to
+  the service's `DomainEvent` enum with `event_id()` / `aggregate_id()` / `event_type()` /
+  `aggregate_type()` / `payload()` accessors (see `services/event-service/internal/domain/events.go`).
+  Do **not** add a `pending_events` carrier / `record_event()` to the entity — user-service's
+  `User` still has that shape, but it's the old pattern; the usecase builds and writes events
+  itself (below).
 - **`src/adapter/repository/postgres.rs`** — add `write_outbox(&self, conn: &mut PgConnection,
-  ev: &<EventName>) -> Result<(), RepoError>` (declared on the `crate::platform::port` trait).
+  ev: &DomainEvent) -> Result<(), RepoError>` (declared on the `crate::platform::port` trait).
   It `INSERT`s a row into `outbox_events` (`id, aggregate_id, aggregate_type, event_type,
   payload JSONB, created_at`) **then `DELETE`s that same row** — both on `&mut *conn`. The
-  usecase calls the state-write method then `write_outbox` on its one read-write `tx`, then
-  `tx.commit()`s: state change and event are one atomic unit. Add the `outbox_events`
-  migration via `/new-migration` if the service lacks one.
+  repo state-write method (`create`, `update_status`, …) does **only its own `INSERT`/`UPDATE`**
+  — it does not loop the entity's events into the outbox. The **usecase** constructs each
+  `DomainEvent` inline and calls `write_outbox(&mut *tx, &ev)` itself, once per event, right
+  after the state-write call, then `tx.commit()`s: state change and event(s) are one atomic
+  unit. If a step emits **several** events, one batched multi-row `INSERT` — never a per-event
+  loop of single-row inserts. Add the `outbox_events` migration via `/new-migration` if the
+  service lacks one.
 - **`debezium/<service-name>-outbox.json`** — if the service has no connector, add one (copy
   `debezium/user-service-outbox.json`): repoint `database.*`, unique `slot.name` /
   `publication.name`, `table.include.list=public.outbox_events`, `skipped.operations=u,d,t`,

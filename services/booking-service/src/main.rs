@@ -11,11 +11,13 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use adapter::http::{build_router, ApiDoc, AppState};
-use adapter::messaging::kafka::{ConfirmBookingHandler, SagaConsumer};
+use adapter::messaging::kafka::{CancelBookingHandler, ConfirmBookingHandler, SagaConsumer};
 use adapter::repository::postgres::PostgresBookingRepository;
 use platform::db;
 use platform::port::BookingRepository;
-use usecase::{ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase};
+use usecase::{
+    CancelBookingUseCase, ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase,
+};
 
 #[tokio::main]
 async fn main() {
@@ -53,6 +55,10 @@ async fn main() {
         pool.clone(),
         Arc::clone(&booking_repository),
     ));
+    let cancel_booking = Arc::new(CancelBookingUseCase::new(
+        pool.clone(),
+        Arc::clone(&booking_repository),
+    ));
 
     let state = Arc::new(AppState {
         get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
@@ -62,7 +68,7 @@ async fn main() {
         jwt_issuer,
     });
 
-    let consumer = SagaConsumer::new(
+    let confirm_consumer = SagaConsumer::new(
         &kafka_brokers,
         &seat_reservation_topic,
         max_attempts,
@@ -70,10 +76,22 @@ async fn main() {
             use_case: confirm_booking,
         },
     )
-    .expect("failed to create kafka consumer");
+    .expect("failed to create SeatReserved consumer");
+    let cancel_consumer = SagaConsumer::new(
+        &kafka_brokers,
+        &seat_reservation_topic,
+        max_attempts,
+        CancelBookingHandler {
+            use_case: cancel_booking,
+        },
+    )
+    .expect("failed to create SeatReservationFailed consumer");
 
     let shutdown = CancellationToken::new();
-    let consumer_task = tokio::spawn(consumer.run(shutdown.clone()));
+    let consumer_tasks = vec![
+        tokio::spawn(confirm_consumer.run(shutdown.clone())),
+        tokio::spawn(cancel_consumer.run(shutdown.clone())),
+    ];
 
     let app = build_router(state)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
@@ -97,7 +115,9 @@ async fn main() {
         .await
         .expect("server error");
 
-    let _ = consumer_task.await;
+    for task in consumer_tasks {
+        let _ = task.await;
+    }
 }
 
 async fn shutdown_signal() {

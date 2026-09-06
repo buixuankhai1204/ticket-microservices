@@ -109,16 +109,20 @@ publish side is **log-tailing CDC, not an in-process relay** — you write the o
 producer code.
 - **`internal/domain/`** — define `<EventName>` as a plain `json`-serializable struct with
   snake_case fields (`BookingRequested{ EventID, BookingID, UserID, RequestedAt }`), no Kafka
-  types — it becomes the Kafka message value verbatim. Include `EventID uuid.UUID`. Give the
-  usecase result / aggregate a way to carry pending events and a method returning the
-  `aggregate_type` string.
-- **`repository`** — add `WriteOutbox(ctx, tx pgx.Tx, ev <EventName>) error` (declared on the
+  types — it becomes the Kafka message value verbatim. Include `EventID uuid.UUID`. Give it
+  `EventID()` / `AggregateID()` / `EventType()` / `AggregateType()` methods (a shared
+  `domain.Event`/`OutboxEvent` interface — see `services/event-service/internal/domain/events.go`).
+  Do **not** add a `pending_events` slice / `RecordEvent()` to the entity.
+- **`repository`** — add `WriteOutbox(ctx, tx pgx.Tx, ev domain.Event) error` (declared on the
   `platform/port` `Repository`). It `INSERT`s a row into `outbox_events` (`id, aggregate_id,
   aggregate_type, event_type, payload JSONB, created_at`) **then `DELETE`s that same row** —
-  both on the `tx`. The usecase calls `repo.<StateWrite>(ctx, tx, …)` then `repo.WriteOutbox(ctx,
-  tx, ev)` on its one read-write `tx`, then `Commit`s: the state change and its event are one
-  atomic unit. Add the `outbox_events` migration via `/new-migration` if the service lacks
-  one.
+  both on the `tx`. The repo state-write method (`Create…`, `Update…`, …) does **only its own
+  `INSERT`/`UPDATE`** — it does not loop events into the outbox. The **usecase** builds each
+  event and calls `repo.WriteOutbox(ctx, tx, ev)` itself, once per event, right after
+  `repo.<StateWrite>(ctx, tx, …)`, then `Commit`s: the state change and its event(s) are one
+  atomic unit. Several events ⇒ one batched multi-row `INSERT`, never a per-event loop of
+  single-row inserts. Add the `outbox_events` migration via `/new-migration` if the service
+  lacks one.
 - **`debezium/<service-name>-outbox.json`** — if the service has no connector, add one (copy
   `debezium/user-service-outbox.json`): repoint `database.*`, unique `slot.name` /
   `publication.name`, `table.include.list=public.outbox_events`, `skipped.operations=u,d,t`,

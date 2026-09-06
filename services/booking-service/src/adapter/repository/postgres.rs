@@ -109,10 +109,6 @@ impl BookingRepository for PostgresBookingRepository {
         .await
         .map_err(repo_err)?;
 
-        for event in booking.pending_events() {
-            self.write_outbox(&mut *conn, event).await?;
-        }
-
         Ok(())
     }
 

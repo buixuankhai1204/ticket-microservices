@@ -2,7 +2,6 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::errors::BookingError;
-use super::events::DomainEvent;
 
 pub const MAX_SEATS_PER_BOOKING: usize = 20;
 
@@ -42,7 +41,6 @@ pub struct Booking {
     pub failure_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pending_events: Vec<DomainEvent>,
 }
 
 impl Booking {
@@ -74,7 +72,6 @@ impl Booking {
             failure_reason: None,
             created_at: now,
             updated_at: now,
-            pending_events: Vec::new(),
         })
     }
 
@@ -98,7 +95,6 @@ impl Booking {
             failure_reason,
             created_at,
             updated_at,
-            pending_events: Vec::new(),
         }
     }
 
@@ -114,12 +110,17 @@ impl Booking {
         }
     }
 
-    pub fn record_event(&mut self, event: DomainEvent) {
-        self.pending_events.push(event);
-    }
-
-    pub fn pending_events(&self) -> &[DomainEvent] {
-        &self.pending_events
+    pub fn cancel(&mut self, reason: impl Into<String>) -> Result<(), BookingError> {
+        match self.status {
+            BookingStatus::Pending => {
+                self.status = BookingStatus::Cancelled;
+                self.failure_reason = Some(reason.into());
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingStatus::Cancelled => Ok(()),
+            BookingStatus::Confirmed => Err(BookingError::AlreadyTerminal),
+        }
     }
 }
 
@@ -149,11 +150,10 @@ mod tests {
     }
 
     #[test]
-    fn request_starts_pending_with_no_pending_events() {
+    fn request_starts_pending() {
         let b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(2)).unwrap();
         assert_eq!(b.status, BookingStatus::Pending);
         assert!(b.failure_reason.is_none());
-        assert!(b.pending_events().is_empty());
     }
 
     #[test]
@@ -191,21 +191,6 @@ mod tests {
     }
 
     #[test]
-    fn record_event_queues_it_for_the_outbox() {
-        use super::super::events::BookingRequested;
-
-        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
-        b.record_event(DomainEvent::BookingRequested(BookingRequested::new(
-            b.id,
-            b.user_id,
-            b.event_id,
-            b.seat_ids.clone(),
-            b.created_at,
-        )));
-        assert_eq!(b.pending_events().len(), 1);
-    }
-
-    #[test]
     fn confirm_moves_pending_to_confirmed() {
         let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
         let before = b.updated_at;
@@ -236,6 +221,33 @@ mod tests {
         );
         assert!(matches!(
             b.confirm().unwrap_err(),
+            BookingError::AlreadyTerminal
+        ));
+    }
+
+    #[test]
+    fn cancel_moves_pending_to_cancelled_with_reason() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.cancel("seat_not_found").unwrap();
+        assert_eq!(b.status, BookingStatus::Cancelled);
+        assert_eq!(b.failure_reason.as_deref(), Some("seat_not_found"));
+    }
+
+    #[test]
+    fn cancel_is_idempotent_and_keeps_the_first_reason() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.cancel("seat_unavailable").unwrap();
+        b.cancel("something_else").unwrap();
+        assert_eq!(b.status, BookingStatus::Cancelled);
+        assert_eq!(b.failure_reason.as_deref(), Some("seat_unavailable"));
+    }
+
+    #[test]
+    fn cancel_rejects_a_confirmed_booking() {
+        let mut b = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        b.confirm().unwrap();
+        assert!(matches!(
+            b.cancel("too_late").unwrap_err(),
             BookingError::AlreadyTerminal
         ));
     }

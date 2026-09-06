@@ -476,7 +476,7 @@ is up.
 # DONE  CreateBooking  http:POST:/api/v1/bookings  publish:BookingRequested:booking
 # DONE  ReserveSeat    consume:BookingRequested:booking.events  publish:SeatReserved|SeatReservationFailed:seat_reservation  (event-service, Go)
 # DONE  ConfirmBooking  consume:SeatReserved:seat_reservation.events  publish:BookingConfirmed:booking  (booking-service, Rust rdkafka — first Rust consumer)
-/new-rust-api-endpoint booking-service  CancelBooking   consume:SeatReservationFailed:seat_reservation.events publish:BookingCancelled:booking
+# DONE  CancelBooking   consume:SeatReservationFailed:seat_reservation.events  publish:BookingCancelled:booking  (booking-service, 2nd SagaConsumer on the topic — no new infra)
 /new-go-api-endpoint   event-service    FinalizeSeat    consume:BookingConfirmed:booking.events
 /new-go-api-endpoint   event-service    ReleaseSeat     consume:BookingCancelled:booking.events
 /new-go-api-endpoint   analytics-service RecordBookingOutcome consume:BookingConfirmed:booking.events consume:BookingCancelled:booking.events
@@ -488,22 +488,26 @@ is up.
 
 Consumer-scaffolding status per step:
 
-- **booking-service** — `GetBooking`, `CreateBooking`, `ConfirmBooking` are wired.
-  `CreateBooking` verifies the caller's JWT itself (HS256 signature + `exp` +
-  `iss`, `jsonwebtoken`), mints the booking + `BookingRequested`, writes+deletes
-  the outbox row on one read-write transaction; `debezium/booking-service-outbox.json`
-  is registered in `connect-init`, `booking.events`/`.dlq` in `kafka-init`.
+- **booking-service** — `GetBooking`, `CreateBooking`, `ConfirmBooking`, `CancelBooking`
+  are wired. `CreateBooking` verifies the caller's JWT itself (HS256 signature +
+  `exp` + `iss`, `jsonwebtoken`), mints the booking + `BookingRequested`;
+  `debezium/booking-service-outbox.json` is registered in `connect-init`,
+  `booking.events`/`.dlq` in `kafka-init`. All outbox writes are done from the use
+  case (`repo.write_outbox` per event), never looped in the repo.
   `ConfirmBooking` is the repo's **first Rust Kafka consumer** — a generic
   `SagaConsumer<H: SagaHandler>` engine (`src/adapter/messaging/kafka/consumer.rs`,
   `rdkafka` `StreamConsumer`, manual commit, `event_type` ack-and-skip, capped
   backoff to `KAFKA_CONSUMER_MAX_ATTEMPTS`, `FutureProducer` DLQ with `x-dlq-*`
-  headers) re-implementing the Go engine's contract; group
-  `booking-service-SeatReserved` on `seat_reservation.events`. `ConfirmBookingUseCase`
-  owns one txn: `processed_events` dedupe → `SELECT bookings … FOR UPDATE` → if
-  `pending`: `confirm()` + `update_status` + `write_outbox(BookingConfirmed)`; if
-  already `confirmed`/`cancelled`: commit-and-skip. Still **no `domain::Pagination`** —
-  that arrives with `ListBookings`. `CancelBooking` will add a second
-  `SagaConsumer` (`CancelBookingHandler`) on the same topic, no new infra.
+  headers) re-implementing the Go engine's contract. `ConfirmBookingUseCase`
+  (group `booking-service-SeatReserved`) and `CancelBookingUseCase` (group
+  `booking-service-SeatReservationFailed`, the compensation arm) both consume
+  `seat_reservation.events` via their own `SagaConsumer`; each owns one txn:
+  `processed_events` dedupe → `SELECT bookings … FOR UPDATE` → if `pending`:
+  `confirm()` / `cancel(reason)` + `update_status` + `write_outbox(BookingConfirmed
+  / BookingCancelled)`; if already terminal: commit-and-skip. `BookingCancelled.reason`
+  on this path is the coarse `seat_unavailable` (design §3 enum); the specific
+  upstream `SeatReservationFailed.reason` is kept in `bookings.failure_reason`.
+  Still **no `domain::Pagination`** — that arrives with `ListBookings`.
 - **event-service** — `ReserveSeat` is wired: the generic Go consumer engine is
   copied into `internal/adapter/messaging/kafka/` (group `event-service-BookingRequested`
   on `booking.events`), `ReserveSeatUseCase` owns one read-write txn (dedupe on

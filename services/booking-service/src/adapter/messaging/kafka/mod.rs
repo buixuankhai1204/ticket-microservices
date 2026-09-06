@@ -1,3 +1,3 @@
 pub mod consumer;
 
-pub use consumer::{ConfirmBookingHandler, SagaConsumer};
+pub use consumer::{CancelBookingHandler, ConfirmBookingHandler, SagaConsumer};

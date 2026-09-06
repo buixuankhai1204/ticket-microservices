@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub const REASON_SEAT_UNAVAILABLE: &str = "seat_unavailable";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookingRequested {
     pub event_id: Uuid,
@@ -69,10 +71,54 @@ impl BookingConfirmed {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatReservationFailed {
+    pub event_id: Uuid,
+    pub booking_id: Uuid,
+    pub ticketed_event_id: Uuid,
+    pub seat_ids: Vec<Uuid>,
+    pub reason: String,
+    pub failed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookingCancelled {
+    pub event_id: Uuid,
+    pub booking_id: Uuid,
+    pub user_id: Uuid,
+    pub ticketed_event_id: Uuid,
+    pub seat_ids: Vec<Uuid>,
+    pub reason: String,
+    pub occurred_at: DateTime<Utc>,
+}
+
+impl BookingCancelled {
+    pub fn new(
+        booking_id: Uuid,
+        user_id: Uuid,
+        ticketed_event_id: Uuid,
+        seat_ids: Vec<Uuid>,
+        reason: String,
+        occurred_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event_id: Uuid::new_v4(),
+            booking_id,
+            user_id,
+            ticketed_event_id,
+            seat_ids,
+            reason,
+            occurred_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum DomainEvent {
     BookingRequested(BookingRequested),
     BookingConfirmed(BookingConfirmed),
+    BookingCancelled(BookingCancelled),
 }
 
 impl DomainEvent {
@@ -80,6 +126,7 @@ impl DomainEvent {
         match self {
             DomainEvent::BookingRequested(e) => e.event_id,
             DomainEvent::BookingConfirmed(e) => e.event_id,
+            DomainEvent::BookingCancelled(e) => e.event_id,
         }
     }
 
@@ -87,6 +134,7 @@ impl DomainEvent {
         match self {
             DomainEvent::BookingRequested(e) => e.booking_id,
             DomainEvent::BookingConfirmed(e) => e.booking_id,
+            DomainEvent::BookingCancelled(e) => e.booking_id,
         }
     }
 
@@ -94,6 +142,7 @@ impl DomainEvent {
         match self {
             DomainEvent::BookingRequested(_) => "BookingRequested",
             DomainEvent::BookingConfirmed(_) => "BookingConfirmed",
+            DomainEvent::BookingCancelled(_) => "BookingCancelled",
         }
     }
 
@@ -101,6 +150,7 @@ impl DomainEvent {
         match self {
             DomainEvent::BookingRequested(_) => "booking",
             DomainEvent::BookingConfirmed(_) => "booking",
+            DomainEvent::BookingCancelled(_) => "booking",
         }
     }
 
@@ -111,6 +161,9 @@ impl DomainEvent {
             }
             DomainEvent::BookingConfirmed(e) => {
                 serde_json::to_value(e).expect("BookingConfirmed is serializable")
+            }
+            DomainEvent::BookingCancelled(e) => {
+                serde_json::to_value(e).expect("BookingCancelled is serializable")
             }
         }
     }
