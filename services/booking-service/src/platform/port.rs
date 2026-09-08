@@ -6,7 +6,12 @@ use crate::domain::{Booking, BookingError, DomainEvent, Pagination};
 
 #[async_trait]
 pub trait BookingRepository: Send + Sync {
-    async fn find_by_id(&self, conn: &mut PgConnection, id: Uuid) -> Result<Booking, BookingError>;
+    async fn find_by_id_for_user(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Booking, BookingError>;
     async fn find_for_update(
         &self,
         conn: &mut PgConnection,

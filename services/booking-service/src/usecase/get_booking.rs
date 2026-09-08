@@ -30,12 +30,11 @@ impl GetBookingUseCase {
             .execute(&mut *tx)
             .await
             .map_err(tx_err)?;
-        let booking = self.booking_repository.find_by_id(&mut tx, id).await?;
+        let booking = self
+            .booking_repository
+            .find_by_id_for_user(&mut tx, id, requesting_user_id)
+            .await?;
         tx.commit().await.map_err(tx_err)?;
-
-        if booking.user_id != requesting_user_id {
-            return Err(BookingError::NotFound);
-        }
 
         Ok(booking)
     }

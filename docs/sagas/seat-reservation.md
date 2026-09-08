@@ -404,7 +404,10 @@ startup via `sqlx::migrate!`:
   ('pending','confirmed','cancelled'))`, `failure_reason TEXT`, `created_at` /
   `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`. Indexes
   `bookings_status_created_at_idx (status, created_at)` (reaper) and
-  `bookings_user_id_idx (user_id)` (owner-scoped list).
+  `bookings_user_id_created_at_id_idx (user_id, created_at DESC, id DESC)`
+  (owner-scoped list — filter + `ORDER BY created_at DESC, id DESC` from one
+  index scan; added by `20260908000001`, which drops the earlier
+  `bookings_user_id_idx`).
 - `20260904000002_create_outbox_events.sql` — canonical shape: `id UUID PK,
   aggregate_id UUID NOT NULL, aggregate_type TEXT NOT NULL, event_type TEXT NOT
   NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
@@ -469,7 +472,7 @@ is up.
 # DONE  migrations           event-service    outbox_events, processed_events, seat_reservations  (services/event-service/migrations/)
 
 # --- read + poll endpoints on the initiator (Rust) -----------------------------
-# DONE  GetBooking   http:GET:/api/v1/bookings/{id}  — owner-scoped: usecase checks booking.user_id == JWT sub, else BookingError::NotFound (no existence leak)
+# DONE  GetBooking   http:GET:/api/v1/bookings/{id}  — owner-scoped in SQL: repo find_by_id_for_user(id, JWT sub); a row for another user is BookingError::NotFound, never fetched (no existence leak)
 # DONE  ListBookings http:GET:/api/v1/bookings       — paginated envelope, WHERE user_id = JWT sub; adds domain::Pagination (limit/offset, default 20/0, clamp 100)
 
 # --- saga steps (run /plan first; each touches many files + infra) -------------
@@ -490,8 +493,10 @@ Consumer-scaffolding status per step:
 
 - **booking-service** — `GetBooking`, `ListBookings`, `CreateBooking`, `ConfirmBooking`,
   `CancelBooking` are wired. `GetBooking` and `ListBookings` both scope to the
-  caller's JWT `sub`: `GetBooking` reads by id then returns `NotFound` if
-  `booking.user_id` isn't the caller (no 403, no existence leak); `ListBookings`
+  caller's JWT `sub`: `GetBooking` scopes the read in SQL
+  (`find_by_id_for_user` — `WHERE id = $1 AND user_id = $2`), so another user's
+  row returns `NotFound` and is never fetched (no 403, no existence leak);
+  `ListBookings`
   filters `WHERE user_id = $sub` and returns the `{ data, pagination }` envelope
   (`domain::Pagination` — `limit`/`offset`, default 20/0, clamp 100, `has_more`).
   `CreateBooking` verifies the caller's JWT itself (HS256 signature +
