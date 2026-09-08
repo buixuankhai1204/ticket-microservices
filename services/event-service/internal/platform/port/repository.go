@@ -22,9 +22,13 @@ type Repository interface {
 
 	UpdateSeatsStatus(ctx context.Context, tx pgx.Tx, seatIDs []uuid.UUID, status string) error
 
+	ReleaseReservedSeats(ctx context.Context, tx pgx.Tx, seatIDs []uuid.UUID) error
+
 	CreateSeatReservation(ctx context.Context, tx pgx.Tx, bookingID, eventID uuid.UUID, seatIDs []uuid.UUID) error
 
 	LockSeatReservation(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID) (domain.SeatReservation, error)
+
+	ListStaleHeldReservations(ctx context.Context, tx pgx.Tx, olderThanSecs int) ([]domain.SeatReservation, error)
 
 	UpdateSeatReservationStatus(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, status string) error
 

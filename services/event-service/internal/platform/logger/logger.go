@@ -7,6 +7,7 @@ import (
 
 type Logger interface {
 	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
 	Error(msg string, args ...any)
 	With(args ...any) Logger
 }
@@ -21,5 +22,6 @@ func New() Logger {
 }
 
 func (s *slogLogger) Info(msg string, args ...any)  { s.l.Info(msg, args...) }
+func (s *slogLogger) Warn(msg string, args ...any)  { s.l.Warn(msg, args...) }
 func (s *slogLogger) Error(msg string, args ...any) { s.l.Error(msg, args...) }
 func (s *slogLogger) With(args ...any) Logger       { return &slogLogger{l: s.l.With(args...)} }

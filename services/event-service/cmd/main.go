@@ -62,6 +62,7 @@ func run(log logger.Logger) error {
 	reserveSeat := usecase.NewReserveSeatUseCase(pool, repo)
 	finalizeSeat := usecase.NewFinalizeSeatUseCase(pool, repo)
 	releaseSeat := usecase.NewReleaseSeatUseCase(pool, repo)
+	reapHeldReservations := usecase.NewReapHeldReservationsUseCase(pool, repo, cfg.SeatHoldTimeoutSecs)
 
 	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
 	health := httpadapter.NewHealthHandler(pool)
@@ -101,6 +102,29 @@ func run(log logger.Logger) error {
 		}(c)
 	}
 
+	var reaperWG sync.WaitGroup
+	reaperWG.Add(1)
+	go func() {
+		defer reaperWG.Done()
+		interval := time.Duration(cfg.SeatReaperIntervalSecs) * time.Second
+		log.Info("seat reaper started", "interval_secs", cfg.SeatReaperIntervalSecs, "hold_timeout_secs", cfg.SeatHoldTimeoutSecs)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				n, err := reapHeldReservations.Execute(ctx)
+				if err != nil {
+					log.Error("seat reaper tick failed", "err", err.Error())
+				} else if n > 0 {
+					log.Warn("seat reaper released stale held reservations", "count", n)
+				}
+			}
+		}
+	}()
+
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("event-service listening", "port", cfg.Port)
@@ -123,6 +147,7 @@ func run(log logger.Logger) error {
 	}
 
 	consumersWG.Wait()
+	reaperWG.Wait()
 	return nil
 }
 

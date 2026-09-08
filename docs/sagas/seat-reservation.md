@@ -484,9 +484,19 @@ is up.
 # DONE  ReleaseSeat    consume:BookingCancelled:booking.events   (event-service, group event-service-BookingCancelled — 3rd consumer on booking.events; held→released + seats reserved→available; missing row = idempotent no-op §5.1; finalized row = permanent §5.3 tail; no infra change)
 # DONE  RecordBookingOutcome consume:BookingConfirmed|BookingCancelled:booking.events  (analytics-service, groups analytics-service-BookingConfirmed / -BookingCancelled → booking_outcomes read model; UNIQUE(booking_id) + processed_events idempotent; adds KAFKA_BOOKING_EVENTS_TOPIC; no new connector/migration)
 
-# --- reapers (background jobs, not HTTP endpoints — add by hand per §7) --------
-#   booking-service : pending > BOOKING_PENDING_TIMEOUT (2m) -> CancelBooking path, tokio ticker every 30s
-#   event-service   : seat_reservations held > SEAT_HOLD_TIMEOUT (30m) -> ReleaseSeat, every 5m, WARN log, no event
+# --- reapers (background jobs, not HTTP endpoints — added by hand per §7) ------
+# DONE  booking-service : ReapPendingBookingsUseCase — per-tick loop, each stale row its own txn:
+#         SELECT ... WHERE status='pending' AND created_at < now() - make_interval(secs => $1)
+#         ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1  -> cancel('reservation_timeout')
+#         + update_status + write_outbox(BookingCancelled{reason:reservation_timeout}) + commit.
+#         tokio::spawn'd ticker. Env: BOOKING_PENDING_TIMEOUT (secs, default 120),
+#         BOOKING_REAPER_INTERVAL (secs, default 30).
+# DONE  event-service   : ReapHeldReservationsUseCase — one txn per tick:
+#         SELECT ... WHERE status='held' AND created_at < now() - make_interval(secs => $1)
+#         ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 100  -> per row:
+#         ReleaseReservedSeats (UPDATE seats SET status='available' ... AND status='reserved')
+#         + seat_reservations held->released. Emits NO event, logs at WARN. Env:
+#         SEAT_HOLD_TIMEOUT (secs, default 1800), SEAT_REAPER_INTERVAL (secs, default 300).
 ```
 
 Consumer-scaffolding status per step:
@@ -518,7 +528,15 @@ Consumer-scaffolding status per step:
   on this path is the coarse `seat_unavailable` (design §3 enum); the specific
   upstream `SeatReservationFailed.reason` is kept in `bookings.failure_reason`.
   `domain::Pagination` now exists (added by `ListBookings`), mirroring
-  user-service's shape.
+  user-service's shape. **The primary reaper is wired** —
+  `ReapPendingBookingsUseCase` is a `tokio::spawn`ed ticker
+  (`BOOKING_REAPER_INTERVAL`, default 30s) that, each tick, drains stale
+  `pending` rows one per txn: `claim_oldest_stale_pending` (`… FOR UPDATE SKIP
+  LOCKED LIMIT 1` on `bookings_status_created_at_idx`) →
+  `cancel(REASON_RESERVATION_TIMEOUT)` + `update_status` +
+  `write_outbox(BookingCancelled{reservation_timeout})` → commit. Safe against a
+  racing `ConfirmBooking` (whoever holds the row lock wins; the reaper never sees
+  a row it already flipped). `BOOKING_PENDING_TIMEOUT` default 120s.
 - **event-service** — `ReserveSeat` is wired: the generic Go consumer engine is
   copied into `internal/adapter/messaging/kafka/` (group `event-service-BookingRequested`
   on `booking.events`), `ReserveSeatUseCase` owns one read-write txn (dedupe on
@@ -541,6 +559,15 @@ Consumer-scaffolding status per step:
   **missing** row is a legitimate idempotent no-op (§5.1 fail-before-reserve —
   the opposite of FinalizeSeat), a `finalized` row is `ErrReservationNotHeld` →
   permanent → DLQ (§5.3 tail). Emits nothing (terminal, step 4b). No infra change.
+  **The backstop reaper is wired** — `ReapHeldReservationsUseCase` is a ticker
+  goroutine (`SEAT_REAPER_INTERVAL`, default 5m) that, one txn per tick,
+  `ListStaleHeldReservations` (`… WHERE status='held' AND created_at < now() -
+  make_interval(secs => $1) … FOR UPDATE SKIP LOCKED LIMIT 100` on
+  `seat_reservations_status_created_at_idx`) → per row `ReleaseReservedSeats`
+  (`UPDATE seats SET status='available' … AND status='reserved'`) +
+  `seat_reservations held→released`. Emits **no** event; logs at **WARN** (should
+  never fire in a healthy system — `SEAT_HOLD_TIMEOUT` default 1800s ≫
+  `BOOKING_PENDING_TIMEOUT`).
 - **analytics-service** — runs the generic engine on `user.events` (2 groups) and,
   with `RecordBookingOutcome`, on `booking.events` (2 more groups —
   `analytics-service-BookingConfirmed` / `-BookingCancelled`, `cmd/main.go` now
