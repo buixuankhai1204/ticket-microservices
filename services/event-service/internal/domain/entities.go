@@ -237,3 +237,28 @@ func (s *Seat) Release() error {
 }
 
 func (s *Seat) IsAvailable() bool { return s.Status == SeatAvailable }
+
+const (
+	ReservationHeld      = "held"
+	ReservationFinalized = "finalized"
+	ReservationReleased  = "released"
+)
+
+type SeatReservation struct {
+	BookingID uuid.UUID
+	EventID   uuid.UUID
+	SeatIDs   []uuid.UUID
+	Status    string
+}
+
+func (r *SeatReservation) Finalize() error {
+	switch r.Status {
+	case ReservationHeld:
+		r.Status = ReservationFinalized
+		return nil
+	case ReservationFinalized:
+		return nil
+	default:
+		return ErrReservationNotHeld
+	}
+}

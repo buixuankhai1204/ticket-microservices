@@ -11,6 +11,8 @@ var (
 
 	ErrSeatUnavailable = errors.New("seat unavailable")
 
+	ErrReservationNotHeld = errors.New("seat reservation is not held")
+
 	ErrInvalidPagination = errors.New("invalid pagination")
 
 	ErrEventRequiresSeats = errors.New("event requires at least one seat")

@@ -24,6 +24,10 @@ type Repository interface {
 
 	CreateSeatReservation(ctx context.Context, tx pgx.Tx, bookingID, eventID uuid.UUID, seatIDs []uuid.UUID) error
 
+	LockSeatReservation(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID) (domain.SeatReservation, error)
+
+	UpdateSeatReservationStatus(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, status string) error
+
 	WriteOutbox(ctx context.Context, tx pgx.Tx, ev domain.OutboxEvent) error
 
 	MarkEventProcessed(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (alreadyProcessed bool, err error)

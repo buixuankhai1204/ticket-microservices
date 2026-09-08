@@ -28,6 +28,15 @@ type BookingRequested struct {
 	RequestedAt     time.Time
 }
 
+type BookingConfirmed struct {
+	ID              uuid.UUID
+	BookingID       uuid.UUID
+	UserID          uuid.UUID
+	TicketedEventID uuid.UUID
+	SeatIDs         []uuid.UUID
+	OccurredAt      time.Time
+}
+
 type SeatReservedEvent struct {
 	ID              uuid.UUID   `json:"event_id"`
 	BookingID       uuid.UUID   `json:"booking_id"`

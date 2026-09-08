@@ -480,7 +480,7 @@ is up.
 # DONE  ReserveSeat    consume:BookingRequested:booking.events  publish:SeatReserved|SeatReservationFailed:seat_reservation  (event-service, Go)
 # DONE  ConfirmBooking  consume:SeatReserved:seat_reservation.events  publish:BookingConfirmed:booking  (booking-service, Rust rdkafka — first Rust consumer)
 # DONE  CancelBooking   consume:SeatReservationFailed:seat_reservation.events  publish:BookingCancelled:booking  (booking-service, 2nd SagaConsumer on the topic — no new infra)
-/new-go-api-endpoint   event-service    FinalizeSeat    consume:BookingConfirmed:booking.events
+# DONE  FinalizeSeat   consume:BookingConfirmed:booking.events   (event-service, group event-service-BookingConfirmed — 2nd consumer on booking.events, terminal, emits nothing, no infra change)
 /new-go-api-endpoint   event-service    ReleaseSeat     consume:BookingCancelled:booking.events
 /new-go-api-endpoint   analytics-service RecordBookingOutcome consume:BookingConfirmed:booking.events consume:BookingCancelled:booking.events
 
@@ -526,8 +526,15 @@ Consumer-scaffolding status per step:
   `SeatReserved` or `SeatReservationFailed` through `WriteOutbox`). It is now a
   CDC publisher: `debezium/event-service-outbox.json` (registered in `connect-init`),
   `wal_level=logical` on `postgres-event`, `seat_reservation.events`/`.dlq` in
-  `kafka-init`. `FinalizeSeat` / `ReleaseSeat` will add two more consumer groups on
-  `booking.events` (they reuse the same engine, no new infra).
+  `kafka-init`. `FinalizeSeat` is wired: a **2nd** consumer group
+  (`event-service-BookingConfirmed`) on `booking.events` via the same generic engine
+  (`cmd/main.go` now runs both consumers off a `[]consumerRunner` slice), one
+  read-write txn — `processed_events` dedupe → `SELECT seat_reservations … FOR UPDATE`
+  → if `held`: `UPDATE seats SET status='booked'` + `seat_reservations held→finalized`;
+  a missing row is a transient error (§5.6, retry→DLQ, never a silent success), a
+  `released` row is `ErrReservationNotHeld` → permanent → DLQ + alert (§5.5, never
+  un-confirm). Emits nothing (terminal, step 4a). No new infra. `ReleaseSeat` (the
+  compensation arm, `consume:BookingCancelled`) is still pending.
 - **analytics-service** — already runs the generic engine on `user.events`:
   `RecordBookingOutcome` adds a second reader on `booking.events` plus two new
   `EventSpec`s (`BookingConfirmed`, `BookingCancelled`) and their groups. No new
