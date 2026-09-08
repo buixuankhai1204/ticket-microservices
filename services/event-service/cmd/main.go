@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -59,6 +60,7 @@ func run(log logger.Logger) error {
 	listEventSeats := usecase.NewListEventSeatsUseCase(pool, repo)
 	createNewEvent := usecase.NewCreateNewEventUseCase(pool, repo)
 	reserveSeat := usecase.NewReserveSeatUseCase(pool, repo)
+	finalizeSeat := usecase.NewFinalizeSeatUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
 	health := httpadapter.NewHealthHandler(pool)
@@ -78,16 +80,24 @@ func run(log logger.Logger) error {
 		Topic:       cfg.KafkaBookingEventsTopic,
 		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
 	}
-	consumer := kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingRequestedSpec(reserveSeat), log)
-	defer func() { _ = consumer.Close() }()
+	consumers := []consumerRunner{
+		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingRequestedSpec(reserveSeat), log),
+		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingConfirmedSpec(finalizeSeat), log),
+	}
+	for _, c := range consumers {
+		defer func(c consumerRunner) { _ = c.Close() }(c)
+	}
 
-	consumerDone := make(chan struct{})
-	go func() {
-		defer close(consumerDone)
-		if err := consumer.Run(ctx); err != nil {
-			log.Error("kafka consumer exited with error", "err", err.Error())
-		}
-	}()
+	var consumersWG sync.WaitGroup
+	for _, c := range consumers {
+		consumersWG.Add(1)
+		go func(c consumerRunner) {
+			defer consumersWG.Done()
+			if err := c.Run(ctx); err != nil {
+				log.Error("kafka consumer exited with error", "err", err.Error())
+			}
+		}(c)
+	}
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -110,6 +120,11 @@ func run(log logger.Logger) error {
 		return err
 	}
 
-	<-consumerDone
+	consumersWG.Wait()
 	return nil
+}
+
+type consumerRunner interface {
+	Run(context.Context) error
+	Close() error
 }

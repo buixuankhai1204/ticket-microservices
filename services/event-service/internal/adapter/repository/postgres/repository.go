@@ -31,6 +31,12 @@ func scanSeat(row rowScanner) (domain.Seat, error) {
 	return s, err
 }
 
+func scanSeatReservation(row rowScanner) (domain.SeatReservation, error) {
+	var r domain.SeatReservation
+	err := row.Scan(&r.BookingID, &r.EventID, &r.SeatIDs, &r.Status)
+	return r, err
+}
+
 func (r *Repository) ListEvents(ctx context.Context, tx pgx.Tx, f domain.EventFilter, p domain.Pagination) ([]domain.Event, int, error) {
 	var total int
 	if err := tx.QueryRow(ctx,
@@ -211,6 +217,34 @@ func (r *Repository) CreateSeatReservation(ctx context.Context, tx pgx.Tx, booki
 		bookingID, eventID, seatIDs,
 	); err != nil {
 		return &domain.RepositoryError{Err: fmt.Errorf("insert seat_reservation: %w", err)}
+	}
+	return nil
+}
+
+func (r *Repository) LockSeatReservation(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID) (domain.SeatReservation, error) {
+	const query = `
+		SELECT booking_id, event_id, seat_ids, status
+		FROM seat_reservations
+		WHERE booking_id = $1
+		FOR UPDATE`
+
+	res, err := scanSeatReservation(tx.QueryRow(ctx, query, bookingID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.SeatReservation{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.SeatReservation{}, &domain.RepositoryError{Err: fmt.Errorf("lock seat_reservation: %w", err)}
+	}
+
+	return res, nil
+}
+
+func (r *Repository) UpdateSeatReservationStatus(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, status string) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE seat_reservations SET status = $1, updated_at = now() WHERE booking_id = $2`,
+		status, bookingID,
+	); err != nil {
+		return &domain.RepositoryError{Err: fmt.Errorf("update seat_reservation status: %w", err)}
 	}
 	return nil
 }
