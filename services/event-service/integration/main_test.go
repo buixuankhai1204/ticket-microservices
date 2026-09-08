@@ -70,5 +70,6 @@ func truncateAll(t *testing.T) {
 type noopLogger struct{}
 
 func (noopLogger) Info(string, ...any)         {}
+func (noopLogger) Warn(string, ...any)         {}
 func (noopLogger) Error(string, ...any)        {}
 func (n noopLogger) With(...any) logger.Logger { return n }

@@ -211,6 +211,16 @@ func (r *Repository) UpdateSeatsStatus(ctx context.Context, tx pgx.Tx, seatIDs [
 	return nil
 }
 
+func (r *Repository) ReleaseReservedSeats(ctx context.Context, tx pgx.Tx, seatIDs []uuid.UUID) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE seats SET status = 'available' WHERE id = ANY($1) AND status = 'reserved'`,
+		seatIDs,
+	); err != nil {
+		return &domain.RepositoryError{Err: fmt.Errorf("release reserved seats: %w", err)}
+	}
+	return nil
+}
+
 func (r *Repository) CreateSeatReservation(ctx context.Context, tx pgx.Tx, bookingID, eventID uuid.UUID, seatIDs []uuid.UUID) error {
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO seat_reservations (booking_id, event_id, seat_ids) VALUES ($1, $2, $3)`,
@@ -237,6 +247,36 @@ func (r *Repository) LockSeatReservation(ctx context.Context, tx pgx.Tx, booking
 	}
 
 	return res, nil
+}
+
+func (r *Repository) ListStaleHeldReservations(ctx context.Context, tx pgx.Tx, olderThanSecs int) ([]domain.SeatReservation, error) {
+	const query = `
+		SELECT booking_id, event_id, seat_ids, status
+		FROM seat_reservations
+		WHERE status = 'held' AND created_at < now() - make_interval(secs => $1)
+		ORDER BY created_at
+		FOR UPDATE SKIP LOCKED
+		LIMIT 100`
+
+	rows, err := tx.Query(ctx, query, float64(olderThanSecs))
+	if err != nil {
+		return nil, &domain.RepositoryError{Err: fmt.Errorf("list stale held reservations: %w", err)}
+	}
+	defer rows.Close()
+
+	var reservations []domain.SeatReservation
+	for rows.Next() {
+		res, err := scanSeatReservation(rows)
+		if err != nil {
+			return nil, &domain.RepositoryError{Err: fmt.Errorf("scan seat_reservation: %w", err)}
+		}
+		reservations = append(reservations, res)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, &domain.RepositoryError{Err: fmt.Errorf("iterate seat_reservations: %w", err)}
+	}
+
+	return reservations, nil
 }
 
 func (r *Repository) UpdateSeatReservationStatus(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, status string) error {

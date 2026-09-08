@@ -17,6 +17,11 @@ pub trait BookingRepository: Send + Sync {
         conn: &mut PgConnection,
         id: Uuid,
     ) -> Result<Booking, BookingError>;
+    async fn claim_oldest_stale_pending(
+        &self,
+        conn: &mut PgConnection,
+        older_than_secs: i64,
+    ) -> Result<Option<Booking>, BookingError>;
     async fn list_for_user(
         &self,
         conn: &mut PgConnection,

@@ -17,6 +17,9 @@ type Config struct {
 	KafkaBrokers             []string
 	KafkaBookingEventsTopic  string
 	KafkaConsumerMaxAttempts int
+
+	SeatHoldTimeoutSecs    int
+	SeatReaperIntervalSecs int
 }
 
 func Load() (Config, error) {
@@ -26,6 +29,8 @@ func Load() (Config, error) {
 		ShutdownGrace:            15 * time.Second,
 		KafkaBookingEventsTopic:  "booking.events",
 		KafkaConsumerMaxAttempts: 5,
+		SeatHoldTimeoutSecs:      1800,
+		SeatReaperIntervalSecs:   300,
 	}
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -72,6 +77,22 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid KAFKA_CONSUMER_MAX_ATTEMPTS %q", v)
 		}
 		cfg.KafkaConsumerMaxAttempts = n
+	}
+
+	if v := os.Getenv("SEAT_HOLD_TIMEOUT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return Config{}, fmt.Errorf("invalid SEAT_HOLD_TIMEOUT %q", v)
+		}
+		cfg.SeatHoldTimeoutSecs = n
+	}
+
+	if v := os.Getenv("SEAT_REAPER_INTERVAL"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return Config{}, fmt.Errorf("invalid SEAT_REAPER_INTERVAL %q", v)
+		}
+		cfg.SeatReaperIntervalSecs = n
 	}
 
 	return cfg, nil

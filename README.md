@@ -28,15 +28,15 @@ flowchart TB
     kong -->|"/api/v1/bookings<br/>JWT required"| bs["booking-service<br/>Rust · axum · :8083"]
     kong -->|"/api/v1/analytics<br/>JWT required"| as["analytics-service<br/>Go · :8084"]
 
-    us --> pgu[("postgres-user<br/>wal_level=logical")]
+    us --> pgu[("postgres-user")]
     es --> pge[("postgres-event")]
-    bs --> pgb[("postgres-booking<br/>wal_level=logical")]
+    bs --> pgb[("postgres-booking")]
     as --> pga[("postgres-analytics")]
 
-    pgu -.WAL tail via replication slot.-> connect
-    pgb -.WAL tail via replication slot.-> connect
-    connect["Kafka Connect<br/>+ Debezium Postgres connector<br/>+ Outbox Event Router SMT"] -->|"user.events"| kafka[("Kafka<br/>single-node KRaft")]
-    connect -->|"booking.events"| kafka
+    us -->|outbox| connect
+    es -->|outbox| connect
+    bs -->|outbox| connect
+    connect["Kafka Connect<br/>(Debezium CDC)"] --> kafka[("Kafka")]
 
     kafka --> es
     kafka --> bs
@@ -76,10 +76,9 @@ A service never calls a Kafka producer directly. Instead:
    (`<aggregate_type>.events`) and `aggregate_id` → the Kafka message key, so every
    event about one aggregate (one user, one booking) lands on the same partition and
    stays in order.
-4. Consumers dedupe on the event's id against a `processed_events` table before
-   applying it (delivery is **at-least-once**; this makes processing
-   *effectively-once*), and dead-letter poison or permanently-failing messages to
-   `<topic>.dlq` rather than wedging the partition.
+4. Consumers make processing **effectively-once** — each event is deduped by its id
+   before it's applied (delivery is at-least-once) — and dead-letter poison or
+   permanently-failing messages to `<topic>.dlq` rather than wedging the partition.
 
 See [`CLAUDE.md`](CLAUDE.md) for the full write-up of this pattern and
 [`docs/sagas/seat-reservation.md`](docs/sagas/seat-reservation.md) for the
@@ -259,8 +258,13 @@ one.
 - Kafka runs as a **single broker** in this compose file (`replication-factor: 1`
   everywhere) — fine for local development, not representative of a production
   topology (would need ≥3 brokers and `replication-factor: 3`).
-- The seat-reservation saga's `BookingRequested` publish step is wired;
-  `event-service`'s seat-reservation consumer step and the confirm/compensate path
-  back in `booking-service` are tracked in
-  [`docs/sagas/seat-reservation.md`](docs/sagas/seat-reservation.md) — check that
-  file's "Next actions" section for what's implemented versus pending.
+- The seat-reservation saga is **wired end to end**: `booking-service` publishes
+  `BookingRequested` → `event-service` reserves the seats and publishes
+  `SeatReserved` / `SeatReservationFailed` → `booking-service` confirms or
+  compensates (`BookingConfirmed` / `BookingCancelled`) → `event-service` finalizes
+  or releases the seats, and `analytics-service` projects the outcome into
+  `booking_outcomes`. Two stuck-saga reapers back it up — `booking-service` cancels
+  a booking stranded in `pending` past `BOOKING_PENDING_TIMEOUT`, `event-service`
+  releases a seat hold stranded past `SEAT_HOLD_TIMEOUT`. Full event catalog,
+  failure sequences, and compensation map:
+  [`docs/sagas/seat-reservation.md`](docs/sagas/seat-reservation.md).
