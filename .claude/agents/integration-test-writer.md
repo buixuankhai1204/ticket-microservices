@@ -1,6 +1,6 @@
 ---
 name: integration-test-writer
-description: Reads implemented service code and writes integration tests against a real Postgres (and, for saga steps, the real consumer/use-case logic) — the full HTTP handler → usecase → repository → DB path — targeting the concurrency, idempotency, compensation, and transaction-atomicity edge cases unit tests structurally can't reach. Use once a service has real endpoints and/or saga steps, before opening a PR.
+description: Writes a small, coverage-driven set of integration tests against a real Postgres — one happy-path test per usecase covering its longest realistic journey, plus only the edge cases that usecase's own shape actually calls for (a contended claim, a consumer, a cross-user resource). Not an exhaustive sweep of every usecase against every category. Use once a service has real endpoints and/or saga steps, before opening a PR.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
@@ -14,13 +14,25 @@ constructed event for a consumer), not the live multi-service flow.
 
 **Use-case orchestration lives here.** The use case owns the transaction boundary (holds the
 pool, calls `Begin`/`Commit`), so its behavior can only be tested against a real Postgres.
-Per use case, cover: a repository error propagates unchanged (not swallowed, not re-wrapped
-into something the HTTP layer can't map); a DB "not found" becomes the use case's own
-not-found error; every domain error the entity can produce reaches the caller intact; if the
-flow prepares a saga event, its fields are correct on success and **no `outbox_events` row
-exists on failure**; CPU-bound work (Argon2) happens before `Begin` (assert via timing or by
-confirming no connection is pinned during the hash). Drive through the use case's public
-`Execute`/`execute` when the HTTP layer adds nothing.
+Drive through the use case's public `Execute`/`execute` when the HTTP layer adds nothing.
+
+## Constraint: one happy path per usecase, then only what that usecase's shape needs
+
+Do not run every usecase through every category below. For each usecase in scope:
+
+1. **Write exactly one test for its longest realistic journey** — the sequence a real
+   request/event actually takes end to end (load → domain recompute → save, inside its
+   `withTx`/`with_tx` closure, through to what the caller observes after: the response, or for
+   a saga step, the row state plus its outbox row). This single test already exercises error
+   propagation, not-found mapping, and saga-event-field correctness along the way — don't add
+   separate tests for those unless the happy-path test can't reach them.
+2. **Add a category test only if this usecase actually has that shape** — check the list below
+   once per usecase, skip every category that doesn't apply, and say which you skipped and why
+   in the output. Most usecases in this repo need the happy path and nothing else.
+3. **Check coverage before adding more.** Run with `-tags=integration -coverpkg=./internal/usecase/...
+   -cover` (Go) or `cargo tarpaulin --test '*'` (Rust) alongside the integration run; a usecase
+   whose happy path plus its one applicable category already covers every branch doesn't need
+   another test just because a checklist has more items.
 
 ## Infrastructure
 
@@ -37,35 +49,31 @@ confirming no connection is pinned during the hash). Drive through the use case'
   idempotency / business-logic / compensation edges without the weight. Only use a real
   broker (`testcontainers` has Kafka modules) if the Kafka wiring itself is what's under test.
 
-## Edge cases to prioritize — the ones a unit test structurally cannot catch
+## Category tests — apply only the ones this usecase's shape actually has
 
-1. **Concurrent oversell** (highest-value test in this repo — see `/review-concurrency`):
-   fire N concurrent requests at the reserve/book endpoint against a real row with M < N
-   seats; assert **exactly M** succeed (2xx) and the rest fail cleanly (409) — never M+1
-   successes, never a corrupted or negative seat count left behind.
-2. **Idempotent consumer**: invoke the same consumer handler twice with the identical event
-   ID against the real DB; assert the second call is a no-op (verified via the
-   `processed_events` row), not a duplicate side effect (double seat decrement, double
-   confirmation).
-3. **Transaction atomicity**: force a failure partway through a multi-step write (unique
-   constraint violation on the second insert); assert nothing committed — no state change
-   without its `outbox_events` row, no outbox row without the state change.
-4. **Compensating path**: feed the compensating consumer its failure-signal event (e.g.
-   `SeatReservationFailed`) against a booking that's `pending`; assert the booking ends
-   `cancelled` (a forward correction — the row still exists), any reserved seat is released,
-   and a `BookingCancelled` event row was written. Then feed the **same** event again and
-   assert the compensation is idempotent (still `cancelled`, seat not released twice).
-5. **Stuck-saga reaper**: if the service has a timeout/reaper for rows stranded in a
-   non-terminal state, insert a `pending` row with an old timestamp, run the reaper, and
-   assert it drives the row to a terminal state (usually via the same compensation) and
-   emits the expected event. If the design (`docs/sagas/*.md`) calls for a reaper and the
-   code has none, that's a bug to flag, not a test to skip.
-6. **Auth boundary through the real handler**: missing JWT → 401; a valid JWT for a different
-   user reading/modifying someone else's resource → the ownership check actually fires (IDOR
-   — see `security-reviewer`), not a success because the query alone was correct.
-7. **Full request→response contract**: for at least one endpoint per service, assert the real
-   JSON response shape (including the pagination envelope) matches what `api-doc-sync` would
-   document, not just the status code.
+These are the edge cases a unit test structurally cannot catch, each tied to a specific
+usecase *shape*. Check a usecase against this list once; if it doesn't have that shape, skip
+the category — don't write it "for completeness."
+
+1. **Has a contended claim** (seat reservation, stock decrement) → concurrent oversell test:
+   fire N concurrent requests against a real row with M < N seats; assert **exactly M** succeed
+   (2xx) and the rest fail cleanly (409). This is the one category that's near-mandatory when
+   it applies — see `/review-concurrency` — because no mock can prove it at all.
+2. **Is a saga consumer** → idempotency test: invoke the handler twice with the identical event
+   ID against the real DB; assert the second call is a no-op (via `processed_events`), not a
+   duplicate side effect.
+3. **Is a compensating consumer** → feed it the failure-signal event against a `pending` row;
+   assert the row reaches its terminal state via the compensation, then feed the **same** event
+   again and assert it's still idempotent.
+4. **Is reachable via a JWT-protected route and operates on one user's resource** → a valid JWT
+   for a *different* user must not succeed (IDOR — see `security-reviewer`). One test.
+
+Categories intentionally **not** on this list as a per-usecase default: transaction atomicity
+(the happy-path test already proves the successful case commits; only add a dedicated
+forced-failure test if `/review-concurrency` or a real bug flagged this table as risky), a
+stuck-saga reaper (write it once per saga that has one, not once per usecase), and
+full request→response contract checking (that's `api-doc-sync`'s job against real traffic, not
+a per-usecase integration test).
 
 ## After writing
 
@@ -79,7 +87,9 @@ passes against broken code isn't testing anything.
 
 ## Output
 
-What's covered per service; the Docker/testcontainers prerequisite for local + CI runs; and
-any edge case above you couldn't test because the underlying code doesn't handle it — that's
-a bug to flag (hand it to `saga-consistency-reviewer` / `/review-concurrency` as appropriate),
-not a test to skip.
+Per usecase: which journey the happy-path test covers, which category (if any) applied and why,
+and which categories were skipped and why (e.g. "no contended claim, not a consumer, no
+cross-user access — happy path is the whole suite"). The coverage percentage from the tool for
+the usecase package, not an estimate. Any category that should apply but the underlying code
+doesn't support yet (no `processed_events` check, no `version` column) is a bug to flag — hand
+it to `saga-consistency-reviewer` / `/review-concurrency` as appropriate — not a test to skip.

@@ -122,6 +122,35 @@ func TestSeatReserveReleaseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSeatReserveRejectsWhenNotAvailable(t *testing.T) {
+	s := &Seat{Status: SeatReserved}
+	if err := s.Reserve(); !errors.Is(err, ErrSeatUnavailable) {
+		t.Fatalf("Reserve() err = %v, want errors.Is %v", err, ErrSeatUnavailable)
+	}
+	if s.Status != SeatReserved {
+		t.Fatalf("Status = %q, want unchanged after rejected Reserve", s.Status)
+	}
+}
+
+func TestSeatReleaseRejectsWhenNotReserved(t *testing.T) {
+	s := &Seat{Status: SeatBooked}
+	if err := s.Release(); !errors.Is(err, ErrSeatUnavailable) {
+		t.Fatalf("Release() err = %v, want errors.Is %v", err, ErrSeatUnavailable)
+	}
+	if s.Status != SeatBooked {
+		t.Fatalf("Status = %q, want unchanged after rejected Release", s.Status)
+	}
+}
+
+func TestSeatIsAvailable(t *testing.T) {
+	if !(&Seat{Status: SeatAvailable}).IsAvailable() {
+		t.Fatalf("IsAvailable() = false for an available seat")
+	}
+	if (&Seat{Status: SeatReserved}).IsAvailable() {
+		t.Fatalf("IsAvailable() = true for a reserved seat")
+	}
+}
+
 func TestValidateSections(t *testing.T) {
 	tests := []struct {
 		name    string

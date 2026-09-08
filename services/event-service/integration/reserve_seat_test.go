@@ -162,6 +162,133 @@ func TestReserveSeat_HappyPath_ReservesSeatsAndEmitsSeatReserved(t *testing.T) {
 	}
 }
 
+func TestReserveSeat_ConcurrentContendForSameSeats_ExactlyOneWinnerPerSeat(t *testing.T) {
+	truncateAll(t)
+	ctx := context.Background()
+
+	const seatCount = 3
+	const requests = 12
+
+	eventID, seatIDs := seedEventWithSeats(t, seatCount)
+
+	spy := newSpy()
+	uc := usecase.NewReserveSeatUseCase(testPool, spy)
+
+	type outcome struct {
+		already bool
+		err     error
+	}
+	outcomes := make([]outcome, requests)
+
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	for i := 0; i < requests; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ev := newBookingRequested(eventID, []uuid.UUID{seatIDs[i%seatCount]})
+			already, err := uc.Execute(ctx, ev)
+			outcomes[i] = outcome{already: already, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, o := range outcomes {
+		if o.err != nil {
+			t.Fatalf("request %d: Execute error = %v, want nil (a lost race is a business rejection)", i, o.err)
+		}
+		if o.already {
+			t.Fatalf("request %d: alreadyProcessed = true, want false (every event id is fresh)", i)
+		}
+	}
+
+	var reserved, failed int
+	for _, ev := range spy.recorded() {
+		switch e := ev.(type) {
+		case domain.SeatReservedEvent:
+			reserved++
+		case domain.SeatReservationFailedEvent:
+			failed++
+			if e.Reason != domain.ReasonSeatUnavailable {
+				t.Errorf("failed event reason = %q, want %q", e.Reason, domain.ReasonSeatUnavailable)
+			}
+		default:
+			t.Fatalf("unexpected emitted event type %T", ev)
+		}
+	}
+	if reserved != seatCount {
+		t.Errorf("SeatReserved events = %d, want %d (one winner per seat)", reserved, seatCount)
+	}
+	if failed != requests-seatCount {
+		t.Errorf("SeatReservationFailed events = %d, want %d", failed, requests-seatCount)
+	}
+
+	if n := seatsInStatus(t, seatIDs, domain.SeatReserved); n != seatCount {
+		t.Errorf("seats in reserved status = %d, want %d", n, seatCount)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM seat_reservations WHERE status = 'held'`); n != seatCount {
+		t.Errorf("held seat_reservations rows = %d, want %d", n, seatCount)
+	}
+	heldSeats := countRows(t, `SELECT COUNT(*) FROM (SELECT unnest(seat_ids) AS sid FROM seat_reservations) t`)
+	distinctHeldSeats := countRows(t, `SELECT COUNT(DISTINCT sid) FROM (SELECT unnest(seat_ids) AS sid FROM seat_reservations) t`)
+	if heldSeats != seatCount || distinctHeldSeats != seatCount {
+		t.Errorf("held seat ids total/distinct = %d/%d, want %d/%d (a seat was reserved twice)", heldSeats, distinctHeldSeats, seatCount, seatCount)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM processed_events`); n != requests {
+		t.Errorf("processed_events rows = %d, want %d (winners and losers both record dedupe)", n, requests)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM outbox_events`); n != 0 {
+		t.Errorf("outbox_events rows = %d, want 0", n)
+	}
+}
+
+func TestReserveSeat_ReplaySameEventID_IsNoOp(t *testing.T) {
+	truncateAll(t)
+	ctx := context.Background()
+
+	eventID, seatIDs := seedEventWithSeats(t, 3)
+	ev := newBookingRequested(eventID, seatIDs)
+
+	spy := newSpy()
+	uc := usecase.NewReserveSeatUseCase(testPool, spy)
+
+	already, err := uc.Execute(ctx, ev)
+	if err != nil || already {
+		t.Fatalf("first Execute = (%v, %v), want (false, nil)", already, err)
+	}
+
+	replayAlready, err := uc.Execute(ctx, ev)
+	if err != nil {
+		t.Fatalf("replay Execute error = %v, want nil", err)
+	}
+	if !replayAlready {
+		t.Fatalf("replay alreadyProcessed = false, want true (same event id already applied)")
+	}
+
+	if n := seatsInStatus(t, seatIDs, domain.SeatReserved); n != len(seatIDs) {
+		t.Errorf("seats reserved = %d, want %d (replay must not touch seats)", n, len(seatIDs))
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM seat_reservations WHERE booking_id = $1`, ev.BookingID); n != 1 {
+		t.Errorf("seat_reservations rows for the booking = %d, want 1 (no duplicate hold)", n)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM seat_reservations`); n != 1 {
+		t.Errorf("total seat_reservations rows = %d, want 1", n)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM processed_events WHERE event_id = $1`, ev.ID); n != 1 {
+		t.Errorf("processed_events rows for the event = %d, want 1", n)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM outbox_events`); n != 0 {
+		t.Errorf("outbox_events rows = %d, want 0", n)
+	}
+
+	calls := spy.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("WriteOutbox calls = %d, want 1 (replay emits nothing)", len(calls))
+	}
+	if _, ok := calls[0].(domain.SeatReservedEvent); !ok {
+		t.Fatalf("first emitted event = %T, want domain.SeatReservedEvent", calls[0])
+	}
+}
+
 func TestReserveSeat_OneRequestedSeatUnavailable_FailsAllOrNothing(t *testing.T) {
 	truncateAll(t)
 	ctx := context.Background()

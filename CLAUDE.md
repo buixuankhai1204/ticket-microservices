@@ -278,8 +278,8 @@ the affected skill(s)/agent(s), nothing else.
 | `saga-consistency-reviewer` | Read-only, whole-repo: the choreography graph — orphan events, missing topics/DLQs/connectors, missing compensations, non-idempotent consumers, partition-wedge risk, stuck sagas |
 | `migration-reviewer` | Read-only: migration files for rolling-deploy safety — lock-heavy DDL, breaking changes without expand/contract, `CONCURRENTLY` in a txn, missing indexes |
 | `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
-| `unit-test-writer` | Writer: `domain`-only unit tests (pure entities/invariants, no mocks, no DB), exhaustive edge cases |
-| `integration-test-writer` | Writer: integration tests vs real Postgres — oversell, idempotency, tx atomicity, compensation, reaper |
+| `unit-test-writer` | Writer: `domain`-only unit tests (pure entities/invariants, no mocks, no DB) — one happy path plus one test per uncovered branch, sized to coverage, not exhaustive |
+| `integration-test-writer` | Writer: integration tests vs real Postgres — one happy path per usecase plus only the categories that usecase's shape needs (contended claim, consumer idempotency, IDOR), not a fixed checklist |
 | `e2e-saga-tester` | Drives an already-running `docker compose` stack through a saga via Kong and asserts DB + DLQ state, happy path and compensation path |
 
 `api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
