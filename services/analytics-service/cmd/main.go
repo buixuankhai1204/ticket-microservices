@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -61,6 +62,8 @@ func run(log logger.Logger) error {
 	getUserRegistration := usecase.NewGetUserRegistrationUseCase(pool, repo)
 	recordUserRegistration := usecase.NewRecordUserRegistrationUseCase(pool, repo)
 	recordUserLogin := usecase.NewRecordUserLoginUseCase(pool, repo)
+	recordBookingConfirmed := usecase.NewRecordBookingConfirmedUseCase(pool, repo)
+	recordBookingCancelled := usecase.NewRecordBookingCancelledUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(getEventStats, getUserRegistration)
 	health := httpadapter.NewHealthHandler(pool)
@@ -75,33 +78,36 @@ func run(log logger.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	kafkaCfg := kafkaconsumer.Config{
+	userKafkaCfg := kafkaconsumer.Config{
 		Brokers:     cfg.KafkaBrokers,
 		Topic:       cfg.KafkaUserEventsTopic,
 		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
 	}
+	bookingKafkaCfg := kafkaconsumer.Config{
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       cfg.KafkaBookingEventsTopic,
+		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
+	}
+	consumers := []consumerRunner{
+		kafkaconsumer.NewConsumer(userKafkaCfg, kafkaconsumer.UserCreatedSpec(recordUserRegistration), log),
+		kafkaconsumer.NewConsumer(userKafkaCfg, kafkaconsumer.UserLoggedInSpec(recordUserLogin), log),
+		kafkaconsumer.NewConsumer(bookingKafkaCfg, kafkaconsumer.BookingConfirmedSpec(recordBookingConfirmed), log),
+		kafkaconsumer.NewConsumer(bookingKafkaCfg, kafkaconsumer.BookingCancelledSpec(recordBookingCancelled), log),
+	}
+	for _, c := range consumers {
+		defer func(c consumerRunner) { _ = c.Close() }(c)
+	}
 
-	consumer := kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.UserCreatedSpec(recordUserRegistration), log)
-	defer func() { _ = consumer.Close() }()
-
-	loginConsumer := kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.UserLoggedInSpec(recordUserLogin), log)
-	defer func() { _ = loginConsumer.Close() }()
-
-	consumerDone := make(chan struct{})
-	go func() {
-		defer close(consumerDone)
-		if err := consumer.Run(ctx); err != nil {
-			log.Error("kafka consumer exited with error", "err", err.Error())
-		}
-	}()
-
-	loginConsumerDone := make(chan struct{})
-	go func() {
-		defer close(loginConsumerDone)
-		if err := loginConsumer.Run(ctx); err != nil {
-			log.Error("kafka login consumer exited with error", "err", err.Error())
-		}
-	}()
+	var consumersWG sync.WaitGroup
+	for _, c := range consumers {
+		consumersWG.Add(1)
+		go func(c consumerRunner) {
+			defer consumersWG.Done()
+			if err := c.Run(ctx); err != nil {
+				log.Error("kafka consumer exited with error", "err", err.Error())
+			}
+		}(c)
+	}
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -124,7 +130,11 @@ func run(log logger.Logger) error {
 		return err
 	}
 
-	<-consumerDone
-	<-loginConsumerDone
+	consumersWG.Wait()
 	return nil
+}
+
+type consumerRunner interface {
+	Run(context.Context) error
+	Close() error
 }

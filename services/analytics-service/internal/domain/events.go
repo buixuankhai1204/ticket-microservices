@@ -19,3 +19,22 @@ type UserLoggedIn struct {
 	Email      string
 	LoggedInAt time.Time
 }
+
+type BookingConfirmed struct {
+	EventID         uuid.UUID
+	BookingID       uuid.UUID
+	UserID          uuid.UUID
+	TicketedEventID uuid.UUID
+	SeatIDs         []uuid.UUID
+	OccurredAt      time.Time
+}
+
+type BookingCancelled struct {
+	EventID         uuid.UUID
+	BookingID       uuid.UUID
+	UserID          uuid.UUID
+	TicketedEventID uuid.UUID
+	SeatIDs         []uuid.UUID
+	Reason          string
+	OccurredAt      time.Time
+}

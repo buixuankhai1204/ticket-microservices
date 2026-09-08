@@ -84,6 +84,30 @@ func (r *Repository) RecordUserLogin(ctx context.Context, tx pgx.Tx, eventID uui
 	return false, nil
 }
 
+func (r *Repository) RecordBookingOutcome(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, outcome domain.BookingOutcome) (bool, error) {
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+		eventID,
+	)
+	if err != nil {
+		return false, &domain.RepositoryError{Err: fmt.Errorf("mark processed_events: %w", err)}
+	}
+	if tag.RowsAffected() == 0 {
+		return true, nil
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO booking_outcomes (id, booking_id, event_id, status, occurred_at, recorded_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (booking_id) DO NOTHING`,
+		outcome.ID, outcome.BookingID, outcome.EventID, outcome.Status, outcome.OccurredAt, outcome.RecordedAt,
+	); err != nil {
+		return false, &domain.RepositoryError{Err: fmt.Errorf("insert booking_outcome: %w", err)}
+	}
+
+	return false, nil
+}
+
 func (r *Repository) GetUserRegistration(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (domain.UserRegistration, error) {
 	const query = `
 		SELECT user_id, email, registered_at, recorded_at

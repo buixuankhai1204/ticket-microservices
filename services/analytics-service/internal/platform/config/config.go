@@ -16,6 +16,7 @@ type Config struct {
 
 	KafkaBrokers             []string
 	KafkaUserEventsTopic     string
+	KafkaBookingEventsTopic  string
 	KafkaConsumerMaxAttempts int
 }
 
@@ -25,6 +26,7 @@ func Load() (Config, error) {
 		DBMaxConns:               20,
 		ShutdownGrace:            15 * time.Second,
 		KafkaUserEventsTopic:     "user.events",
+		KafkaBookingEventsTopic:  "booking.events",
 		KafkaConsumerMaxAttempts: 5,
 	}
 
@@ -64,6 +66,10 @@ func Load() (Config, error) {
 
 	if v := os.Getenv("KAFKA_USER_EVENTS_TOPIC"); v != "" {
 		cfg.KafkaUserEventsTopic = v
+	}
+
+	if v := os.Getenv("KAFKA_BOOKING_EVENTS_TOPIC"); v != "" {
+		cfg.KafkaBookingEventsTopic = v
 	}
 
 	if v := os.Getenv("KAFKA_CONSUMER_MAX_ATTEMPTS"); v != "" {

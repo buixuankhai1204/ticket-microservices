@@ -481,8 +481,8 @@ is up.
 # DONE  ConfirmBooking  consume:SeatReserved:seat_reservation.events  publish:BookingConfirmed:booking  (booking-service, Rust rdkafka — first Rust consumer)
 # DONE  CancelBooking   consume:SeatReservationFailed:seat_reservation.events  publish:BookingCancelled:booking  (booking-service, 2nd SagaConsumer on the topic — no new infra)
 # DONE  FinalizeSeat   consume:BookingConfirmed:booking.events   (event-service, group event-service-BookingConfirmed — 2nd consumer on booking.events, terminal, emits nothing, no infra change)
-/new-go-api-endpoint   event-service    ReleaseSeat     consume:BookingCancelled:booking.events
-/new-go-api-endpoint   analytics-service RecordBookingOutcome consume:BookingConfirmed:booking.events consume:BookingCancelled:booking.events
+# DONE  ReleaseSeat    consume:BookingCancelled:booking.events   (event-service, group event-service-BookingCancelled — 3rd consumer on booking.events; held→released + seats reserved→available; missing row = idempotent no-op §5.1; finalized row = permanent §5.3 tail; no infra change)
+# DONE  RecordBookingOutcome consume:BookingConfirmed|BookingCancelled:booking.events  (analytics-service, groups analytics-service-BookingConfirmed / -BookingCancelled → booking_outcomes read model; UNIQUE(booking_id) + processed_events idempotent; adds KAFKA_BOOKING_EVENTS_TOPIC; no new connector/migration)
 
 # --- reapers (background jobs, not HTTP endpoints — add by hand per §7) --------
 #   booking-service : pending > BOOKING_PENDING_TIMEOUT (2m) -> CancelBooking path, tokio ticker every 30s
@@ -533,9 +533,21 @@ Consumer-scaffolding status per step:
   → if `held`: `UPDATE seats SET status='booked'` + `seat_reservations held→finalized`;
   a missing row is a transient error (§5.6, retry→DLQ, never a silent success), a
   `released` row is `ErrReservationNotHeld` → permanent → DLQ + alert (§5.5, never
-  un-confirm). Emits nothing (terminal, step 4a). No new infra. `ReleaseSeat` (the
-  compensation arm, `consume:BookingCancelled`) is still pending.
-- **analytics-service** — already runs the generic engine on `user.events`:
-  `RecordBookingOutcome` adds a second reader on `booking.events` plus two new
-  `EventSpec`s (`BookingConfirmed`, `BookingCancelled`) and their groups. No new
-  connector (analytics never publishes).
+  un-confirm). Emits nothing (terminal, step 4a). No new infra.
+  `ReleaseSeat` is wired: a **3rd** group (`event-service-BookingCancelled`) on
+  `booking.events` in the same `[]consumerRunner` slice, one read-write txn —
+  `processed_events` dedupe → `SELECT seat_reservations … FOR UPDATE` → if `held`:
+  `UPDATE seats SET status='available'` + `seat_reservations held→released`. A
+  **missing** row is a legitimate idempotent no-op (§5.1 fail-before-reserve —
+  the opposite of FinalizeSeat), a `finalized` row is `ErrReservationNotHeld` →
+  permanent → DLQ (§5.3 tail). Emits nothing (terminal, step 4b). No infra change.
+- **analytics-service** — runs the generic engine on `user.events` (2 groups) and,
+  with `RecordBookingOutcome`, on `booking.events` (2 more groups —
+  `analytics-service-BookingConfirmed` / `-BookingCancelled`, `cmd/main.go` now
+  wires all four off a `[]consumerRunner` slice). Each booking consumer builds a
+  `BookingOutcome` (`status` `confirmed`/`cancelled`) and calls one
+  `RecordBookingOutcome` repo method: `processed_events` dedupe →
+  `INSERT INTO booking_outcomes … ON CONFLICT (booking_id) DO NOTHING`. `reason`
+  and `seat_ids` are not projected (no columns). Adds `KAFKA_BOOKING_EVENTS_TOPIC`
+  (config + compose). No new connector (analytics never publishes), no migration
+  (`booking_outcomes` / `processed_events` already exist).
