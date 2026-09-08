@@ -1,6 +1,6 @@
 ---
 name: unit-test-writer
-description: Writes unit tests for the domain layer of a Go or Rust service - pure entity methods and business invariants, no mocks, no DB/network - aiming for exhaustive edge-case coverage (boundary values, invalid input, every mapped domain error). Use after implementing or changing domain code, before opening a PR.
+description: Writes a small, coverage-driven set of unit tests for the domain layer of a Go or Rust service - pure entity methods and business invariants, no mocks, no DB/network. One happy-path test per function, plus only the edge cases needed to hit every distinct branch at high coverage - not one test per conceivable input variant. Use after implementing or changing domain code, before opening a PR.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
@@ -18,6 +18,28 @@ propagation, not-found mapping, saga-event fields, "non-DB work before `Begin`")
 `integration-test-writer`, which runs it against a real Postgres. See `@CLAUDE.md` for the
 layering.
 
+## Constraint: small and coverage-driven, not exhaustive
+
+Do not enumerate every conceivable input. For each constructor/method under test:
+
+1. **Write exactly one happy-path test first** — the normal, valid-input call.
+2. **Run coverage, then add a test only for a branch the happy path didn't reach** — one test
+   per *distinct code path* (each `if`/`match` arm, each domain error a function can return),
+   not per input variant. If three different malformed inputs (empty string, whitespace-only,
+   too-long) all hit the same `if len(name) == 0 || ...` check and return the same
+   `ErrInvalidName`, write **one** of them, not three — they're the same branch and a coverage
+   tool will already show it green after the first.
+3. **Stop once every branch is covered.** A domain file with 4 `if`-guarded error returns needs
+   on the order of 5 tests total (1 happy path + 4 branches), not a matrix of boundary values
+   around each guard. That's the target shape: small test count, high branch coverage, because
+   the two are the same thing for pure logic like this.
+
+Exceptions worth a second test even after their branch is "covered": an invariant method whose
+bug would be a *silent wrong answer* rather than a wrong error (e.g. `Pagination` clamping
+`limit` to `MaxLimit` instead of rejecting it — the clamped *value* needs asserting, not just
+that no error was returned), and a constructor that mints a UUID or a saga event (assert the ID
+is a real v4 UUID and the event payload keys match `docs/sagas/*.md`, not just "no error").
+
 ## Where tests live
 
 - Go: `<file>_test.go` next to the file under test, same package (white-box) unless testing
@@ -25,36 +47,22 @@ layering.
   yourself wanting one, the code under test probably isn't `domain`.
 - Rust: inline `#[cfg(test)] mod tests { use super::*; ... }` at the bottom of the same file.
 
-## Edge-case checklist — go through all of it, not just the happy path
-
-For the `domain` layer (entity constructors, methods, invariants):
-- Boundary values: the last valid seat/quantity succeeds, one past the boundary fails with the
-  right domain error (not a generic error, not a panic).
-- Zero/empty/nil/default-value input on every field a constructor or method takes.
-- Every domain error variant the entity can return has at least one test that actually
-  triggers it — not just the success path.
-- Invariant methods (e.g. `Seat.Reserve()`): calling twice, calling in the wrong state, and
-  calling on a freshly constructed entity all return the documented error, not a panic.
-- Value objects like `Pagination`: `NewPagination` rejects `offset < 0` and `limit < 1`,
-  clamps `limit` to `MaxLimit`, and applies the documented defaults for absent input.
-- If an entity constructor mints a UUID or records a pending event, assert the ID is a v4
-  UUID (not zero) and the event's fields (`event_id`, `aggregate_id`, and the payload keys
-  the `docs/sagas/*.md` catalog lists) match the entity's.
-
 ## After writing
 
-Run the tests and don't stop at "they compile":
+Check coverage, don't guess it:
 ```
-go test ./services/<service-name>/internal/domain/...
-cargo test --manifest-path services/<service-name>/Cargo.toml
+go test -cover ./services/<service-name>/internal/domain/...
+cargo tarpaulin --manifest-path services/<service-name>/Cargo.toml   # or cargo llvm-cov
 ```
-If you're not confident a test actually exercises the logic (not just the happy path it was
-copied from), temporarily break the relevant `domain` code and confirm the test fails, then
-restore it and confirm it passes — a test that passes either way isn't testing anything. If a
-test reveals an actual bug in the implementation, say so explicitly rather than weakening the
-test to match broken behavior.
+If the report shows an uncovered line, add the one test that reaches it — don't pre-emptively
+add tests for lines that are already covered. Then confirm at least the happy-path test
+actually exercises the logic: temporarily break the relevant `domain` code and confirm it
+fails, then restore it and confirm it passes — a test that passes either way isn't testing
+anything. If a test reveals an actual bug in the implementation, say so explicitly rather than
+weakening the test to match broken behavior.
 
 ## Output
 
-Summary of what's covered, plus any domain error/branch you found no existing test path for —
-a gap worth flagging, not silently skipping, so the "% of edge cases covered" is honest.
+The coverage percentage achieved (from the tool, not an estimate), the test count, and any
+line the tool still shows uncovered along with why (e.g. an unreachable defensive branch) —
+don't pad the suite to chase 100% on genuinely dead code.
