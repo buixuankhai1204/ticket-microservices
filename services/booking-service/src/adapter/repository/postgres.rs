@@ -104,6 +104,27 @@ impl BookingRepository for PostgresBookingRepository {
         .await
     }
 
+    async fn claim_oldest_stale_pending(
+        &self,
+        conn: &mut PgConnection,
+        older_than_secs: i64,
+    ) -> Result<Option<Booking>, BookingError> {
+        let row = sqlx::query_as::<_, BookingRow>(
+            "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
+             FROM bookings \
+             WHERE status = 'pending' AND created_at < now() - make_interval(secs => $1) \
+             ORDER BY created_at \
+             FOR UPDATE SKIP LOCKED \
+             LIMIT 1",
+        )
+        .bind(older_than_secs as f64)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        row.map(Booking::try_from).transpose()
+    }
+
     async fn list_for_user(
         &self,
         conn: &mut PgConnection,

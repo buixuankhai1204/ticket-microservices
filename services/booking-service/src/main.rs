@@ -5,6 +5,7 @@ mod usecase;
 
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 use utoipa::OpenApi;
@@ -17,7 +18,7 @@ use platform::db;
 use platform::port::BookingRepository;
 use usecase::{
     CancelBookingUseCase, ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase,
-    ListBookingsUseCase,
+    ListBookingsUseCase, ReapPendingBookingsUseCase,
 };
 
 #[tokio::main]
@@ -50,6 +51,15 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
 
+    let pending_timeout_secs: i64 = env::var("BOOKING_PENDING_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let reaper_interval_secs: u64 = env::var("BOOKING_REAPER_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+
     let booking_repository: Arc<dyn BookingRepository> = Arc::new(PostgresBookingRepository::new());
 
     let confirm_booking = Arc::new(ConfirmBookingUseCase::new(
@@ -60,6 +70,12 @@ async fn main() {
         pool.clone(),
         Arc::clone(&booking_repository),
     ));
+    let reaper = ReapPendingBookingsUseCase::new(
+        pool.clone(),
+        Arc::clone(&booking_repository),
+        pending_timeout_secs,
+        100,
+    );
 
     let state = Arc::new(AppState {
         get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
@@ -90,9 +106,10 @@ async fn main() {
     .expect("failed to create SeatReservationFailed consumer");
 
     let shutdown = CancellationToken::new();
-    let consumer_tasks = vec![
+    let background_tasks = vec![
         tokio::spawn(confirm_consumer.run(shutdown.clone())),
         tokio::spawn(cancel_consumer.run(shutdown.clone())),
+        tokio::spawn(reaper.run(shutdown.clone(), Duration::from_secs(reaper_interval_secs))),
     ];
 
     let app = build_router(state)
@@ -117,7 +134,7 @@ async fn main() {
         .await
         .expect("server error");
 
-    for task in consumer_tasks {
+    for task in background_tasks {
         let _ = task.await;
     }
 }

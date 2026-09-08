@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const REASON_SEAT_UNAVAILABLE: &str = "seat_unavailable";
+pub const REASON_RESERVATION_TIMEOUT: &str = "reservation_timeout";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookingRequested {
