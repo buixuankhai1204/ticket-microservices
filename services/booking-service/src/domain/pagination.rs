@@ -21,6 +21,6 @@ impl Pagination {
     }
 
     pub fn has_more(&self, page_len: usize, total: i64) -> bool {
-        self.offset + (page_len as i64) < total
+        self.offset.saturating_add(page_len as i64) < total
     }
 }

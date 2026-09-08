@@ -69,14 +69,25 @@ impl PostgresBookingRepository {
 
 #[async_trait]
 impl BookingRepository for PostgresBookingRepository {
-    async fn find_by_id(&self, conn: &mut PgConnection, id: Uuid) -> Result<Booking, BookingError> {
-        self.fetch_booking(
-            conn,
+    async fn find_by_id_for_user(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Booking, BookingError> {
+        let row = sqlx::query_as::<_, BookingRow>(
             "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
-             FROM bookings WHERE id = $1",
-            id,
+             FROM bookings WHERE id = $1 AND user_id = $2",
         )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
         .await
+        .map_err(repo_err)?;
+
+        row.map(Booking::try_from)
+            .transpose()?
+            .ok_or(BookingError::NotFound)
     }
 
     async fn find_for_update(
