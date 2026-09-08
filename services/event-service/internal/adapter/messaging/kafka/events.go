@@ -38,6 +38,20 @@ func BookingConfirmedSpec(record Recorder[domain.BookingConfirmed]) EventSpec[do
 	}
 }
 
+func BookingCancelledSpec(record Recorder[domain.BookingCancelled]) EventSpec[domain.BookingCancelled] {
+	return EventSpec[domain.BookingCancelled]{
+		Group:      "event-service-BookingCancelled",
+		EventType:  "BookingCancelled",
+		Component:  "booking_cancelled_consumer",
+		SuccessMsg: "seat reservation released",
+		Parse:      parseBookingCancelled,
+		LogFields: func(ev domain.BookingCancelled) []any {
+			return []any{"event_id", ev.ID.String(), "booking_id", ev.BookingID.String()}
+		},
+		Record: record,
+	}
+}
+
 type bookingRequestedWire struct {
 	EventID         string   `json:"event_id"`
 	BookingID       string   `json:"booking_id"`
@@ -53,6 +67,16 @@ type bookingConfirmedWire struct {
 	UserID          string   `json:"user_id"`
 	TicketedEventID string   `json:"ticketed_event_id"`
 	SeatIDs         []string `json:"seat_ids"`
+	OccurredAt      string   `json:"occurred_at"`
+}
+
+type bookingCancelledWire struct {
+	EventID         string   `json:"event_id"`
+	BookingID       string   `json:"booking_id"`
+	UserID          string   `json:"user_id"`
+	TicketedEventID string   `json:"ticketed_event_id"`
+	SeatIDs         []string `json:"seat_ids"`
+	Reason          string   `json:"reason"`
 	OccurredAt      string   `json:"occurred_at"`
 }
 
@@ -152,6 +176,57 @@ func parseBookingConfirmed(b []byte) (domain.BookingConfirmed, error) {
 		UserID:          userID,
 		TicketedEventID: ticketedEventID,
 		SeatIDs:         seatIDs,
+		OccurredAt:      occurredAt,
+	}, nil
+}
+
+func parseBookingCancelled(b []byte) (domain.BookingCancelled, error) {
+	var w bookingCancelledWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return domain.BookingCancelled{}, fmt.Errorf("unmarshal BookingCancelled: %w", err)
+	}
+
+	eventID, err := parseUUID("event_id", w.EventID)
+	if err != nil {
+		return domain.BookingCancelled{}, err
+	}
+	bookingID, err := parseUUID("booking_id", w.BookingID)
+	if err != nil {
+		return domain.BookingCancelled{}, err
+	}
+	userID, err := parseUUID("user_id", w.UserID)
+	if err != nil {
+		return domain.BookingCancelled{}, err
+	}
+	ticketedEventID, err := parseUUID("ticketed_event_id", w.TicketedEventID)
+	if err != nil {
+		return domain.BookingCancelled{}, err
+	}
+
+	seatIDs := make([]uuid.UUID, 0, len(w.SeatIDs))
+	for _, s := range w.SeatIDs {
+		id, err := parseUUID("seat_ids", s)
+		if err != nil {
+			return domain.BookingCancelled{}, err
+		}
+		seatIDs = append(seatIDs, id)
+	}
+	if len(seatIDs) == 0 {
+		return domain.BookingCancelled{}, fmt.Errorf("seat_ids is empty")
+	}
+
+	occurredAt, err := parseRFC3339("occurred_at", w.OccurredAt)
+	if err != nil {
+		return domain.BookingCancelled{}, err
+	}
+
+	return domain.BookingCancelled{
+		ID:              eventID,
+		BookingID:       bookingID,
+		UserID:          userID,
+		TicketedEventID: ticketedEventID,
+		SeatIDs:         seatIDs,
+		Reason:          w.Reason,
 		OccurredAt:      occurredAt,
 	}, nil
 }

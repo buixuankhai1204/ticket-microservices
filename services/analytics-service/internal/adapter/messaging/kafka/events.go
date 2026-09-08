@@ -38,11 +38,46 @@ func UserLoggedInSpec(record Recorder[domain.UserLoggedIn]) EventSpec[domain.Use
 	}
 }
 
+func BookingConfirmedSpec(record Recorder[domain.BookingConfirmed]) EventSpec[domain.BookingConfirmed] {
+	return EventSpec[domain.BookingConfirmed]{
+		Group:      "analytics-service-BookingConfirmed",
+		EventType:  "BookingConfirmed",
+		Component:  "booking_confirmed_consumer",
+		SuccessMsg: "booking outcome recorded",
+		Parse:      parseBookingConfirmed,
+		LogFields: func(ev domain.BookingConfirmed) []any {
+			return []any{"event_id", ev.EventID.String(), "booking_id", ev.BookingID.String()}
+		},
+		Record: record,
+	}
+}
+
+func BookingCancelledSpec(record Recorder[domain.BookingCancelled]) EventSpec[domain.BookingCancelled] {
+	return EventSpec[domain.BookingCancelled]{
+		Group:      "analytics-service-BookingCancelled",
+		EventType:  "BookingCancelled",
+		Component:  "booking_cancelled_consumer",
+		SuccessMsg: "booking outcome recorded",
+		Parse:      parseBookingCancelled,
+		LogFields: func(ev domain.BookingCancelled) []any {
+			return []any{"event_id", ev.EventID.String(), "booking_id", ev.BookingID.String()}
+		},
+		Record: record,
+	}
+}
+
 type userCreatedWire struct {
 	EventID   string `json:"event_id"`
 	UserID    string `json:"user_id"`
 	Email     string `json:"email"`
 	CreatedAt string `json:"created_at"`
+}
+
+type bookingOutcomeWire struct {
+	EventID         string `json:"event_id"`
+	BookingID       string `json:"booking_id"`
+	TicketedEventID string `json:"ticketed_event_id"`
+	OccurredAt      string `json:"occurred_at"`
 }
 
 func parseUserCreated(b []byte) (domain.UserCreated, error) {
@@ -99,6 +134,52 @@ func parseUserLoggedIn(b []byte) (domain.UserLoggedIn, error) {
 		UserID:     userID,
 		Email:      w.Email,
 		LoggedInAt: loggedInAt,
+	}, nil
+}
+
+func decodeBookingOutcome(eventName string, b []byte) (eventID, bookingID, ticketedEventID uuid.UUID, occurredAt time.Time, err error) {
+	var w bookingOutcomeWire
+	if err = json.Unmarshal(b, &w); err != nil {
+		return uuid.UUID{}, uuid.UUID{}, uuid.UUID{}, time.Time{}, fmt.Errorf("unmarshal %s: %w", eventName, err)
+	}
+	if eventID, err = parseUUID("event_id", w.EventID); err != nil {
+		return uuid.UUID{}, uuid.UUID{}, uuid.UUID{}, time.Time{}, err
+	}
+	if bookingID, err = parseUUID("booking_id", w.BookingID); err != nil {
+		return uuid.UUID{}, uuid.UUID{}, uuid.UUID{}, time.Time{}, err
+	}
+	if ticketedEventID, err = parseUUID("ticketed_event_id", w.TicketedEventID); err != nil {
+		return uuid.UUID{}, uuid.UUID{}, uuid.UUID{}, time.Time{}, err
+	}
+	if occurredAt, err = parseRFC3339("occurred_at", w.OccurredAt); err != nil {
+		return uuid.UUID{}, uuid.UUID{}, uuid.UUID{}, time.Time{}, err
+	}
+	return eventID, bookingID, ticketedEventID, occurredAt, nil
+}
+
+func parseBookingConfirmed(b []byte) (domain.BookingConfirmed, error) {
+	eventID, bookingID, ticketedEventID, occurredAt, err := decodeBookingOutcome("BookingConfirmed", b)
+	if err != nil {
+		return domain.BookingConfirmed{}, err
+	}
+	return domain.BookingConfirmed{
+		EventID:         eventID,
+		BookingID:       bookingID,
+		TicketedEventID: ticketedEventID,
+		OccurredAt:      occurredAt,
+	}, nil
+}
+
+func parseBookingCancelled(b []byte) (domain.BookingCancelled, error) {
+	eventID, bookingID, ticketedEventID, occurredAt, err := decodeBookingOutcome("BookingCancelled", b)
+	if err != nil {
+		return domain.BookingCancelled{}, err
+	}
+	return domain.BookingCancelled{
+		EventID:         eventID,
+		BookingID:       bookingID,
+		TicketedEventID: ticketedEventID,
+		OccurredAt:      occurredAt,
 	}, nil
 }
 
