@@ -33,6 +33,12 @@ flowchart TB
     bs --> pgb[("postgres-booking")]
     as --> pga[("postgres-analytics")]
 
+    bs -.-> breaper[["booking reaper<br/>ticker · cancels stale pending"]]
+    es -.-> sreaper[["seat reaper<br/>ticker · releases stale held"]]
+    breaper --> pgb
+    breaper -->|outbox| connect
+    sreaper --> pge
+
     us -->|outbox| connect
     es -->|outbox| connect
     bs -->|outbox| connect
@@ -45,10 +51,18 @@ flowchart TB
     classDef go fill:#00ADD8,color:#0b1d26,stroke:#00747f
     classDef rust fill:#DEA584,color:#3d1f00,stroke:#a85d2e
     classDef infra fill:#eef1f5,color:#1a1a1a,stroke:#9aa5b1
+    classDef reaper fill:#fff4e0,color:#5a3d00,stroke:#c98a2e,stroke-dasharray:4 3
     class es,as go
     class us,bs rust
     class kong,pgu,pge,pgb,pga,connect,kafka infra
+    class breaper,sreaper reaper
 ```
+
+Two per-service **reapers** run as timed background loops inside their own
+service process (not OS cron) and recover a saga stuck non-terminal:
+`booking-service` cancels a booking left `pending` past
+`BOOKING_PENDING_TIMEOUT` (emitting `BookingCancelled`), and `event-service`
+releases a seat hold left `held` past `SEAT_HOLD_TIMEOUT` (no event, WARN log).
 
 **Two independent transport layers, on purpose:**
 
