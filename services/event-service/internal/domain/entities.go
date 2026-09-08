@@ -262,3 +262,15 @@ func (r *SeatReservation) Finalize() error {
 		return ErrReservationNotHeld
 	}
 }
+
+func (r *SeatReservation) Release() error {
+	switch r.Status {
+	case ReservationHeld:
+		r.Status = ReservationReleased
+		return nil
+	case ReservationReleased:
+		return nil
+	default:
+		return ErrReservationNotHeld
+	}
+}

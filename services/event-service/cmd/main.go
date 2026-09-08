@@ -61,6 +61,7 @@ func run(log logger.Logger) error {
 	createNewEvent := usecase.NewCreateNewEventUseCase(pool, repo)
 	reserveSeat := usecase.NewReserveSeatUseCase(pool, repo)
 	finalizeSeat := usecase.NewFinalizeSeatUseCase(pool, repo)
+	releaseSeat := usecase.NewReleaseSeatUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
 	health := httpadapter.NewHealthHandler(pool)
@@ -83,6 +84,7 @@ func run(log logger.Logger) error {
 	consumers := []consumerRunner{
 		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingRequestedSpec(reserveSeat), log),
 		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingConfirmedSpec(finalizeSeat), log),
+		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingCancelledSpec(releaseSeat), log),
 	}
 	for _, c := range consumers {
 		defer func(c consumerRunner) { _ = c.Close() }(c)
