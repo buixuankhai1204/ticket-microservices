@@ -35,6 +35,20 @@ services:
               claims_to_verify:
                 - exp
 
+      - name: subscription-routes
+        paths:
+          - /api/v1/subscriptions
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 300
+              policy: local
+          - name: jwt
+            config:
+              claims_to_verify:
+                - exp
+
   # ----------------------------------------------------------------------------
   # 2. EVENT SERVICE
   # ----------------------------------------------------------------------------

@@ -12,11 +12,15 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use adapter::http::{build_router, ApiDoc, AppState};
 use adapter::repository::postgres::PostgresUserRepository;
+use adapter::repository::subscription_postgres::PostgresSubscriptionRepository;
 use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
 use domain::{PasswordHasher, TokenIssuer};
 use platform::db;
-use platform::port::UserRepository;
-use usecase::{GetUserProfileUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase};
+use platform::port::{SubscriptionRepository, UserRepository};
+use usecase::{
+    CreateSubscriptionUseCase, GetSubscriptionUseCase, GetUserProfileUseCase,
+    ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase,
+};
 
 #[tokio::main]
 async fn main() {
@@ -41,12 +45,21 @@ async fn main() {
     let jwt_issuer_key = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
 
     let user_repository: Arc<dyn UserRepository> = Arc::new(PostgresUserRepository::new());
+    let subscription_repository: Arc<dyn SubscriptionRepository> =
+        Arc::new(PostgresSubscriptionRepository::new());
     let password_hasher: Arc<dyn PasswordHasher> = Arc::new(Argon2PasswordHasher::new());
     let token_issuer: Arc<dyn TokenIssuer> = Arc::new(JwtTokenIssuer::new(
         &jwt_secret,
         Duration::hours(1),
-        jwt_issuer_key,
+        jwt_issuer_key.clone(),
     ));
+
+    // JWT verification for the service's own JWT-protected routes (Kong verifies
+    // at the edge too; this is defence in depth and how a handler reads `sub`).
+    let jwt_decoding_key = jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes());
+    let mut jwt_validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+    jwt_validation.set_issuer(&[jwt_issuer_key]);
+    jwt_validation.validate_aud = false;
 
     let state = Arc::new(AppState {
         register_user: RegisterUserUseCase::new(
@@ -62,7 +75,18 @@ async fn main() {
         ),
         get_user_profile: GetUserProfileUseCase::new(pool.clone(), user_repository.clone()),
         list_users: ListUsersUseCase::new(pool.clone(), user_repository),
+        create_subscription: CreateSubscriptionUseCase::new(
+            pool.clone(),
+            subscription_repository.clone(),
+        ),
+        get_subscription: GetSubscriptionUseCase::new(
+            pool.clone(),
+            subscription_repository.clone(),
+        ),
+        list_subscriptions: ListSubscriptionsUseCase::new(pool.clone(), subscription_repository),
         db_pool: pool,
+        jwt_decoding_key,
+        jwt_validation,
     });
 
     let app = build_router(state)
