@@ -123,3 +123,196 @@ impl Booking {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn seats(n: usize) -> Vec<Uuid> {
+        (0..n).map(|_| Uuid::new_v4()).collect()
+    }
+
+    #[test]
+    fn request_happy_path_mints_v4_id_and_starts_pending() {
+        let user_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+        let seat_ids = seats(3);
+
+        let booking = Booking::request(user_id, event_id, seat_ids.clone()).unwrap();
+
+        assert!(!booking.id.is_nil());
+        assert_eq!(booking.id.get_version_num(), 4);
+        assert_eq!(booking.user_id, user_id);
+        assert_eq!(booking.event_id, event_id);
+        assert_eq!(booking.seat_ids, seat_ids);
+        assert_eq!(booking.status, BookingStatus::Pending);
+        assert!(booking.failure_reason.is_none());
+        assert_eq!(booking.created_at, booking.updated_at);
+    }
+
+    #[test]
+    fn request_rejects_empty_seat_list() {
+        let err = Booking::request(Uuid::new_v4(), Uuid::new_v4(), vec![]).unwrap_err();
+        assert!(matches!(err, BookingError::NoSeats));
+    }
+
+    #[test]
+    fn request_rejects_more_seats_than_the_cap() {
+        let err = Booking::request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            seats(MAX_SEATS_PER_BOOKING + 1),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            BookingError::TooManySeats(n) if n == MAX_SEATS_PER_BOOKING
+        ));
+    }
+
+    #[test]
+    fn request_rejects_duplicate_seat_ids() {
+        let dup = Uuid::new_v4();
+        let err = Booking::request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            vec![dup, Uuid::new_v4(), dup],
+        )
+        .unwrap_err();
+        assert!(matches!(err, BookingError::DuplicateSeats));
+    }
+
+    #[test]
+    fn request_accepts_exactly_the_cap() {
+        let booking =
+            Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(MAX_SEATS_PER_BOOKING)).unwrap();
+        assert_eq!(booking.seat_ids.len(), MAX_SEATS_PER_BOOKING);
+    }
+
+    #[test]
+    fn from_persisted_passes_every_field_through_unchanged() {
+        let id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+        let seat_ids = seats(2);
+        let created_at = Utc.with_ymd_and_hms(2030, 1, 2, 3, 4, 5).unwrap();
+        let updated_at = Utc.with_ymd_and_hms(2030, 6, 7, 8, 9, 10).unwrap();
+
+        let booking = Booking::from_persisted(
+            id,
+            user_id,
+            event_id,
+            seat_ids.clone(),
+            BookingStatus::Cancelled,
+            Some("seat_unavailable".to_string()),
+            created_at,
+            updated_at,
+        );
+
+        assert_eq!(booking.id, id);
+        assert_eq!(booking.user_id, user_id);
+        assert_eq!(booking.event_id, event_id);
+        assert_eq!(booking.seat_ids, seat_ids);
+        assert_eq!(booking.status, BookingStatus::Cancelled);
+        assert_eq!(booking.failure_reason.as_deref(), Some("seat_unavailable"));
+        assert_eq!(booking.created_at, created_at);
+        assert_eq!(booking.updated_at, updated_at);
+    }
+
+    #[test]
+    fn confirm_moves_pending_to_confirmed() {
+        let mut booking = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        let before = booking.updated_at;
+
+        booking.confirm().unwrap();
+
+        assert_eq!(booking.status, BookingStatus::Confirmed);
+        assert!(booking.updated_at >= before);
+    }
+
+    #[test]
+    fn confirm_is_idempotent_when_already_confirmed() {
+        let mut booking = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        booking.confirm().unwrap();
+
+        booking.confirm().unwrap();
+
+        assert_eq!(booking.status, BookingStatus::Confirmed);
+    }
+
+    #[test]
+    fn confirm_rejects_a_cancelled_booking_as_already_terminal() {
+        let mut booking = Booking::from_persisted(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            seats(1),
+            BookingStatus::Cancelled,
+            Some("seat_unavailable".to_string()),
+            Utc::now(),
+            Utc::now(),
+        );
+
+        assert!(matches!(
+            booking.confirm().unwrap_err(),
+            BookingError::AlreadyTerminal
+        ));
+    }
+
+    #[test]
+    fn cancel_moves_pending_to_cancelled_and_records_the_reason() {
+        let mut booking = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+
+        booking.cancel("seat_unavailable").unwrap();
+
+        assert_eq!(booking.status, BookingStatus::Cancelled);
+        assert_eq!(booking.failure_reason.as_deref(), Some("seat_unavailable"));
+    }
+
+    #[test]
+    fn cancel_is_idempotent_and_keeps_the_first_reason() {
+        let mut booking = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        booking.cancel("seat_unavailable").unwrap();
+
+        booking.cancel("reservation_timeout").unwrap();
+
+        assert_eq!(booking.status, BookingStatus::Cancelled);
+        assert_eq!(booking.failure_reason.as_deref(), Some("seat_unavailable"));
+    }
+
+    #[test]
+    fn cancel_rejects_a_confirmed_booking_as_already_terminal() {
+        let mut booking = Booking::request(Uuid::new_v4(), Uuid::new_v4(), seats(1)).unwrap();
+        booking.confirm().unwrap();
+
+        assert!(matches!(
+            booking.cancel("too_late").unwrap_err(),
+            BookingError::AlreadyTerminal
+        ));
+    }
+
+    #[test]
+    fn status_as_str_uses_the_wire_literals() {
+        assert_eq!(BookingStatus::Pending.as_str(), "pending");
+        assert_eq!(BookingStatus::Confirmed.as_str(), "confirmed");
+        assert_eq!(BookingStatus::Cancelled.as_str(), "cancelled");
+    }
+
+    #[test]
+    fn status_parse_round_trips_every_variant() {
+        for status in [
+            BookingStatus::Pending,
+            BookingStatus::Confirmed,
+            BookingStatus::Cancelled,
+        ] {
+            assert_eq!(BookingStatus::parse(status.as_str()).unwrap(), status);
+        }
+    }
+
+    #[test]
+    fn status_parse_rejects_an_unknown_literal() {
+        let err = BookingStatus::parse("reserved").unwrap_err();
+        assert!(matches!(err, BookingError::InvalidStatus(v) if v == "reserved"));
+    }
+}
