@@ -12,6 +12,8 @@ pub enum UserError {
     InvalidCredentials,
     #[error("invalid pagination parameters")]
     InvalidPagination,
+    #[error("invalid subscription: {0}")]
+    InvalidSubscription(String),
     #[error("repository error: {0}")]
     Repository(String),
     #[error("password hashing error: {0}")]

@@ -2,8 +2,9 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 use super::dto::{
-    ErrorResponse, LoginRequest, LoginResponse, PaginatedUsersResponse, PaginationMeta,
-    RegisterRequest, UserResponse,
+    CreateSubscriptionRequest, ErrorResponse, LoginRequest, LoginResponse,
+    PaginatedSubscriptionsResponse, PaginatedUsersResponse, PaginationMeta, RegisterRequest,
+    SubscriptionResponse, UserResponse,
 };
 use super::handlers;
 
@@ -13,7 +14,10 @@ use super::handlers;
         handlers::register,
         handlers::login,
         handlers::get_user,
-        handlers::list_users
+        handlers::list_users,
+        handlers::create_subscription,
+        handlers::get_subscription,
+        handlers::list_subscriptions
     ),
     components(schemas(
         RegisterRequest,
@@ -22,6 +26,9 @@ use super::handlers;
         UserResponse,
         PaginatedUsersResponse,
         PaginationMeta,
+        CreateSubscriptionRequest,
+        SubscriptionResponse,
+        PaginatedSubscriptionsResponse,
         ErrorResponse
     )),
     modifiers(&SecurityAddon)

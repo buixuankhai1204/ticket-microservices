@@ -3,7 +3,10 @@ use std::sync::Arc;
 use axum::routing::{get, post};
 use axum::Router;
 
-use super::handlers::{get_user, healthz, list_users, login, readyz, register, AppState};
+use super::handlers::{
+    create_subscription, get_subscription, get_user, healthz, list_subscriptions, list_users,
+    login, readyz, register, AppState,
+};
 
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -13,5 +16,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/users", get(list_users))
         .route("/api/v1/users/:id", get(get_user))
+        .route(
+            "/api/v1/subscriptions",
+            post(create_subscription).get(list_subscriptions),
+        )
+        .route("/api/v1/subscriptions/:id", get(get_subscription))
         .with_state(state)
 }
