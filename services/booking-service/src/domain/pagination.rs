@@ -30,40 +30,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_keeps_valid_limit_and_offset_unchanged() {
-        let p = Pagination::new(25, 40).unwrap();
-        assert_eq!(p.limit, 25);
-        assert_eq!(p.offset, 40);
+    fn new_passes_in_range_values_through_unchanged() {
+        let low = Pagination::new(1, 0).unwrap();
+        assert_eq!(low.limit, 1);
+        assert_eq!(low.offset, 0);
+
+        let mid = Pagination::new(20, 40).unwrap();
+        assert_eq!(mid.limit, 20);
+        assert_eq!(mid.offset, 40);
     }
 
     #[test]
-    fn new_rejects_negative_offset() {
+    fn new_clamps_limit_above_max_down_to_max() {
+        assert_eq!(Pagination::new(MAX_LIMIT + 1, 0).unwrap().limit, MAX_LIMIT);
+        assert_eq!(Pagination::new(i64::MAX, 0).unwrap().limit, MAX_LIMIT);
+    }
+
+    #[test]
+    fn new_rejects_a_negative_offset() {
         let err = Pagination::new(20, -1).unwrap_err();
         assert!(matches!(err, BookingError::InvalidPagination));
     }
 
     #[test]
-    fn new_rejects_limit_below_one() {
+    fn new_rejects_a_limit_below_one() {
         let err = Pagination::new(0, 0).unwrap_err();
         assert!(matches!(err, BookingError::InvalidPagination));
     }
 
     #[test]
-    fn new_clamps_limit_to_max() {
-        let p = Pagination::new(MAX_LIMIT + 1, 0).unwrap();
-        assert_eq!(p.limit, MAX_LIMIT);
-    }
-
-    #[test]
-    fn has_more_is_true_when_rows_remain_after_this_page() {
+    fn has_more_is_true_while_rows_remain_after_this_page() {
         let p = Pagination::new(20, 0).unwrap();
         assert!(p.has_more(20, 50));
     }
 
     #[test]
-    fn has_more_is_false_on_the_final_page() {
+    fn has_more_is_false_when_this_page_reaches_the_total_exactly() {
         let p = Pagination::new(20, 40).unwrap();
         assert!(!p.has_more(10, 50));
+    }
+
+    #[test]
+    fn has_more_is_false_when_offset_plus_page_exceeds_the_total() {
+        let p = Pagination::new(20, 40).unwrap();
+        assert!(!p.has_more(20, 50));
     }
 
     #[test]
@@ -73,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn limit_constants_have_expected_values() {
+    fn limit_constants_hold_their_documented_values() {
         assert_eq!(DEFAULT_LIMIT, 20);
         assert_eq!(MAX_LIMIT, 100);
     }

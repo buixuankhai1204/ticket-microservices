@@ -38,25 +38,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hash_and_verify() {
+    fn hash_produces_a_phc_string_that_verifies_for_the_same_password() {
         let hasher = Argon2PasswordHasher::new();
-        let password = "my_secure_password";
-        let hash = hasher.hash(password).expect("Hashing failed");
-        assert!(hasher.verify(password, &hash).expect("Verification failed"));
-        assert!(!hasher
-            .verify("wrong_password", &hash)
-            .expect("Verification failed"));
+
+        let hash = hasher.hash("correct horse battery staple").unwrap();
+
+        assert!(hash.starts_with("$argon2"));
+        assert!(PasswordHash::new(&hash).is_ok());
+        assert!(hasher
+            .verify("correct horse battery staple", &hash)
+            .unwrap());
     }
 
     #[test]
-    fn test_hash_uniqueness() {
+    fn verify_is_false_for_a_wrong_password() {
         let hasher = Argon2PasswordHasher::new();
-        let password = "my_secure_password";
-        let hash1 = hasher.hash(password).expect("Hashing failed");
-        let hash2 = hasher.hash(password).expect("Hashing failed");
-        assert_ne!(
-            hash1, hash2,
-            "Hashes should be unique due to different salts"
-        );
+        let hash = hasher.hash("correct horse battery staple").unwrap();
+
+        assert!(!hasher.verify("Tr0ub4dor&3", &hash).unwrap());
+    }
+
+    #[test]
+    fn verify_errors_on_a_malformed_hash() {
+        let hasher = Argon2PasswordHasher::new();
+
+        let result = hasher.verify("whatever", "not-a-phc-string");
+
+        assert!(matches!(result, Err(UserError::Hashing(_))));
+    }
+
+    #[test]
+    fn hash_uses_a_fresh_salt_per_call_so_digests_differ() {
+        let hasher = Argon2PasswordHasher::new();
+
+        let first = hasher.hash("same password").unwrap();
+        let second = hasher.hash("same password").unwrap();
+
+        assert_ne!(first, second);
     }
 }

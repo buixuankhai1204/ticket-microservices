@@ -13,7 +13,6 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	appdb "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/db"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
 )
 
 var testPool *pgxpool.Pool
@@ -61,14 +60,8 @@ func TestMain(m *testing.M) {
 func truncateAll(t *testing.T) {
 	t.Helper()
 	_, err := testPool.Exec(context.Background(),
-		`TRUNCATE booking_outcomes, user_registrations, processed_events`)
+		`TRUNCATE booking_outcomes, user_registrations, user_logins, processed_events`)
 	if err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
 }
-
-type noopLogger struct{}
-
-func (noopLogger) Info(string, ...any)         {}
-func (noopLogger) Error(string, ...any)        {}
-func (n noopLogger) With(...any) logger.Logger { return n }

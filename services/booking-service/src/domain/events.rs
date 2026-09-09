@@ -184,27 +184,35 @@ mod tests {
         (0..n).map(|_| Uuid::new_v4()).collect()
     }
 
-    fn payload_keys(v: &serde_json::Value) -> BTreeSet<String> {
-        v.as_object()
+    fn payload_keys(value: &serde_json::Value) -> BTreeSet<String> {
+        value
+            .as_object()
             .expect("payload is a JSON object")
             .keys()
             .cloned()
             .collect()
     }
 
-    fn key_set(items: &[&str]) -> BTreeSet<String> {
-        items.iter().map(|s| s.to_string()).collect()
+    fn key_set(keys: &[&str]) -> BTreeSet<String> {
+        keys.iter().map(|k| k.to_string()).collect()
     }
 
     #[test]
-    fn booking_requested_new_mints_v4_event_id_and_copies_fields() {
+    fn booking_requested_new_mints_a_distinct_v4_event_id_and_copies_fields() {
         let booking_id = Uuid::new_v4();
         let user_id = Uuid::new_v4();
         let ticketed_event_id = Uuid::new_v4();
         let seat_ids = uuids(3);
         let requested_at = ts();
 
-        let e = BookingRequested::new(
+        let event = BookingRequested::new(
+            booking_id,
+            user_id,
+            ticketed_event_id,
+            seat_ids.clone(),
+            requested_at,
+        );
+        let again = BookingRequested::new(
             booking_id,
             user_id,
             ticketed_event_id,
@@ -212,25 +220,32 @@ mod tests {
             requested_at,
         );
 
-        assert!(!e.event_id.is_nil());
-        assert_eq!(e.event_id.get_version_num(), 4);
-        assert_ne!(e.event_id, booking_id);
-        assert_eq!(e.booking_id, booking_id);
-        assert_eq!(e.user_id, user_id);
-        assert_eq!(e.ticketed_event_id, ticketed_event_id);
-        assert_eq!(e.seat_ids, seat_ids);
-        assert_eq!(e.requested_at, requested_at);
+        assert!(!event.event_id.is_nil());
+        assert_eq!(event.event_id.get_version_num(), 4);
+        assert_ne!(event.event_id, again.event_id);
+        assert_eq!(event.booking_id, booking_id);
+        assert_eq!(event.user_id, user_id);
+        assert_eq!(event.ticketed_event_id, ticketed_event_id);
+        assert_eq!(event.seat_ids, seat_ids);
+        assert_eq!(event.requested_at, requested_at);
     }
 
     #[test]
-    fn booking_confirmed_new_mints_v4_event_id_and_copies_fields() {
+    fn booking_confirmed_new_mints_a_distinct_v4_event_id_and_copies_fields() {
         let booking_id = Uuid::new_v4();
         let user_id = Uuid::new_v4();
         let ticketed_event_id = Uuid::new_v4();
         let seat_ids = uuids(2);
         let occurred_at = ts();
 
-        let e = BookingConfirmed::new(
+        let event = BookingConfirmed::new(
+            booking_id,
+            user_id,
+            ticketed_event_id,
+            seat_ids.clone(),
+            occurred_at,
+        );
+        let again = BookingConfirmed::new(
             booking_id,
             user_id,
             ticketed_event_id,
@@ -238,24 +253,32 @@ mod tests {
             occurred_at,
         );
 
-        assert!(!e.event_id.is_nil());
-        assert_eq!(e.event_id.get_version_num(), 4);
-        assert_eq!(e.booking_id, booking_id);
-        assert_eq!(e.user_id, user_id);
-        assert_eq!(e.ticketed_event_id, ticketed_event_id);
-        assert_eq!(e.seat_ids, seat_ids);
-        assert_eq!(e.occurred_at, occurred_at);
+        assert_eq!(event.event_id.get_version_num(), 4);
+        assert_ne!(event.event_id, again.event_id);
+        assert_eq!(event.booking_id, booking_id);
+        assert_eq!(event.user_id, user_id);
+        assert_eq!(event.ticketed_event_id, ticketed_event_id);
+        assert_eq!(event.seat_ids, seat_ids);
+        assert_eq!(event.occurred_at, occurred_at);
     }
 
     #[test]
-    fn booking_cancelled_new_mints_v4_event_id_and_copies_fields() {
+    fn booking_cancelled_new_mints_a_distinct_v4_event_id_and_copies_fields() {
         let booking_id = Uuid::new_v4();
         let user_id = Uuid::new_v4();
         let ticketed_event_id = Uuid::new_v4();
         let seat_ids = uuids(1);
         let occurred_at = ts();
 
-        let e = BookingCancelled::new(
+        let event = BookingCancelled::new(
+            booking_id,
+            user_id,
+            ticketed_event_id,
+            seat_ids.clone(),
+            REASON_SEAT_UNAVAILABLE.to_string(),
+            occurred_at,
+        );
+        let again = BookingCancelled::new(
             booking_id,
             user_id,
             ticketed_event_id,
@@ -264,18 +287,18 @@ mod tests {
             occurred_at,
         );
 
-        assert!(!e.event_id.is_nil());
-        assert_eq!(e.event_id.get_version_num(), 4);
-        assert_eq!(e.booking_id, booking_id);
-        assert_eq!(e.user_id, user_id);
-        assert_eq!(e.ticketed_event_id, ticketed_event_id);
-        assert_eq!(e.seat_ids, seat_ids);
-        assert_eq!(e.reason, REASON_SEAT_UNAVAILABLE);
-        assert_eq!(e.occurred_at, occurred_at);
+        assert_eq!(event.event_id.get_version_num(), 4);
+        assert_ne!(event.event_id, again.event_id);
+        assert_eq!(event.booking_id, booking_id);
+        assert_eq!(event.user_id, user_id);
+        assert_eq!(event.ticketed_event_id, ticketed_event_id);
+        assert_eq!(event.seat_ids, seat_ids);
+        assert_eq!(event.reason, REASON_SEAT_UNAVAILABLE);
+        assert_eq!(event.occurred_at, occurred_at);
     }
 
     #[test]
-    fn domain_event_exposes_booking_requested_metadata_and_payload() {
+    fn domain_event_booking_requested_exposes_metadata_and_round_trip_payload() {
         let inner = BookingRequested::new(
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -283,14 +306,14 @@ mod tests {
             uuids(2),
             ts(),
         );
-        let ev = DomainEvent::BookingRequested(inner.clone());
+        let event = DomainEvent::BookingRequested(inner.clone());
 
-        assert_eq!(ev.event_id(), inner.event_id);
-        assert_eq!(ev.aggregate_id(), inner.booking_id);
-        assert_eq!(ev.event_type(), "BookingRequested");
-        assert_eq!(ev.aggregate_type(), "booking");
+        assert_eq!(event.event_id(), inner.event_id);
+        assert_eq!(event.aggregate_id(), inner.booking_id);
+        assert_eq!(event.event_type(), "BookingRequested");
+        assert_eq!(event.aggregate_type(), "booking");
 
-        let payload = ev.payload();
+        let payload = event.payload();
         assert_eq!(
             payload_keys(&payload),
             key_set(&[
@@ -307,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn domain_event_exposes_booking_confirmed_metadata_and_payload() {
+    fn domain_event_booking_confirmed_exposes_metadata_and_round_trip_payload() {
         let inner = BookingConfirmed::new(
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -315,14 +338,14 @@ mod tests {
             uuids(2),
             ts(),
         );
-        let ev = DomainEvent::BookingConfirmed(inner.clone());
+        let event = DomainEvent::BookingConfirmed(inner.clone());
 
-        assert_eq!(ev.event_id(), inner.event_id);
-        assert_eq!(ev.aggregate_id(), inner.booking_id);
-        assert_eq!(ev.event_type(), "BookingConfirmed");
-        assert_eq!(ev.aggregate_type(), "booking");
+        assert_eq!(event.event_id(), inner.event_id);
+        assert_eq!(event.aggregate_id(), inner.booking_id);
+        assert_eq!(event.event_type(), "BookingConfirmed");
+        assert_eq!(event.aggregate_type(), "booking");
 
-        let payload = ev.payload();
+        let payload = event.payload();
         assert_eq!(
             payload_keys(&payload),
             key_set(&[
@@ -339,23 +362,23 @@ mod tests {
     }
 
     #[test]
-    fn domain_event_exposes_booking_cancelled_metadata_and_payload() {
+    fn domain_event_booking_cancelled_exposes_metadata_and_round_trip_payload() {
         let inner = BookingCancelled::new(
             Uuid::new_v4(),
             Uuid::new_v4(),
             Uuid::new_v4(),
             uuids(2),
-            "reservation_timeout".to_string(),
+            REASON_RESERVATION_TIMEOUT.to_string(),
             ts(),
         );
-        let ev = DomainEvent::BookingCancelled(inner.clone());
+        let event = DomainEvent::BookingCancelled(inner.clone());
 
-        assert_eq!(ev.event_id(), inner.event_id);
-        assert_eq!(ev.aggregate_id(), inner.booking_id);
-        assert_eq!(ev.event_type(), "BookingCancelled");
-        assert_eq!(ev.aggregate_type(), "booking");
+        assert_eq!(event.event_id(), inner.event_id);
+        assert_eq!(event.aggregate_id(), inner.booking_id);
+        assert_eq!(event.event_type(), "BookingCancelled");
+        assert_eq!(event.aggregate_type(), "booking");
 
-        let payload = ev.payload();
+        let payload = event.payload();
         assert_eq!(
             payload_keys(&payload),
             key_set(&[
@@ -370,5 +393,11 @@ mod tests {
         );
         let round_tripped: BookingCancelled = serde_json::from_value(payload).unwrap();
         assert_eq!(round_tripped, inner);
+    }
+
+    #[test]
+    fn reason_constants_hold_their_wire_values() {
+        assert_eq!(REASON_SEAT_UNAVAILABLE, "seat_unavailable");
+        assert_eq!(REASON_RESERVATION_TIMEOUT, "reservation_timeout");
     }
 }

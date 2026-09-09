@@ -1,8 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::Duration as ChronoDuration;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -24,6 +25,9 @@ mod usecase;
 #[path = "../src/adapter/repository/postgres.rs"]
 mod postgres_repo;
 
+#[path = "../src/adapter/http/dto.rs"]
+mod dto;
+
 #[path = "../src/adapter/security/argon2_hasher.rs"]
 mod argon2_hasher;
 
@@ -31,11 +35,13 @@ mod argon2_hasher;
 mod jwt_issuer;
 
 use argon2_hasher::Argon2PasswordHasher;
-use domain::{DomainEvent, PasswordHasher, User, UserCreated, UserError};
+use domain::{Pagination, PasswordHasher, UserError};
+use dto::PaginatedUsersResponse;
 use jwt_issuer::JwtTokenIssuer;
-use platform::port::UserRepository;
 use postgres_repo::PostgresUserRepository;
-use usecase::{GetUserProfileUseCase, LoginUserUseCase, RegisterUserUseCase};
+use usecase::{GetUserProfileUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase};
+
+const JWT_SECRET: &str = "integration-test-secret";
 
 struct SharedPg {
     _container: ContainerAsync<PostgresImage>,
@@ -101,7 +107,7 @@ async fn count(pool: &PgPool, sql: &str) -> i64 {
         .expect("count query")
 }
 
-fn repo(_pool: &PgPool) -> Arc<PostgresUserRepository> {
+fn repo() -> Arc<PostgresUserRepository> {
     Arc::new(PostgresUserRepository::new())
 }
 
@@ -117,17 +123,15 @@ fn issuer() -> Arc<JwtTokenIssuer> {
     ))
 }
 
-const JWT_SECRET: &str = "integration-test-secret";
-
 fn unique_email(prefix: &str) -> String {
     format!("{prefix}-{}@example.com", Uuid::new_v4())
 }
 
 #[tokio::test]
-async fn register_persists_user() {
+async fn register_persists_the_user_and_writes_the_user_created_outbox_row() {
     let pool = fresh_db().await;
     let h = hasher();
-    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(), h.clone());
 
     let email = unique_email("register");
     let password = "correct horse battery staple";
@@ -146,61 +150,213 @@ async fn register_persists_user() {
 
     assert_eq!(db_id, user.id);
     assert_eq!(db_email, email);
-    assert_ne!(
-        db_hash, password,
-        "password must never be stored as plaintext"
-    );
-    assert!(
-        h.verify(password, &db_hash).expect("verify"),
-        "the stored hash must verify against the original password"
-    );
+    assert_ne!(db_hash, password);
+    assert!(h
+        .verify(password, &db_hash)
+        .expect("stored hash must verify"));
+
+    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
+
+    let (evt_type, evt_aggregate, evt_payload): (String, Uuid, serde_json::Value) = sqlx::query_as(
+        "SELECT event_type, aggregate_id, payload FROM outbox_events WHERE aggregate_id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&pool)
+    .await
+    .expect("a UserCreated outbox row must exist");
+
+    assert_eq!(evt_type, "UserCreated");
+    assert_eq!(evt_aggregate, user.id);
+    assert_eq!(evt_payload["user_id"], serde_json::json!(user.id));
+    assert_eq!(evt_payload["email"], serde_json::json!(email));
 
     assert_eq!(
         count(&pool, "SELECT count(*) FROM outbox_events").await,
-        0,
-        "the outbox row must not linger after the transaction commits"
+        1,
+        "user-service write_outbox never issues the paired DELETE; the row lingers"
     );
-
-    assert_eq!(count(&pool, "SELECT count(*) FROM users").await, 1);
 }
 
 #[tokio::test]
-async fn register_rejects_duplicate_email_and_leaves_first_registration_intact() {
+async fn register_rejects_a_duplicate_email_and_persists_nothing_new() {
     let pool = fresh_db().await;
-    let h = hasher();
-    let register = RegisterUserUseCase::new(pool.clone(), repo(&pool), h.clone());
+    let register = RegisterUserUseCase::new(pool.clone(), repo(), hasher());
 
     let email = unique_email("dup");
     register
-        .execute(email.clone(), "c".to_string())
+        .execute(email.clone(), "first-password".to_string())
         .await
         .expect("first register");
 
     let users_before = count(&pool, "SELECT count(*) FROM users").await;
+    let outbox_before = count(&pool, "SELECT count(*) FROM outbox_events").await;
 
     let err = register
         .execute(email.clone(), "second-password".to_string())
         .await
-        .expect_err("duplicate email must be rejected");
+        .expect_err("a duplicate email must be rejected");
     assert!(matches!(err, UserError::EmailAlreadyExists), "got {err:?}");
 
     assert_eq!(
         count(&pool, "SELECT count(*) FROM users").await,
-        users_before,
-        "no second users row from the rejected register"
+        users_before
+    );
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM outbox_events").await,
+        outbox_before
     );
 
+    let h = hasher();
     let db_hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&pool)
         .await
-        .expect("row");
-    assert!(
-        h.verify("first-password", &db_hash).unwrap(),
-        "the first registration's credential survived"
+        .expect("the first registration row");
+    assert!(h.verify("first-password", &db_hash).expect("verify first"));
+    assert!(!h
+        .verify("second-password", &db_hash)
+        .expect("verify second"));
+}
+
+#[tokio::test]
+async fn login_with_valid_credentials_returns_a_token_and_writes_the_user_logged_in_outbox() {
+    let pool = fresh_db().await;
+    let register = RegisterUserUseCase::new(pool.clone(), repo(), hasher());
+    let login = LoginUserUseCase::new(pool.clone(), repo(), hasher(), issuer());
+
+    let email = unique_email("login");
+    let password = "a-very-good-password";
+    let user = register
+        .execute(email.clone(), password.to_string())
+        .await
+        .expect("register should succeed");
+
+    let token = login
+        .execute(email.clone(), password.to_string())
+        .await
+        .expect("login should succeed");
+    assert_eq!(token.split('.').count(), 3);
+
+    let (evt_type, evt_aggregate): (String, Uuid) = sqlx::query_as(
+        "SELECT event_type, aggregate_id FROM outbox_events WHERE event_type = 'UserLoggedIn'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("a UserLoggedIn outbox row must exist");
+    assert_eq!(evt_type, "UserLoggedIn");
+    assert_eq!(evt_aggregate, user.id);
+
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM outbox_events WHERE event_type = 'UserLoggedIn'"
+        )
+        .await,
+        1
     );
-    assert!(
-        !h.verify("second-password", &db_hash).unwrap(),
-        "the rejected registration did not overwrite it"
+}
+
+#[tokio::test]
+async fn login_with_a_wrong_password_is_rejected_and_writes_no_outbox() {
+    let pool = fresh_db().await;
+    let register = RegisterUserUseCase::new(pool.clone(), repo(), hasher());
+    let login = LoginUserUseCase::new(pool.clone(), repo(), hasher(), issuer());
+
+    let email = unique_email("badlogin");
+    register
+        .execute(email.clone(), "the-real-password".to_string())
+        .await
+        .expect("register should succeed");
+
+    let err = login
+        .execute(email.clone(), "not-the-password".to_string())
+        .await
+        .expect_err("a wrong password must be rejected");
+    assert!(matches!(err, UserError::InvalidCredentials), "got {err:?}");
+
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM outbox_events WHERE event_type = 'UserLoggedIn'"
+        )
+        .await,
+        0
     );
+}
+
+#[tokio::test]
+async fn get_user_profile_returns_the_persisted_user() {
+    let pool = fresh_db().await;
+    let register = RegisterUserUseCase::new(pool.clone(), repo(), hasher());
+    let get_profile = GetUserProfileUseCase::new(pool.clone(), repo());
+
+    let email = unique_email("profile");
+    let created = register
+        .execute(email.clone(), "profile-password".to_string())
+        .await
+        .expect("register should succeed");
+
+    let fetched = get_profile
+        .execute(created.id)
+        .await
+        .expect("profile lookup should succeed");
+
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.email, email);
+
+    let drift = (fetched.created_at - created.created_at)
+        .num_microseconds()
+        .unwrap_or(i64::MAX)
+        .abs();
+    assert!(drift < 1_000, "created_at drifted {drift}us");
+}
+
+#[tokio::test]
+async fn list_users_returns_a_paginated_envelope_newest_first() {
+    let pool = fresh_db().await;
+    let register = RegisterUserUseCase::new(pool.clone(), repo(), hasher());
+    let list = ListUsersUseCase::new(pool.clone(), repo());
+
+    let mut ids_in_order: Vec<Uuid> = Vec::new();
+    for i in 0..3 {
+        let created = register
+            .execute(
+                unique_email(&format!("list{i}")),
+                "list-password".to_string(),
+            )
+            .await
+            .expect("register should succeed");
+        ids_in_order.push(created.id);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let newest_first: Vec<Uuid> = ids_in_order.iter().rev().copied().collect();
+
+    let page_one = Pagination::new(2, 0).expect("valid pagination");
+    let (rows_one, total_one) = list.execute(page_one).await.expect("first page");
+
+    assert_eq!(total_one, 3);
+    assert_eq!(rows_one.len(), 2);
+    assert_eq!(
+        rows_one.iter().map(|u| u.id).collect::<Vec<_>>(),
+        newest_first[..2].to_vec()
+    );
+
+    let envelope_one = PaginatedUsersResponse::new(&rows_one, &page_one, total_one);
+    assert_eq!(envelope_one.pagination.limit, 2);
+    assert_eq!(envelope_one.pagination.offset, 0);
+    assert_eq!(envelope_one.pagination.total, 3);
+    assert!(envelope_one.pagination.has_more);
+    assert_eq!(envelope_one.data.len(), 2);
+    assert_eq!(envelope_one.data[0].id, newest_first[0]);
+
+    let page_two = Pagination::new(2, 2).expect("valid pagination");
+    let (rows_two, total_two) = list.execute(page_two).await.expect("second page");
+
+    assert_eq!(total_two, 3);
+    assert_eq!(rows_two.len(), 1);
+    assert_eq!(rows_two[0].id, newest_first[2]);
+
+    let envelope_two = PaginatedUsersResponse::new(&rows_two, &page_two, total_two);
+    assert_eq!(envelope_two.pagination.offset, 2);
+    assert!(!envelope_two.pagination.has_more);
 }

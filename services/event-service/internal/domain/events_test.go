@@ -1,51 +1,56 @@
 package domain
 
 import (
+	"encoding/json"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-func assertV4(t *testing.T, id uuid.UUID) {
+func jsonKeys(t *testing.T, v any) []string {
 	t.Helper()
-	if id == uuid.Nil {
-		t.Fatalf("id is the nil UUID")
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
 	}
-	if id.Version() != 4 {
-		t.Fatalf("id version = %d, want 4", id.Version())
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if id.Variant() != uuid.RFC4122 {
-		t.Fatalf("id variant = %v, want RFC4122", id.Variant())
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestNewSeatReservedEvent(t *testing.T) {
-	bookingID := uuid.New()
-	ticketedEventID := uuid.New()
+	bookingID, ticketedEventID := uuid.New(), uuid.New()
 	seatIDs := []uuid.UUID{uuid.New(), uuid.New()}
 	reservedAt := time.Date(2030, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	e := NewSeatReservedEvent(bookingID, ticketedEventID, seatIDs, reservedAt)
 
-	assertV4(t, e.ID)
-	if e.BookingID != bookingID {
-		t.Fatalf("BookingID = %v, want %v", e.BookingID, bookingID)
+	assertV4UUID(t, e.ID, "SeatReservedEvent.ID")
+	if e.BookingID != bookingID || e.TicketedEventID != ticketedEventID {
+		t.Fatalf("ids not copied: %+v", e)
 	}
-	if e.TicketedEventID != ticketedEventID {
-		t.Fatalf("TicketedEventID = %v, want %v", e.TicketedEventID, ticketedEventID)
-	}
-	if len(e.SeatIDs) != len(seatIDs) || e.SeatIDs[0] != seatIDs[0] || e.SeatIDs[1] != seatIDs[1] {
+	if !reflect.DeepEqual(e.SeatIDs, seatIDs) {
 		t.Fatalf("SeatIDs = %v, want %v", e.SeatIDs, seatIDs)
 	}
 	if !e.ReservedAt.Equal(reservedAt) {
 		t.Fatalf("ReservedAt = %v, want %v", e.ReservedAt, reservedAt)
 	}
+
 	if e.EventID() != e.ID {
 		t.Fatalf("EventID() = %v, want %v", e.EventID(), e.ID)
 	}
 	if e.AggregateID() != bookingID {
-		t.Fatalf("AggregateID() = %v, want %v", e.AggregateID(), bookingID)
+		t.Fatalf("AggregateID() = %v, want booking id %v", e.AggregateID(), bookingID)
 	}
 	if e.EventType() != "SeatReserved" {
 		t.Fatalf("EventType() = %q, want %q", e.EventType(), "SeatReserved")
@@ -53,24 +58,25 @@ func TestNewSeatReservedEvent(t *testing.T) {
 	if e.AggregateType() != "seat_reservation" {
 		t.Fatalf("AggregateType() = %q, want %q", e.AggregateType(), "seat_reservation")
 	}
+
+	want := []string{"booking_id", "event_id", "reserved_at", "seat_ids", "ticketed_event_id"}
+	if got := jsonKeys(t, e); !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload keys = %v, want %v", got, want)
+	}
 }
 
 func TestNewSeatReservationFailedEvent(t *testing.T) {
-	bookingID := uuid.New()
-	ticketedEventID := uuid.New()
+	bookingID, ticketedEventID := uuid.New(), uuid.New()
 	seatIDs := []uuid.UUID{uuid.New()}
 	failedAt := time.Date(2030, 5, 1, 12, 30, 0, 0, time.UTC)
 
 	e := NewSeatReservationFailedEvent(bookingID, ticketedEventID, seatIDs, ReasonSeatUnavailable, failedAt)
 
-	assertV4(t, e.ID)
-	if e.BookingID != bookingID {
-		t.Fatalf("BookingID = %v, want %v", e.BookingID, bookingID)
+	assertV4UUID(t, e.ID, "SeatReservationFailedEvent.ID")
+	if e.BookingID != bookingID || e.TicketedEventID != ticketedEventID {
+		t.Fatalf("ids not copied: %+v", e)
 	}
-	if e.TicketedEventID != ticketedEventID {
-		t.Fatalf("TicketedEventID = %v, want %v", e.TicketedEventID, ticketedEventID)
-	}
-	if len(e.SeatIDs) != 1 || e.SeatIDs[0] != seatIDs[0] {
+	if !reflect.DeepEqual(e.SeatIDs, seatIDs) {
 		t.Fatalf("SeatIDs = %v, want %v", e.SeatIDs, seatIDs)
 	}
 	if e.Reason != ReasonSeatUnavailable {
@@ -79,16 +85,22 @@ func TestNewSeatReservationFailedEvent(t *testing.T) {
 	if !e.FailedAt.Equal(failedAt) {
 		t.Fatalf("FailedAt = %v, want %v", e.FailedAt, failedAt)
 	}
+
 	if e.EventID() != e.ID {
 		t.Fatalf("EventID() = %v, want %v", e.EventID(), e.ID)
 	}
 	if e.AggregateID() != bookingID {
-		t.Fatalf("AggregateID() = %v, want %v", e.AggregateID(), bookingID)
+		t.Fatalf("AggregateID() = %v, want booking id %v", e.AggregateID(), bookingID)
 	}
 	if e.EventType() != "SeatReservationFailed" {
 		t.Fatalf("EventType() = %q, want %q", e.EventType(), "SeatReservationFailed")
 	}
 	if e.AggregateType() != "seat_reservation" {
 		t.Fatalf("AggregateType() = %q, want %q", e.AggregateType(), "seat_reservation")
+	}
+
+	want := []string{"booking_id", "event_id", "failed_at", "reason", "seat_ids", "ticketed_event_id"}
+	if got := jsonKeys(t, e); !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload keys = %v, want %v", got, want)
 	}
 }
