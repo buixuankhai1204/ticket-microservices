@@ -12,14 +12,16 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use adapter::http::{build_router, ApiDoc, AppState};
 use adapter::repository::postgres::PostgresUserRepository;
+use adapter::repository::renewal_attempt_postgres::PostgresRenewalAttemptRepository;
 use adapter::repository::subscription_postgres::PostgresSubscriptionRepository;
 use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
 use domain::{PasswordHasher, TokenIssuer};
 use platform::db;
-use platform::port::{SubscriptionRepository, UserRepository};
+use platform::port::{RenewalAttemptRepository, SubscriptionRepository, UserRepository};
 use usecase::{
     CreateSubscriptionUseCase, GetSubscriptionUseCase, GetUserProfileUseCase,
     ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase, RegisterUserUseCase,
+    RetryRenewalNowUseCase,
 };
 
 #[tokio::main]
@@ -47,6 +49,8 @@ async fn main() {
     let user_repository: Arc<dyn UserRepository> = Arc::new(PostgresUserRepository::new());
     let subscription_repository: Arc<dyn SubscriptionRepository> =
         Arc::new(PostgresSubscriptionRepository::new());
+    let renewal_attempt_repository: Arc<dyn RenewalAttemptRepository> =
+        Arc::new(PostgresRenewalAttemptRepository::new());
     let password_hasher: Arc<dyn PasswordHasher> = Arc::new(Argon2PasswordHasher::new());
     let token_issuer: Arc<dyn TokenIssuer> = Arc::new(JwtTokenIssuer::new(
         &jwt_secret,
@@ -83,7 +87,15 @@ async fn main() {
             pool.clone(),
             subscription_repository.clone(),
         ),
-        list_subscriptions: ListSubscriptionsUseCase::new(pool.clone(), subscription_repository),
+        list_subscriptions: ListSubscriptionsUseCase::new(
+            pool.clone(),
+            subscription_repository.clone(),
+        ),
+        retry_renewal_now: RetryRenewalNowUseCase::new(
+            pool.clone(),
+            subscription_repository,
+            renewal_attempt_repository,
+        ),
         db_pool: pool,
         jwt_decoding_key,
         jwt_validation,

@@ -12,14 +12,14 @@ use crate::platform::db::DbPool;
 use crate::usecase::{
     CreateSubscriptionInput, CreateSubscriptionUseCase, GetSubscriptionUseCase,
     GetUserProfileUseCase, ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase,
-    RegisterUserUseCase,
+    RegisterUserUseCase, RetryRenewalNowUseCase,
 };
 
 use super::auth::AuthUser;
 use super::dto::{
     CreateSubscriptionRequest, ErrorResponse, LoginRequest, LoginResponse,
-    PaginatedSubscriptionsResponse, PaginatedUsersResponse, RegisterRequest, SubscriptionResponse,
-    UserResponse,
+    PaginatedSubscriptionsResponse, PaginatedUsersResponse, RegisterRequest, RetryRenewalResponse,
+    SubscriptionResponse, UserResponse,
 };
 
 pub struct AppState {
@@ -30,6 +30,7 @@ pub struct AppState {
     pub create_subscription: CreateSubscriptionUseCase,
     pub get_subscription: GetSubscriptionUseCase,
     pub list_subscriptions: ListSubscriptionsUseCase,
+    pub retry_renewal_now: RetryRenewalNowUseCase,
     pub db_pool: DbPool,
     pub jwt_decoding_key: DecodingKey,
     pub jwt_validation: Validation,
@@ -43,6 +44,7 @@ fn map_error(err: UserError) -> (StatusCode, Json<ErrorResponse>) {
         | UserError::InvalidPagination
         | UserError::InvalidSubscription(_) => StatusCode::BAD_REQUEST,
         UserError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+        UserError::RenewalNotRetryable(_) => StatusCode::CONFLICT,
         UserError::Repository(_) | UserError::Hashing(_) | UserError::Token(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -271,6 +273,38 @@ pub async fn get_subscription(
         .map_err(map_error)?;
 
     Ok(Json(SubscriptionResponse::from(&subscription)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/subscriptions/{id}/retry-renewal",
+    params(
+        ("id" = Uuid, Path, description = "Subscription ID"),
+    ),
+    responses(
+        (status = 202, description = "Renewal queued to run on the next Job B tick", body = RetryRenewalResponse),
+        (status = 401, description = "Missing or invalid bearer token", body = ErrorResponse),
+        (status = 404, description = "Subscription not found", body = ErrorResponse),
+        (status = 409, description = "Subscription/renewal state does not allow a retry", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn retry_renewal_now(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<(StatusCode, Json<RetryRenewalResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let attempt = state
+        .retry_renewal_now
+        .execute(id, auth.user_id)
+        .await
+        .map_err(map_error)?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(RetryRenewalResponse::from(&attempt)),
+    ))
 }
 
 pub async fn healthz() -> StatusCode {

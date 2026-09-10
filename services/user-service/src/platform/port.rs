@@ -1,8 +1,9 @@
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::domain::{DomainEvent, Pagination, Subscription, User, UserError};
+use crate::domain::{DomainEvent, Pagination, RenewalAttempt, Subscription, User, UserError};
 
 #[async_trait]
 pub trait UserRepository: Send + Sync {
@@ -51,4 +52,30 @@ pub trait SubscriptionRepository: Send + Sync {
         user_id: Uuid,
         pagination: Pagination,
     ) -> Result<(Vec<Subscription>, i64), UserError>;
+}
+
+#[async_trait]
+pub trait RenewalAttemptRepository: Send + Sync {
+    /// The attempt row for a `(subscription, period)`, locked `FOR UPDATE` so a
+    /// concurrent Job B tick (`FOR UPDATE SKIP LOCKED`) cannot flip its status
+    /// between this read and the caller's write.
+    async fn find_for_period_for_update(
+        &self,
+        conn: &mut PgConnection,
+        subscription_id: Uuid,
+        period_end: NaiveDate,
+    ) -> Result<Option<RenewalAttempt>, UserError>;
+
+    async fn create(
+        &self,
+        conn: &mut PgConnection,
+        attempt: &RenewalAttempt,
+    ) -> Result<(), UserError>;
+
+    /// Persist `status` / `next_attempt_at` / `updated_at` for an existing row.
+    async fn update_schedule(
+        &self,
+        conn: &mut PgConnection,
+        attempt: &RenewalAttempt,
+    ) -> Result<(), UserError>;
 }
