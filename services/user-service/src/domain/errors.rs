@@ -14,6 +14,8 @@ pub enum UserError {
     InvalidPagination,
     #[error("invalid subscription: {0}")]
     InvalidSubscription(String),
+    #[error("renewal cannot be retried: {0}")]
+    RenewalNotRetryable(String),
     #[error("repository error: {0}")]
     Repository(String),
     #[error("password hashing error: {0}")]

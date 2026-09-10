@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::domain::{Pagination, Subscription, User};
+use crate::domain::{Pagination, RenewalAttempt, Subscription, User};
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterRequest {
@@ -78,6 +78,27 @@ impl From<&Subscription> for SubscriptionResponse {
             billing_interval: subscription.billing_interval.as_str().to_string(),
             price_minor: subscription.price_minor,
             currency: subscription.currency.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RetryRenewalResponse {
+    pub subscription_id: Uuid,
+    /// The billing period whose renewal was queued (`YYYY-MM-DD`).
+    pub period_end: String,
+    pub status: String,
+    /// When Job B will next attempt the charge (RFC 3339). Set to ~now.
+    pub next_attempt_at: String,
+}
+
+impl From<&RenewalAttempt> for RetryRenewalResponse {
+    fn from(attempt: &RenewalAttempt) -> Self {
+        Self {
+            subscription_id: attempt.subscription_id,
+            period_end: attempt.period_end.to_string(),
+            status: attempt.status.as_str().to_string(),
+            next_attempt_at: attempt.next_attempt_at.to_rfc3339(),
         }
     }
 }

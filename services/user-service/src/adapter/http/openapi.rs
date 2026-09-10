@@ -4,7 +4,7 @@ use utoipa::{Modify, OpenApi};
 use super::dto::{
     CreateSubscriptionRequest, ErrorResponse, LoginRequest, LoginResponse,
     PaginatedSubscriptionsResponse, PaginatedUsersResponse, PaginationMeta, RegisterRequest,
-    SubscriptionResponse, UserResponse,
+    RetryRenewalResponse, SubscriptionResponse, UserResponse,
 };
 use super::handlers;
 
@@ -17,7 +17,8 @@ use super::handlers;
         handlers::list_users,
         handlers::create_subscription,
         handlers::get_subscription,
-        handlers::list_subscriptions
+        handlers::list_subscriptions,
+        handlers::retry_renewal_now
     ),
     components(schemas(
         RegisterRequest,
@@ -29,6 +30,7 @@ use super::handlers;
         CreateSubscriptionRequest,
         SubscriptionResponse,
         PaginatedSubscriptionsResponse,
+        RetryRenewalResponse,
         ErrorResponse
     )),
     modifiers(&SecurityAddon)

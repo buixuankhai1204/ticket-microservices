@@ -146,4 +146,19 @@ impl Subscription {
             updated_at: now,
         })
     }
+
+    /// Whether a renewal for this subscription's current period can be retried.
+    /// A `canceled` or `paused` subscription has no live billing period to
+    /// charge, so a retry is a conflict with its state.
+    pub fn ensure_renewal_retryable(&self) -> Result<(), UserError> {
+        match self.status {
+            SubscriptionStatus::Active | SubscriptionStatus::PastDue => Ok(()),
+            SubscriptionStatus::Canceled => Err(UserError::RenewalNotRetryable(
+                "subscription is canceled".to_string(),
+            )),
+            SubscriptionStatus::Paused => Err(UserError::RenewalNotRetryable(
+                "subscription is paused".to_string(),
+            )),
+        }
+    }
 }

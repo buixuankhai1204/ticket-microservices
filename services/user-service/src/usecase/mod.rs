@@ -5,6 +5,7 @@ pub mod list_subscriptions;
 pub mod list_users;
 pub mod login_user;
 pub mod register_user;
+pub mod retry_renewal_now;
 
 pub use create_subscription::{CreateSubscriptionInput, CreateSubscriptionUseCase};
 pub use get_subscription::GetSubscriptionUseCase;
@@ -13,6 +14,7 @@ pub use list_subscriptions::ListSubscriptionsUseCase;
 pub use list_users::ListUsersUseCase;
 pub use login_user::LoginUserUseCase;
 pub use register_user::RegisterUserUseCase;
+pub use retry_renewal_now::RetryRenewalNowUseCase;
 
 use crate::domain::UserError;
 
