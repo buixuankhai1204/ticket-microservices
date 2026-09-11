@@ -154,13 +154,25 @@ producer code.
   is a **forward correction** of this service's own earlier step (set the booking to
   `cancelled`, emit `BookingCancelled`), never a delete or a retry.
 - **Failure handling (mandatory — terminate every message)** — classify: success / idempotent
-  no-op → commit; transient (`*domain.RepositoryError`, `errors.As`) → do **not** commit,
-  retry in-process with capped backoff + jitter up to `KAFKA_CONSUMER_MAX_ATTEMPTS` (env,
-  default 5); poison (won't unmarshal, missing/non-UUID fields) → `<topic>.dlq` (a
-  `kafka.Writer`) then commit, never retry; permanent domain rejection → `<topic>.dlq` then
-  commit; retries exhausted → `<topic>.dlq` then commit. DLQ records keep the original
-  key/value + headers `x-dlq-reason`, source topic/partition/offset. If the DLQ write fails,
-  leave the offset uncommitted. Add `<topic>.dlq` to `kafka-init`.
+  no-op → commit; transient → do **not** commit, retry in-process with capped backoff +
+  jitter up to `KAFKA_CONSUMER_MAX_ATTEMPTS` (env, default 5); poison (won't unmarshal,
+  missing/non-UUID fields) → `<topic>.dlq` (a `kafka.Writer`) then commit, never retry;
+  permanent domain rejection → `<topic>.dlq` then commit; retries exhausted → `<topic>.dlq`
+  then commit. DLQ records keep the original key/value + headers `x-dlq-reason`, source
+  topic/partition/offset. If the DLQ write fails, leave the offset uncommitted. Add
+  `<topic>.dlq` to `kafka-init`.
+  - **Transient/permanent is decided by the Postgres SQLSTATE, not by "is it a
+    `*domain.RepositoryError`."** Copy `isRetryable` verbatim from
+    `event-service`/`analytics-service`'s `internal/adapter/messaging/kafka/consumer.go`:
+    `errors.As` to `*pgconn.PgError` (import `github.com/jackc/pgx/v5/pgconn`, already in
+    `go.mod` — no `go get`) and look up `.Code` in the retryable set (`40001`, `40P01`,
+    `55P03`, `55006`, `53300`, `08000`/`08001`/`08003`/`08004`/`08006`/`08007`/`08P01`,
+    `57P01`/`57P02`/`57P03`); anything else with a code (a `23xxx`/`22xxx`/`42xxx` constraint,
+    data, or schema error) is permanent — DLQ immediately, don't retry it into a misleading
+    "max-retries" reason. A `RepositoryError` wrapping a **non**-database error (pool-acquire
+    timeout, broken connection) has no `PgError` to unwrap and stays transient, same as
+    before this distinction existed. Requires no repo-layer change: the repo already wraps in
+    `fmt.Errorf("…: %w", err)`, so `errors.As` unwraps straight through it to the `PgError`.
 - If `/add-observability` has run, extract `traceparent` from the message headers and start
   the processing span from that remote context.
 

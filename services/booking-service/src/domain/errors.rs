@@ -16,6 +16,14 @@ pub enum BookingError {
     InvalidPagination,
     #[error("unknown booking status {0:?}")]
     InvalidStatus(String),
-    #[error("repository error: {0}")]
-    Repository(String),
+    /// `sqlstate` is the Postgres error code when the failure came from the
+    /// database (`None` for a non-database repository failure, e.g. a
+    /// pool-acquire timeout). Kept alongside the message so the Kafka consumer
+    /// can classify retryable vs. permanent without re-parsing the message
+    /// string — see `adapter/messaging/kafka/consumer.rs::is_retryable_sqlstate`.
+    #[error("repository error: {message}")]
+    Repository {
+        message: String,
+        sqlstate: Option<String>,
+    },
 }
