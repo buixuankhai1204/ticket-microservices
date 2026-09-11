@@ -65,6 +65,16 @@ transaction; a Debezium connector tails the WAL and the Outbox Event Router SMT 
    whose failure still commits the offset (silent loss) or whose success doesn't (infinite
    loop). Every message must end as: commit (success / idempotent no-op), or
    retry-with-capped-backoff then DLQ-then-commit.
+   - **Misclassified permanent error** — a consumer whose transient/permanent split is "is
+     it a repository error" instead of the Postgres SQLSTATE (Go: `errors.As` to
+     `*pgconn.PgError`, check `.Code`; Rust: the `Repository { message, sqlstate }` variant +
+     an `is_retryable_sqlstate` check). A `23xxx`/`22xxx`/`42xxx` constraint, data, or schema
+     error is deterministic — classifying it as transient still eventually DLQs (after
+     `MAX_ATTEMPTS`), so it's not a full wedge, but it burns the whole backoff ladder on every
+     redelivery and the DLQ lands with a misleading "max-retries" reason instead of the real
+     one. Reference implementation: `event-service`/`analytics-service`'s `isRetryable` in
+     `internal/adapter/messaging/kafka/consumer.go`; `booking-service`'s
+     `is_retryable_sqlstate` + `classify` in `src/adapter/messaging/kafka/consumer.rs`.
 8. **Cross-aggregate ordering assumption** — a consumer whose correctness needs events from
    *different* `aggregate_id`s in order. Only per-key (per-partition) order is guaranteed.
    Flag logic like "SeatReserved for booking B implies BookingRequested for B already

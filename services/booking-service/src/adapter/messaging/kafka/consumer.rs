@@ -17,6 +17,52 @@ pub enum HandlerError {
     Permanent(String),
 }
 
+/// Transient at the database level: the same statement against the same input
+/// could succeed on a later attempt. Everything else (constraint/data/schema
+/// errors) is deterministic -- retrying only burns the backoff ladder before an
+/// inevitable DLQ, so those go straight there instead. Mirrors the SQLSTATE
+/// classification event-service/analytics-service apply in their `isRetryable`.
+fn is_retryable_sqlstate(code: &str) -> bool {
+    matches!(
+        code,
+        "40001" // serialization_failure
+            | "40P01" // deadlock_detected
+            | "55P03" // lock_not_available
+            | "55006" // object_in_use
+            | "53300" // too_many_connections
+            | "08000" // connection_exception
+            | "08001" // sqlclient_unable_to_establish_sqlconnection
+            | "08003" // connection_does_not_exist
+            | "08004" // sqlserver_rejected_establishment_of_sqlconnection
+            | "08006" // connection_failure
+            | "08007" // transaction_resolution_unknown
+            | "08P01" // protocol_violation
+            | "57P01" // admin_shutdown
+            | "57P02" // crash_shutdown
+            | "57P03" // cannot_connect_now
+    )
+}
+
+/// Maps a use case's `BookingError` to the consumer's retry/DLQ decision. A
+/// `Repository` error with a non-retryable SQLSTATE (a constraint/data/schema
+/// violation) is permanent even though it came from the repository layer; a
+/// `Repository` error with no SQLSTATE at all (pool timeout, broken
+/// connection -- not a database-level error) is treated as transient, same as
+/// a retryable SQLSTATE. Every other variant (`NotFound`, `AlreadyTerminal`,
+/// `InvalidStatus`, ...) is a permanent domain rejection.
+fn classify(e: BookingError) -> HandlerError {
+    match e {
+        BookingError::Repository {
+            message,
+            sqlstate: Some(code),
+        } if !is_retryable_sqlstate(&code) => {
+            HandlerError::Permanent(format!("{message} (SQLSTATE {code})"))
+        }
+        BookingError::Repository { message, .. } => HandlerError::Transient(message),
+        other => HandlerError::Permanent(other.to_string()),
+    }
+}
+
 #[async_trait]
 pub trait SagaHandler: Send + Sync + 'static {
     type Event: DeserializeOwned + Send + Sync;
@@ -214,10 +260,7 @@ impl SagaHandler for ConfirmBookingHandler {
     }
 
     async fn handle(&self, ev: &SeatReserved) -> Result<bool, HandlerError> {
-        self.use_case.execute(ev).await.map_err(|e| match e {
-            BookingError::Repository(m) => HandlerError::Transient(m),
-            other => HandlerError::Permanent(other.to_string()),
-        })
+        self.use_case.execute(ev).await.map_err(classify)
     }
 }
 
@@ -238,9 +281,6 @@ impl SagaHandler for CancelBookingHandler {
     }
 
     async fn handle(&self, ev: &SeatReservationFailed) -> Result<bool, HandlerError> {
-        self.use_case.execute(ev).await.map_err(|e| match e {
-            BookingError::Repository(m) => HandlerError::Transient(m),
-            other => HandlerError::Permanent(other.to_string()),
-        })
+        self.use_case.execute(ev).await.map_err(classify)
     }
 }

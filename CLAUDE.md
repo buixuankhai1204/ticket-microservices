@@ -211,6 +211,19 @@ Three supporting patterns are required, not optional, for any publish/consume co
   commit, as a last resort. DLQ records carry the original key/payload plus diagnostic headers
   (`x-dlq-reason`, source topic/partition/offset). `<topic>.dlq` is created alongside
   `<topic>` in the topic-init / `docker-compose` step.
+  - **The transient/permanent split is decided by the Postgres SQLSTATE, not by "is it a
+    repository error."** A retry is only correct when the same input against the same DB
+    state could succeed later — true for `40001`/`40P01` (serialization/deadlock),
+    `55P03`/`55006` (lock/object busy), `53300` (too many connections), the `08xxx`
+    connection-exception codes, and `57P01`/`57P02`/`57P03` (server shutting down/restarting).
+    A constraint or data error (`23xxx` unique/FK/check/not-null, `22xxx` data exception) or a
+    schema error (`42xxx` undefined table/column — a deploy bug) is deterministic: retrying
+    just burns the backoff ladder before an inevitable DLQ with a misleading "max-retries"
+    reason instead of the real one. Classify on the driver's error code (Go: `errors.As` to
+    `*pgconn.PgError`, check `.Code`; Rust: `sqlx::Error::as_database_error().and_then(|d|
+    d.code())`, carried on the repository error type alongside its message) — a repository
+    error with **no** database code at all (pool-acquire timeout, broken connection) still
+    defaults to transient, same as before this distinction existed.
 
 Client libraries: `segmentio/kafka-go` for Go services, `rdkafka` for Rust services — for
 **consumers**. The publish side is CDC (Debezium), so there is no producer client library on

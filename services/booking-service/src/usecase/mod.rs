@@ -15,5 +15,12 @@ pub use reap_pending_bookings::ReapPendingBookingsUseCase;
 use crate::domain::BookingError;
 
 pub(crate) fn tx_err(e: sqlx::Error) -> BookingError {
-    BookingError::Repository(e.to_string())
+    let sqlstate = e
+        .as_database_error()
+        .and_then(|d| d.code())
+        .map(|c| c.into_owned());
+    BookingError::Repository {
+        message: e.to_string(),
+        sqlstate,
+    }
 }

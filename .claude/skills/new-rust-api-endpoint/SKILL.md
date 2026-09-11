@@ -46,6 +46,16 @@ step*. For a plain `http:` operation, go to step 1.
   `sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?`), pass `&mut *tx` to
   every repo call, `tx.commit().await?` at the end (drop = rollback on early `?`). Any
   `publish:` makes it a write flow.
+  - If this operation is the service's **first `consume:` step**, its domain error's
+    `Repository` variant must carry the Postgres error code, not just a message — a Kafka
+    consumer needs it to classify retryable vs. permanent (Step 5). Use a struct variant:
+    `Repository { message: String, sqlstate: Option<String> }`, populated in both `tx_err`
+    (`usecase/mod.rs`) and `repo_err` (`adapter/repository/postgres.rs`) via
+    `e.as_database_error().and_then(|d| d.code()).map(|c| c.into_owned())`. If the service
+    already has an existing `Repository(String)` tuple variant from an `http:`-only build
+    (e.g. `booking-service`'s `BookingError` before its first consumer), migrating it to the
+    struct shape touches every match site — grep `<DomainError>::Repository` across the crate
+    and fix each one; a plain `Repository(_) => ...` becomes `Repository { .. } => ...`.
 - **`src/adapter/repository/postgres.rs`** — implement the new trait method(s). Each takes
   `conn: &mut PgConnection` and runs on `&mut *conn`; **never** `pool.begin()` /
   `tx.commit()` inside the adapter; it holds no pool.
@@ -138,13 +148,23 @@ log-tailing CDC — you write the outbox row, no producer code.
 - **Compensation** — if `<EventName>` is a downstream failure signal, `<UseCaseName>UseCase`
   is a **forward correction** of this service's own earlier step, never a delete or a retry.
 - **Failure handling (mandatory — terminate every message)** — classify: success / idempotent
-  no-op → commit; transient (`RepositoryError`-style variant) → do **not** commit, retry
-  in-process with capped backoff + jitter up to `KAFKA_CONSUMER_MAX_ATTEMPTS` (env, default
-  5); poison → `<topic>.dlq` (a second `FutureProducer`) then commit, never retry; permanent
-  domain rejection → `<topic>.dlq` then commit; retries exhausted → `<topic>.dlq` then
-  commit. DLQ records keep the original key/payload + headers `x-dlq-reason`, source
-  topic/partition/offset. If the DLQ publish fails, leave the offset uncommitted. Add
-  `<topic>.dlq` to `kafka-init`.
+  no-op → commit; transient → do **not** commit, retry in-process with capped backoff +
+  jitter up to `KAFKA_CONSUMER_MAX_ATTEMPTS` (env, default 5); poison → `<topic>.dlq` (a
+  second `FutureProducer`) then commit, never retry; permanent domain rejection →
+  `<topic>.dlq` then commit; retries exhausted → `<topic>.dlq` then commit. DLQ records keep
+  the original key/payload + headers `x-dlq-reason`, source topic/partition/offset. If the
+  DLQ publish fails, leave the offset uncommitted. Add `<topic>.dlq` to `kafka-init`.
+  - **Transient/permanent is decided by the Postgres SQLSTATE carried on the `Repository`
+    error variant (Step 1), not by "is it a repository error."** Copy the pattern from
+    `booking-service`'s `adapter/messaging/kafka/consumer.rs`: an `is_retryable_sqlstate(code:
+    &str) -> bool` matching the retryable set (`40001`, `40P01`, `55P03`, `55006`, `53300`,
+    `08000`/`08001`/`08003`/`08004`/`08006`/`08007`/`08P01`, `57P01`/`57P02`/`57P03`), and a
+    `classify(e: DomainError) -> HandlerError` shared by every `SagaHandler::handle` in the
+    service: `Repository { message, sqlstate: Some(code) } if !is_retryable_sqlstate(&code)`
+    → `Permanent` (a `23xxx`/`22xxx`/`42xxx` constraint, data, or schema error — deterministic,
+    don't burn the backoff ladder on it); `Repository { message, .. }` (a retryable code, or
+    `None` — no database error at all, e.g. a pool-acquire timeout) → `Transient`; every other
+    domain variant → `Permanent`.
 - If `/add-observability` has run, extract `traceparent` from the message headers and start
   the processing span from that remote context.
 
