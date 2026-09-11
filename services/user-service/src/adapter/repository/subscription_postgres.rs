@@ -3,7 +3,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::domain::{BillingInterval, Pagination, Subscription, SubscriptionStatus, UserError};
+use crate::domain::{
+    BillingInterval, DomainEvent, Pagination, Subscription, SubscriptionStatus, UserError,
+};
 use crate::platform::port::SubscriptionRepository;
 
 #[derive(Default)]
@@ -18,6 +20,9 @@ impl PostgresSubscriptionRepository {
 fn repo_err(e: sqlx::Error) -> UserError {
     UserError::Repository(e.to_string())
 }
+
+const SUBSCRIPTION_COLS: &str = "id, user_id, plan_id, status, current_period_end, \
+     billing_interval, price_minor, currency, payment_method_id, created_at, updated_at";
 
 #[derive(sqlx::FromRow)]
 struct SubscriptionRow {
@@ -91,11 +96,9 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
         id: Uuid,
         user_id: Uuid,
     ) -> Result<Subscription, UserError> {
-        let row = sqlx::query_as::<_, SubscriptionRow>(
-            "SELECT id, user_id, plan_id, status, current_period_end, billing_interval, \
-             price_minor, currency, payment_method_id, created_at, updated_at \
-             FROM subscriptions WHERE id = $1 AND user_id = $2",
-        )
+        let row = sqlx::query_as::<_, SubscriptionRow>(&format!(
+            "SELECT {SUBSCRIPTION_COLS} FROM subscriptions WHERE id = $1 AND user_id = $2"
+        ))
         .bind(id)
         .bind(user_id)
         .fetch_optional(&mut *conn)
@@ -118,12 +121,10 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
                 .await
                 .map_err(repo_err)?;
 
-        let rows = sqlx::query_as::<_, SubscriptionRow>(
-            "SELECT id, user_id, plan_id, status, current_period_end, billing_interval, \
-             price_minor, currency, payment_method_id, created_at, updated_at \
-             FROM subscriptions WHERE user_id = $1 \
-             ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3",
-        )
+        let rows = sqlx::query_as::<_, SubscriptionRow>(&format!(
+            "SELECT {SUBSCRIPTION_COLS} FROM subscriptions WHERE user_id = $1 \
+             ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3"
+        ))
         .bind(user_id)
         .bind(pagination.limit)
         .bind(pagination.offset)
@@ -137,5 +138,78 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok((subscriptions, total))
+    }
+
+    async fn find_by_id(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<Subscription, UserError> {
+        let row = sqlx::query_as::<_, SubscriptionRow>(&format!(
+            "SELECT {SUBSCRIPTION_COLS} FROM subscriptions WHERE id = $1"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        row.ok_or(UserError::NotFound)?.try_into()
+    }
+
+    async fn renew_period(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+        new_period_end: NaiveDate,
+    ) -> Result<(), UserError> {
+        sqlx::query(
+            "UPDATE subscriptions \
+             SET current_period_end = $2, status = 'active', updated_at = now() \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(new_period_end)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn set_status(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+        status: SubscriptionStatus,
+    ) -> Result<(), UserError> {
+        sqlx::query("UPDATE subscriptions SET status = $2, updated_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(status.as_str())
+            .execute(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn write_outbox(
+        &self,
+        conn: &mut PgConnection,
+        event: &DomainEvent,
+    ) -> Result<(), UserError> {
+        sqlx::query(
+            "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(event.event_id())
+        .bind(event.aggregate_id())
+        .bind(event.aggregate_type())
+        .bind(event.event_type())
+        .bind(event.payload())
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(())
     }
 }

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -18,6 +18,13 @@ impl PostgresRenewalAttemptRepository {
 fn repo_err(e: sqlx::Error) -> UserError {
     UserError::Repository(e.to_string())
 }
+
+const RENEWAL_COLS: &str = "id, subscription_id, period_end, idempotency_key, status, \
+     attempt_count, dunning_attempt_count, next_attempt_at, provider_charge_id, last_error, \
+     created_at, updated_at";
+
+/// Statuses Job B's claim considers due (docs/sagas/renewal-subscriptions.md §2).
+const CLAIMABLE_STATUSES: &str = "('pending', 'failed_retryable', 'failed_permanent')";
 
 #[derive(sqlx::FromRow)]
 struct RenewalAttemptRow {
@@ -64,14 +71,10 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         subscription_id: Uuid,
         period_end: NaiveDate,
     ) -> Result<Option<RenewalAttempt>, UserError> {
-        let row = sqlx::query_as::<_, RenewalAttemptRow>(
-            "SELECT id, subscription_id, period_end, idempotency_key, status, attempt_count, \
-             dunning_attempt_count, next_attempt_at, provider_charge_id, last_error, \
-             created_at, updated_at \
-             FROM renewal_attempts \
-             WHERE subscription_id = $1 AND period_end = $2 \
-             FOR UPDATE",
-        )
+        let row = sqlx::query_as::<_, RenewalAttemptRow>(&format!(
+            "SELECT {RENEWAL_COLS} FROM renewal_attempts \
+             WHERE subscription_id = $1 AND period_end = $2 FOR UPDATE"
+        ))
         .bind(subscription_id)
         .bind(period_end)
         .fetch_optional(&mut *conn)
@@ -126,6 +129,149 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         .bind(attempt.status.as_str())
         .bind(attempt.next_attempt_at)
         .bind(attempt.updated_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn claim_one_due(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<Option<RenewalAttempt>, UserError> {
+        let row = sqlx::query_as::<_, RenewalAttemptRow>(&format!(
+            "SELECT {RENEWAL_COLS} FROM renewal_attempts r \
+             WHERE r.status IN {CLAIMABLE_STATUSES} \
+               AND r.next_attempt_at <= now() \
+               AND EXISTS ( \
+                 SELECT 1 FROM subscriptions s \
+                 WHERE s.id = r.subscription_id AND s.status = 'active' \
+               ) \
+             ORDER BY r.next_attempt_at \
+             FOR UPDATE OF r SKIP LOCKED \
+             LIMIT 1"
+        ))
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        row.map(RenewalAttempt::try_from).transpose()
+    }
+
+    async fn mark_charging(
+        &self,
+        conn: &mut PgConnection,
+        attempt: &RenewalAttempt,
+    ) -> Result<(), UserError> {
+        sqlx::query(
+            "UPDATE renewal_attempts \
+             SET status = $2, attempt_count = $3, updated_at = $4 \
+             WHERE id = $1",
+        )
+        .bind(attempt.id)
+        .bind(attempt.status.as_str())
+        .bind(attempt.attempt_count)
+        .bind(attempt.updated_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn find_by_id_for_update(
+        &self,
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<Option<RenewalAttempt>, UserError> {
+        let row = sqlx::query_as::<_, RenewalAttemptRow>(&format!(
+            "SELECT {RENEWAL_COLS} FROM renewal_attempts WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        row.map(RenewalAttempt::try_from).transpose()
+    }
+
+    async fn settle(
+        &self,
+        conn: &mut PgConnection,
+        attempt: &RenewalAttempt,
+    ) -> Result<(), UserError> {
+        sqlx::query(
+            "UPDATE renewal_attempts SET \
+               status = $2, attempt_count = $3, dunning_attempt_count = $4, \
+               next_attempt_at = $5, provider_charge_id = $6, last_error = $7, updated_at = $8 \
+             WHERE id = $1",
+        )
+        .bind(attempt.id)
+        .bind(attempt.status.as_str())
+        .bind(attempt.attempt_count)
+        .bind(attempt.dunning_attempt_count)
+        .bind(attempt.next_attempt_at)
+        .bind(&attempt.provider_charge_id)
+        .bind(&attempt.last_error)
+        .bind(attempt.updated_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn reap_stale_charging(
+        &self,
+        conn: &mut PgConnection,
+        stale_after: Duration,
+    ) -> Result<u64, UserError> {
+        let result = sqlx::query(
+            "UPDATE renewal_attempts \
+             SET status = 'failed_retryable', next_attempt_at = now(), \
+                 last_error = 'charging_timeout_reaped', updated_at = now() \
+             WHERE status = 'charging' \
+               AND updated_at < now() - make_interval(secs => $1)",
+        )
+        .bind(stale_after.num_seconds() as f64)
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn dunning_email_recorded(
+        &self,
+        conn: &mut PgConnection,
+        event_id: Uuid,
+    ) -> Result<bool, UserError> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sent_emails WHERE event_id = $1)")
+                .bind(event_id)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(repo_err)?;
+
+        Ok(exists)
+    }
+
+    async fn record_dunning_email(
+        &self,
+        conn: &mut PgConnection,
+        event_id: Uuid,
+        user_id: Uuid,
+        template: &str,
+    ) -> Result<(), UserError> {
+        sqlx::query(
+            "INSERT INTO sent_emails (id, event_id, user_id, template) \
+             VALUES ($1, $2, $3, $4) ON CONFLICT (event_id) DO NOTHING",
+        )
+        .bind(Uuid::new_v4())
+        .bind(event_id)
+        .bind(user_id)
+        .bind(template)
         .execute(&mut *conn)
         .await
         .map_err(repo_err)?;

@@ -7,9 +7,17 @@ pub mod renewal_attempt;
 pub mod subscription;
 
 pub use entities::User;
-pub use errors::UserError;
-pub use events::{DomainEvent, UserCreated, UserLoggedIn};
+pub use errors::{EmailError, PaymentError, UserError};
+pub use events::{
+    DomainEvent, SubscriptionCanceled, SubscriptionPaymentFailed, SubscriptionRenewed, UserCreated,
+    UserLoggedIn,
+};
 pub use pagination::{Pagination, DEFAULT_LIMIT};
-pub use ports::{PasswordHasher, TokenIssuer};
-pub use renewal_attempt::{RenewalAttempt, RenewalAttemptStatus};
+pub use ports::{
+    ChargeOutcome, ChargeRequest, DunningEmail, EmailGateway, PasswordHasher, PaymentGateway,
+    TokenIssuer,
+};
+pub use renewal_attempt::{
+    DunningOutcome, RenewalAttempt, RenewalAttemptStatus, RenewalPolicy, TransientOutcome,
+};
 pub use subscription::{BillingInterval, Subscription, SubscriptionStatus};
