@@ -35,6 +35,11 @@ impl BillingInterval {
             BillingInterval::Year => 12,
         }
     }
+
+    /// `from` advanced by one billing interval, or `None` on calendar overflow.
+    pub fn advance(&self, from: NaiveDate) -> Option<NaiveDate> {
+        from.checked_add_months(Months::new(self.months()))
+    }
 }
 
 /// Lifecycle state of a subscription. Only `Active` is set here; `PastDue`,
@@ -125,12 +130,9 @@ impl Subscription {
         }
 
         let now = Utc::now();
-        let current_period_end = now
-            .date_naive()
-            .checked_add_months(Months::new(billing_interval.months()))
-            .ok_or_else(|| {
-                UserError::InvalidSubscription("period end is out of range".to_string())
-            })?;
+        let current_period_end = billing_interval.advance(now.date_naive()).ok_or_else(|| {
+            UserError::InvalidSubscription("period end is out of range".to_string())
+        })?;
 
         Ok(Self {
             id: Uuid::new_v4(),

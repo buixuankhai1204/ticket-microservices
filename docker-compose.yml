@@ -80,6 +80,10 @@ services:
           --topic ${KAFKA_SEAT_RESERVATION_EVENTS_TOPIC:-seat_reservation.events} --partitions 3 --replication-factor 1
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
           --topic ${KAFKA_SEAT_RESERVATION_EVENTS_TOPIC:-seat_reservation.events}.dlq --partitions 1 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_SUBSCRIPTION_EVENTS_TOPIC:-subscription.events} --partitions 3 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_SUBSCRIPTION_EVENTS_TOPIC:-subscription.events}.dlq --partitions 1 --replication-factor 1
         echo "saga topics ready:"
         kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks:
@@ -202,6 +206,7 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_USER_EVENTS_TOPIC: ${KAFKA_USER_EVENTS_TOPIC:-user.events}
       KAFKA_BOOKING_EVENTS_TOPIC: ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events}
+      KAFKA_SUBSCRIPTION_EVENTS_TOPIC: ${KAFKA_SUBSCRIPTION_EVENTS_TOPIC:-subscription.events}
       KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "8084:8084"
