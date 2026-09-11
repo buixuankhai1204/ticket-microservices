@@ -289,6 +289,19 @@ func (r *Repository) UpdateSeatReservationStatus(ctx context.Context, tx pgx.Tx,
 	return nil
 }
 
+func (r *Repository) UpdateSeatReservationStatusBatch(ctx context.Context, tx pgx.Tx, bookingIDs []uuid.UUID, status string) error {
+	if len(bookingIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE seat_reservations SET status = $1, updated_at = now() WHERE booking_id = ANY($2)`,
+		status, bookingIDs,
+	); err != nil {
+		return &domain.RepositoryError{Err: fmt.Errorf("update seat_reservation status batch: %w", err)}
+	}
+	return nil
+}
+
 func (r *Repository) WriteOutbox(ctx context.Context, tx pgx.Tx, ev domain.OutboxEvent) error {
 	payload, err := json.Marshal(ev)
 	if err != nil {
