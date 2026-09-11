@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
@@ -30,18 +31,34 @@ func (uc *ReapHeldReservationsUseCase) Execute(ctx context.Context) (reaped int,
 	if err != nil {
 		return 0, err
 	}
+	if len(stale) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, &domain.RepositoryError{Err: err}
+		}
+		return 0, nil
+	}
 
+	// Release() is an in-memory transition check (no I/O) — run it per row, but
+	// collect the seat/booking IDs and issue exactly two batched statements
+	// instead of two queries per row (an N+1 pattern at reaper batch sizes).
+	// ListStaleHeldReservations only ever returns 'held' rows, so Release()
+	// always succeeds and always lands on the same target status, which is what
+	// makes one shared UpdateSeatReservationStatusBatch call correct here.
+	seatIDs := make([]uuid.UUID, 0, len(stale)*2)
+	bookingIDs := make([]uuid.UUID, len(stale))
 	for i := range stale {
-		res := stale[i]
-		if rErr := res.Release(); rErr != nil {
+		if rErr := stale[i].Release(); rErr != nil {
 			return 0, rErr
 		}
-		if err := uc.repo.ReleaseReservedSeats(ctx, tx, res.SeatIDs); err != nil {
-			return 0, err
-		}
-		if err := uc.repo.UpdateSeatReservationStatus(ctx, tx, res.BookingID, res.Status); err != nil {
-			return 0, err
-		}
+		seatIDs = append(seatIDs, stale[i].SeatIDs...)
+		bookingIDs[i] = stale[i].BookingID
+	}
+
+	if err := uc.repo.ReleaseReservedSeats(ctx, tx, seatIDs); err != nil {
+		return 0, err
+	}
+	if err := uc.repo.UpdateSeatReservationStatusBatch(ctx, tx, bookingIDs, domain.ReservationReleased); err != nil {
+		return 0, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

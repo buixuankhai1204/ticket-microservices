@@ -32,6 +32,12 @@ type Repository interface {
 
 	UpdateSeatReservationStatus(ctx context.Context, tx pgx.Tx, bookingID uuid.UUID, status string) error
 
+	// UpdateSeatReservationStatusBatch sets the same status on every reservation
+	// in bookingIDs in one statement — for a reaper/sweep usecase acting on many
+	// rows per tick, where a per-row UpdateSeatReservationStatus call would be
+	// an N+1 query loop.
+	UpdateSeatReservationStatusBatch(ctx context.Context, tx pgx.Tx, bookingIDs []uuid.UUID, status string) error
+
 	WriteOutbox(ctx context.Context, tx pgx.Tx, ev domain.OutboxEvent) error
 
 	MarkEventProcessed(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (alreadyProcessed bool, err error)
