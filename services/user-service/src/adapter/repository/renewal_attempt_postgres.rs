@@ -278,4 +278,46 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
 
         Ok(())
     }
+
+    async fn try_advisory_lock(
+        &self,
+        conn: &mut PgConnection,
+        key: &str,
+    ) -> Result<bool, UserError> {
+        sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1))")
+            .bind(key)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(repo_err)
+    }
+
+    async fn release_advisory_lock(
+        &self,
+        conn: &mut PgConnection,
+        key: &str,
+    ) -> Result<(), UserError> {
+        sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
+            .bind(key)
+            .execute(&mut *conn)
+            .await
+            .map_err(repo_err)?;
+
+        Ok(())
+    }
+
+    async fn enqueue_due(&self, conn: &mut PgConnection) -> Result<u64, UserError> {
+        let result = sqlx::query(
+            "INSERT INTO renewal_attempts (subscription_id, period_end, idempotency_key) \
+             SELECT id, current_period_end, \
+                    'renew:' || id::text || ':' || current_period_end::text \
+             FROM subscriptions \
+             WHERE status = 'active' AND current_period_end <= CURRENT_DATE \
+             ON CONFLICT (subscription_id, period_end) DO NOTHING",
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(repo_err)?;
+
+        Ok(result.rows_affected())
+    }
 }
