@@ -1,4 +1,5 @@
 pub mod create_subscription;
+pub mod enqueue_due_renewals;
 pub mod get_subscription;
 pub mod get_user_profile;
 pub mod list_subscriptions;
@@ -10,6 +11,7 @@ pub mod retry_renewal_now;
 pub mod send_dunning_email;
 
 pub use create_subscription::{CreateSubscriptionInput, CreateSubscriptionUseCase};
+pub use enqueue_due_renewals::{EnqueueDueRenewalsUseCase, EnqueueOutcome};
 pub use get_subscription::GetSubscriptionUseCase;
 pub use get_user_profile::GetUserProfileUseCase;
 pub use list_subscriptions::ListSubscriptionsUseCase;

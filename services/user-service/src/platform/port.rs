@@ -169,4 +169,20 @@ pub trait RenewalAttemptRepository: Send + Sync {
         user_id: Uuid,
         template: &str,
     ) -> Result<(), UserError>;
+
+    // ---- Job A (docs/sagas/renewal-subscriptions.md §1/§11) ----------------
+
+    async fn try_advisory_lock(
+        &self,
+        conn: &mut PgConnection,
+        key: &str,
+    ) -> Result<bool, UserError>;
+
+    async fn release_advisory_lock(
+        &self,
+        conn: &mut PgConnection,
+        key: &str,
+    ) -> Result<(), UserError>;
+
+    async fn enqueue_due(&self, conn: &mut PgConnection) -> Result<u64, UserError>;
 }
