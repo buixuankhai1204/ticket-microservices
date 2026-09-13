@@ -21,9 +21,9 @@ use domain::{EmailGateway, PasswordHasher, PaymentGateway, RenewalPolicy, TokenI
 use platform::db;
 use platform::port::{RenewalAttemptRepository, SubscriptionRepository, UserRepository};
 use usecase::{
-    CreateSubscriptionUseCase, GetSubscriptionUseCase, GetUserProfileUseCase,
-    ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase, ProcessOutcome,
-    ProcessRenewalAttemptUseCase, RegisterUserUseCase, RetryRenewalNowUseCase,
+    CreateSubscriptionUseCase, EnqueueDueRenewalsUseCase, EnqueueOutcome, GetSubscriptionUseCase,
+    GetUserProfileUseCase, ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase,
+    ProcessOutcome, ProcessRenewalAttemptUseCase, RegisterUserUseCase, RetryRenewalNowUseCase,
     SendDunningEmailUseCase,
 };
 
@@ -59,6 +59,27 @@ fn renewal_policy_from_env() -> RenewalPolicy {
             .filter(|v| !v.is_empty())
             .unwrap_or(d.dunning_schedule_days),
     }
+}
+
+fn spawn_renewal_job_a(enqueue: Arc<EnqueueDueRenewalsUseCase>) {
+    let interval_secs: u64 = env_parse("RENEWAL_ENQUEUE_INTERVAL_SECS", 86400);
+
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(interval_secs.max(1)));
+        loop {
+            ticker.tick().await;
+
+            match enqueue.execute().await {
+                Ok(EnqueueOutcome::LockNotHeld) => {}
+                Ok(EnqueueOutcome::Enqueued(0)) => {}
+                Ok(EnqueueOutcome::Enqueued(n)) => {
+                    tracing::info!(enqueued = n, "renewal Job A enqueued due renewals")
+                }
+                Err(e) => tracing::error!(error = %e, "renewal Job A iteration failed"),
+            }
+        }
+    });
 }
 
 /// Renewal Job B (docs/sagas/renewal-subscriptions.md §2): an in-process ticker
@@ -170,6 +191,11 @@ async fn main() {
     let mut jwt_validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     jwt_validation.set_issuer(&[jwt_issuer_key]);
     jwt_validation.validate_aud = false;
+
+    spawn_renewal_job_a(Arc::new(EnqueueDueRenewalsUseCase::new(
+        pool.clone(),
+        renewal_attempt_repository.clone(),
+    )));
 
     spawn_renewal_job_b(
         Arc::new(ProcessRenewalAttemptUseCase::new(
