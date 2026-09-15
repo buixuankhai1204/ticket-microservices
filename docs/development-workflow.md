@@ -4,7 +4,7 @@ This is the end-to-end lifecycle for changing this repo, and which skill/agent/h
 at each step. It assumes the conventions in `CLAUDE.md` (Clean Architecture layers, usecase
 owns the transaction, choreography saga over Kafka, transactional outbox via Debezium CDC).
 
-The toolkit lives entirely in `.claude/` — 11 skills (`/name`), 8 subagents (Agent tool or
+The toolkit lives entirely in `.claude/` — 11 skills (`/name`), 9 subagents (Agent tool or
 by name), 3 hooks (automatic). There is no plugin mirror.
 
 ---
@@ -14,7 +14,7 @@ by name), 3 hooks (automatic). There is no plugin mirror.
 | Need | Why |
 |---|---|
 | Go toolchain, Rust toolchain (`rustup component add clippy rustfmt`) | Per-service build/lint; the `pre-commit-check.sh` hook needs them (missing = skipped, not failed) |
-| Docker + `docker compose` | `docker-compose.yml` runs the whole stack; `integration-test-writer` and `e2e-saga-tester` need it |
+| Docker + `docker compose` | `docker-compose.yml` runs the whole stack; `integration-test-writer`, `e2e-saga-tester`, and `e2e-test-writer` need it |
 | `swag` CLI (`go install github.com/swaggo/swag/cmd/swag@latest`) | Regenerating Go Swagger docs; `docs/` is committed and required to build |
 | `.env` (copy from `.env.example`) | `docker compose` reads it |
 
@@ -89,6 +89,9 @@ This is the highest-risk change type. Do not skip the design step.
      state without its outbox row), the compensation path, the reaper.
    - `docker compose up -d` (§8), then **`e2e-saga-tester`** — drives the saga through Kong,
      asserts DB + DLQ state on the happy path and the compensation path.
+   - Once that's green, **`e2e-test-writer`** — persists the same ground as a rerunnable Go
+     suite under `e2e/` (`-tags=e2e`), including a real idempotency test via a duplicate Kafka
+     produce.
    - Then §7.
 
 ---
@@ -158,6 +161,7 @@ Then tests:
 - `unit-test-writer` after any `domain` change.
 - `integration-test-writer` after any `usecase` change or new saga step.
 - `e2e-saga-tester` once a saga's steps are all wired and the stack is up (§8).
+- `e2e-test-writer` once `e2e-saga-tester` is green, to lock the saga in as a rerunnable suite.
 
 Then static checks (the `pre-commit-check.sh` hook also runs these on `git commit`, scoped to
 staged files' services):
@@ -197,6 +201,37 @@ Reset (wipes volumes — needed after a non-additive migration):
 docker compose down -v && docker compose up -d
 ```
 
+### Isolation for the `e2e/` suite: a separate, dedicated stack
+
+`e2e-test-writer`'s tests write real rows through real code paths — they are not something to
+point at the normal `docker compose up -d` dev stack, which is a developer's real local
+environment, not a disposable test database (see the "Isolation" note in `README.md`'s Testing
+section). The fix is a **second, dedicated `docker compose` project** — `ticket-e2e`, configured
+by `.env.e2e` — with every host port offset by +10000 from the dev stack's (Kong `18000` instead
+of `8000`, Postgres `15433`-`15436`, Kafka's `EXTERNAL` listener `19094`, services'
+`/healthz` `18081`-`18085`), so the two run side by side without colliding and neither
+containers, volumes, nor data are ever shared between them.
+
+`scripts/run-e2e.sh` is the one-command version: `docker compose -p ticket-e2e --env-file
+.env.e2e up -d --build` (idempotent — a no-op if already running, so this never rebuilds/restarts
+anything for a rerun), waits for every healthchecked container, `kafka-init`/`connect-init`,
+every service's own `/healthz`, **and every Debezium connector's task state being `RUNNING`**
+(a container can be "healthy" while its connector task is `FAILED` — a real race this repo's
+outbox connectors have hit on a freshly created DB; the fix is `curl -X POST
+localhost:18083/connectors/<name>/tasks/0/restart`), then runs `go test -C e2e -tags=e2e
+-count=1 ./...` against it (extra args pass straight through, e.g. `-run TestFoo -v`;
+`scripts/run-e2e.sh down [-v]` tears the e2e stack down). Like the dev stack, the e2e stack is
+never reset between runs — `e2e-test-writer`'s tests mint fresh, unique data and never assume a
+clean DB, so accumulation there is harmless and expected (it's a dedicated test project, not
+anyone's environment). `-count=1` is load-bearing, not a style choice: these tests are
+non-hermetic, so Go's test cache — which hashes source/binary/flags, not live stack state —
+would otherwise happily replay a stale "ok" from a previous run.
+
+The safety here doesn't depend on remembering to use the script: `e2e/internal/harness`'s own
+defaults point at the `ticket-e2e` stack's ports, so a bare `go test -C e2e -tags=e2e -count=1
+./...` with no env vars set is exactly as safe. This dedicated-stack shape (bring up if needed,
+wait, run — no reset) is also what the eventual CI job (§11) should do.
+
 ---
 
 ## 9. What blocks you automatically (hooks)
@@ -217,8 +252,9 @@ These only gate Claude Code sessions — not edits/commits made directly in a te
   carrying `publish:` / `consume:`. Not needed for a plain `http:` endpoint on a known service.
 - **Extended thinking** (`/effort high`) — `/design-saga` runs with it by default; also the
   seat-reservation locking strategy. Not for routine CRUD.
-- **Background tasks** — run a service's test suite, or `e2e-saga-tester` against a running
-  stack, in the background while you keep editing another service.
+- **Background tasks** — run a service's test suite, `e2e-saga-tester`, or the `e2e-test-writer`
+  suite (`go test -C e2e -tags=e2e -count=1 ./...`) against a running stack, in the background while you
+  keep editing another service.
 - **Checkpoints** (`Esc Esc`) — back out of an exploratory scaffold; not a substitute for git.
 
 ---
@@ -228,5 +264,7 @@ These only gate Claude Code sessions — not edits/commits made directly in a te
 There is no `.github/workflows/` yet. When added it should run, per service with changes:
 `go build ./... && go vet ./... && gofmt -l . && go test ./...` (Go) /
 `cargo build && cargo clippy -- -D warnings && cargo fmt --check && cargo test` (Rust); plus a
-`docker compose`-based job for `-tags=integration` / `tests/` integration suites; plus the
+`docker compose`-based job for `-tags=integration` / `tests/` integration suites; plus, once
+`e2e-test-writer` has authored suites under `e2e/`, a job that brings the full stack up
+(`docker compose up -d`, wait for health) and runs `go test -C e2e -tags=e2e -count=1 ./...`; plus the
 review agents as an advisory (non-blocking) step on the diff.
