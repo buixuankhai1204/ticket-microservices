@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	httpSwagger "github.com/swaggo/http-swagger"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func NewRouter(h *Handler, health *HealthHandler, mw ...Middleware) http.Handler {
@@ -11,6 +13,7 @@ func NewRouter(h *Handler, health *HealthHandler, mw ...Middleware) http.Handler
 
 	mux.HandleFunc("GET /healthz", health.Live)
 	mux.HandleFunc("GET /readyz", health.Ready)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	mux.Handle("GET /swagger/", httpSwagger.WrapHandler)
 

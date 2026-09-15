@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod dto;
 pub mod handlers;
+pub mod metrics;
 pub mod openapi;
 pub mod routes;
 

@@ -154,6 +154,17 @@ Every service (per scaffold, or retrofit with `/add-observability`):
 - Exposes Prometheus `/metrics` (RED on HTTP; processed/retried/dead-lettered counters and
   lag for consumers), separate from `/healthz` and `/readyz`.
 
+All four services (`user-service`, `event-service`, `booking-service`, `analytics-service`)
+now expose HTTP RED metrics on `/metrics` — `http_requests_total` /
+`http_requests_duration_seconds`, labeled `method`/`path`/`status` with the same names and
+labels on both stacks (Go: `prometheus/client_golang`; Rust: `metrics` +
+`metrics-exporter-prometheus`, hand-rolled rather than `axum-prometheus`, which pins axum 0.8
+and would conflict with the axum 0.7 these services are on). Consumer processed/retried/
+dead-lettered/lag metrics are still open. A Prometheus + Grafana OSS pair runs in the dev
+`docker-compose.yml` (config under `monitoring/`) scraping every service and rendering the
+provisioned "Service RED Metrics" dashboard — Kong doesn't front either, they're reached
+directly on their own host ports (`${PROMETHEUS_HOST_PORT:-9090}`, `${GRAFANA_HOST_PORT:-3000}`).
+
 ## Cross-service communication: choreography saga over Kafka
 
 Cross-service state changes (e.g. a booking needing a seat reserved in `event-service`) go

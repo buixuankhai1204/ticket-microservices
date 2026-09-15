@@ -6,12 +6,14 @@ mod usecase;
 use std::env;
 use std::sync::Arc;
 
+use axum::middleware::from_fn;
+use axum::routing::get;
 use chrono::Duration;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use adapter::email::StubEmailGateway;
-use adapter::http::{build_router, ApiDoc, AppState};
+use adapter::http::{build_router, metrics, ApiDoc, AppState};
 use adapter::payment::{StubOutcome, StubPaymentGateway};
 use adapter::repository::postgres::PostgresUserRepository;
 use adapter::repository::renewal_attempt_postgres::PostgresRenewalAttemptRepository;
@@ -248,7 +250,14 @@ async fn main() {
         jwt_validation,
     });
 
+    let metrics_handle = metrics::install_recorder();
+
     let app = build_router(state)
+        .route(
+            "/metrics",
+            get(move || async move { metrics_handle.render() }),
+        )
+        .layer(from_fn(metrics::track_metrics))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let port: u16 = env_parse("PORT", 8081);

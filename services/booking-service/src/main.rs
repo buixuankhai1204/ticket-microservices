@@ -7,11 +7,13 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::middleware::from_fn;
+use axum::routing::get;
 use tokio_util::sync::CancellationToken;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use adapter::http::{build_router, ApiDoc, AppState};
+use adapter::http::{build_router, metrics, ApiDoc, AppState};
 use adapter::messaging::kafka::{CancelBookingHandler, ConfirmBookingHandler, SagaConsumer};
 use adapter::repository::postgres::PostgresBookingRepository;
 use platform::db;
@@ -112,7 +114,14 @@ async fn main() {
         tokio::spawn(reaper.run(shutdown.clone(), Duration::from_secs(reaper_interval_secs))),
     ];
 
+    let metrics_handle = metrics::install_recorder();
+
     let app = build_router(state)
+        .route(
+            "/metrics",
+            get(move || async move { metrics_handle.render() }),
+        )
+        .layer(from_fn(metrics::track_metrics))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let port: u16 = env::var("PORT")

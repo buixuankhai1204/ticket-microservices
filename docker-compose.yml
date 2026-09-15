@@ -355,11 +355,47 @@ services:
     networks:
       - ticket-network
 
+  # Scrapes RED metrics (request rate, error rate, latency) off every service's
+  # /metrics endpoint -- see monitoring/prometheus/prometheus.yml for targets.
+  # Kong doesn't front this: it's reached directly on its own host port.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    depends_on:
+      - user-service
+      - event-service
+      - booking-service
+      - analytics-service
+    networks:
+      - ticket-network
+
+  # Grafana OSS, pre-provisioned with the Prometheus datasource above and the
+  # "Service RED Metrics" dashboard (monitoring/grafana/provisioning/).
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - ticket-network
+
 volumes:
   postgres_user_data:
   postgres_analytics_data:
   postgres_event_data:
   postgres_booking_data:
+  grafana_data:
 
 networks:
   ticket-network:

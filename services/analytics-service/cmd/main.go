@@ -70,6 +70,7 @@ func run(log logger.Logger) error {
 	router := httpadapter.NewRouter(handler, health,
 		httpadapter.RequestID(),
 		httpadapter.AccessLog(log),
+		httpadapter.Metrics(),
 	)
 
 	srv := &http.Server{
