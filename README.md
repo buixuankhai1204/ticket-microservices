@@ -225,7 +225,7 @@ express the property under test:
 |---|---|---|
 | Unit (`domain`, `usecase`) | invariants, pure business logic | nothing — mocked ports |
 | Integration | the real HTTP → usecase → repository → Postgres path: atomicity, concurrency, idempotency, pagination | Docker (a throwaway Postgres per test binary) |
-| End-to-end | the full choreography saga through Kong, Kafka, and Debezium | `docker compose up -d` already running |
+| End-to-end | the full choreography saga through Kong, Kafka, and Debezium | a dedicated e2e stack (`scripts/run-e2e.sh`) |
 
 ```bash
 # Go services
@@ -235,6 +235,32 @@ go test -tags=integration ./integration/...
 # Rust services
 cd services/user-service && cargo test
 cargo test --manifest-path services/user-service/Cargo.toml --test '*'
+
+# End-to-end (its own module at e2e/, spans services, not inside any one service).
+# Targets the dedicated e2e stack by default (see Isolation below), not your dev stack --
+# but it still needs that stack up first: run scripts/run-e2e.sh instead, or bring it up
+# yourself with `docker compose -p ticket-e2e --env-file .env.e2e up -d` first.
+# -count=1 is required: these tests are non-hermetic, so Go's test cache must be disabled.
+go test -C e2e -tags=e2e -count=1 ./...
+```
+
+End-to-end tests come in two forms: an ad hoc pass via the `e2e-saga-tester` subagent (drives a
+saga through Kong once, reports pass/fail, leaves no code behind), and a persisted suite under
+`e2e/` authored by the `e2e-test-writer` subagent once a saga's ad hoc pass is green — see
+[Claude Code tooling](#claude-code-tooling-for-this-repo).
+
+**Isolation:** end-to-end tests run against a **separate, dedicated** `docker compose` project
+(`ticket-e2e`, configured by [`.env.e2e`](.env.e2e)) — never your normal dev stack. Every host
+port in `.env.e2e` is the dev port + 10000 (e.g. Kong at `18000` instead of `8000`), so the two
+stacks run side by side without colliding, and nothing here ever writes into the Postgres/Kafka
+your `docker compose up -d` dev stack holds. `scripts/run-e2e.sh` brings the e2e stack up if it
+isn't already running and leaves it running afterward — like the dev stack, it's never reset
+between runs, since every test mints its own fresh, unique data and never assumes a clean DB.
+
+```bash
+scripts/run-e2e.sh                   # bring the e2e stack up if needed, wait for health, run the suite
+scripts/run-e2e.sh -run TestFoo -v   # extra args are passed straight to `go test`
+scripts/run-e2e.sh down              # tear the e2e stack down (add -v to also wipe its volumes)
 ```
 
 ## Project layout

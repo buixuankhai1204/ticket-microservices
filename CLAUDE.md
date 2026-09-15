@@ -293,7 +293,8 @@ the affected skill(s)/agent(s), nothing else.
 | `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
 | `unit-test-writer` | Writer: `domain`-only unit tests (pure entities/invariants, no mocks, no DB) — one happy path plus one test per uncovered branch, sized to coverage, not exhaustive |
 | `integration-test-writer` | Writer: integration tests vs real Postgres — one happy path per usecase plus only the categories that usecase's shape needs (contended claim, consumer idempotency, IDOR), not a fixed checklist |
-| `e2e-saga-tester` | Drives an already-running `docker compose` stack through a saga via Kong and asserts DB + DLQ state, happy path and compensation path |
+| `e2e-saga-tester` | Read-only, ad hoc: drives the dedicated `ticket-e2e` stack (never the dev stack) through a saga via Kong and asserts DB + DLQ state, happy path and compensation path |
+| `e2e-test-writer` | Writer: turns a saga `e2e-saga-tester` has already confirmed passes into a persistent, rerunnable Go suite (`e2e/`, `-tags=e2e`) against that same dedicated stack — happy path, reachable failure sequences, a real idempotency test via a duplicate Kafka produce, and a poison-message/DLQ test |
 
 `api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
 `docs/sagas/` artifact, checked by `saga-consistency-reviewer`. `api-contract-reviewer`
@@ -305,10 +306,21 @@ from source, not by curling that live endpoint — ask before changing that.
 
 `unit-test-writer` and `integration-test-writer` split by test *type*, not language.
 `usecase` orchestration is `integration-test-writer`'s job (the use case owns the
-transaction, so a `pgx.Tx` / `PgConnection` can't be faked). `e2e-saga-tester` is a third
-tier — the running multi-service stack, driven through Kong; it assumes the user brought the
-stack up. Use `unit-test-writer` after a `domain` change, `integration-test-writer` after a
-`usecase` change, `e2e-saga-tester` after a saga's steps are all wired.
+transaction, so a `pgx.Tx` / `PgConnection` can't be faked). `e2e-saga-tester` and
+`e2e-test-writer` are the third tier — the running multi-service stack, driven through Kong.
+Neither ever touches `docker compose up -d`'s normal dev stack: both target a **second,
+dedicated `docker compose` project** (`ticket-e2e`, configured by `.env.e2e`, every host port
+the dev stack's + 10000) that either agent can bring up itself (`scripts/run-e2e.sh`, or
+`docker compose -p ticket-e2e --env-file .env.e2e up -d`) — unlike the dev stack, nothing
+valuable lives there, so it's fair game to start/reuse freely. The two split by *durability*,
+not by what they check: `e2e-saga-tester` is the read-only, one-off pass you reach for while a
+saga is still being verified (it leaves no code behind); `e2e-test-writer` is what you run once
+that pass is green, to lock the same ground into a suite under `e2e/` that keeps proving it on
+every future run — including a proper idempotency test (a duplicate Kafka produce onto the
+topic) that `e2e-saga-tester` can't safely do against a live consumer group. Use
+`unit-test-writer` after a `domain` change, `integration-test-writer` after a `usecase` change,
+`e2e-saga-tester` once a saga's steps are all wired, and `e2e-test-writer` once
+`e2e-saga-tester` is green.
 
 ### Hooks (`.claude/settings.json` + `.claude/hooks/`)
 

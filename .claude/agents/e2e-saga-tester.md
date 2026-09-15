@@ -1,6 +1,6 @@
 ---
 name: e2e-saga-tester
-description: Drives an already-running docker-compose stack through a full saga via the Kong gateway and asserts the end state in every participating service's database and on the Kafka DLQ topics — happy path and the compensation/failure path. Use once a saga's steps are wired (services build and their consumers run) to verify the flow end to end before opening a PR. Assumes the user has run `docker compose up -d`; it does not build or start anything.
+description: Drives the dedicated `ticket-e2e` docker-compose stack (never the developer's normal dev stack) through a full saga via the Kong gateway and asserts the end state in every participating service's database and on the Kafka DLQ topics — happy path and the compensation/failure path. Use once a saga's steps are wired (services build and their consumers run) to verify the flow end to end before opening a PR. Brings the dedicated e2e stack up itself if it isn't already running.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
@@ -12,31 +12,41 @@ terminal states and compensation path.
 
 ## Ground rules
 
-- **You do not build or start the stack.** The user runs `docker compose up -d` (per this
-  repo's workflow — implementation turns stop at compile; verification is a separate pass).
-  First thing: check it's up and healthy —
-  `docker compose ps --format '{{.Name}} {{.State}} {{.Health}}'`. If services are missing or
-  unhealthy, print that and **stop** with a one-line instruction to bring it up; do not try
-  to start it yourself.
-- **All application traffic goes through Kong** at `${GATEWAY_URL:-http://localhost:8000}` —
-  never a service's own port. Direct-to-service calls bypass rate-limiting and JWT and prove
-  nothing about the real path.
-- **You are read-only on the repo.** You may run `curl`, `docker compose exec ... psql`, and
-  `docker compose exec kafka kafka-console-consumer.sh`. You may not edit code, migrations,
-  or compose. If an assertion fails because of a code bug, report the bug precisely — don't
-  work around it.
+- **You never touch the developer's normal dev stack** (`docker compose up -d`, no `-p`). It's a
+  real local environment, not a disposable test database — this agent writes real registrations,
+  events, and bookings through real code paths, and none of that belongs in someone's dev
+  Postgres. Every command below targets the **dedicated `ticket-e2e` project** instead
+  (`docker compose -p ticket-e2e --env-file .env.e2e ...`), which exists for exactly this and
+  nothing else.
+- **Bring the e2e stack up yourself if it isn't running** — unlike the dev stack, this one is
+  yours to manage: `scripts/run-e2e.sh` (bring up if needed, wait for health) or `docker compose
+  -p ticket-e2e --env-file .env.e2e up -d --build` directly. It's idempotent — a no-op if already
+  up — and every host port is the dev stack's + 10000 (`.env.e2e`), so it never collides with
+  whatever the developer has running.
+- **All application traffic goes through Kong** at `${GATEWAY_URL:-http://localhost:18000}` (the
+  e2e stack's Kong, not the dev stack's `:8000`) — never a service's own port. Direct-to-service
+  calls bypass rate-limiting and JWT and prove nothing about the real path.
+- **You are read-only on the repo's code.** You may run `curl`, `docker compose -p ticket-e2e
+  --env-file .env.e2e exec ... psql`, and `... exec kafka kafka-console-consumer.sh`, and you may
+  bring the e2e stack itself up/down. You may not edit code, migrations, or `docker-compose.yml`.
+  If an assertion fails because of a code bug, report the bug precisely — don't work around it.
 - Use a **fresh, unique** user/event per run (`e2e+<timestamp>@example.com`) so reruns don't
-  collide on unique constraints.
+  collide on unique constraints — the e2e stack is never reset between runs, same reasoning as
+  `e2e-test-writer`'s persisted suite.
 
 ## Procedure
 
 ### 1. Preflight
-- `docker compose ps` — every service + `postgres-*` + `kafka` + `kafka-connect` healthy;
-  `kafka-init` / `connect-init` completed.
-- `curl -fsS "$GATEWAY_URL/api/v1/events?limit=1"` returns 200 (Kong ↔ event-service path
-  alive). Adjust per which services the target saga needs.
-- Connector: `curl -fsS localhost:8083/connectors/<svc>-outbox/status` shows
-  `connector.state` and every task `RUNNING`.
+- `docker compose -p ticket-e2e --env-file .env.e2e up -d --build` — brings the dedicated stack
+  up if it isn't already (no-op otherwise).
+- `docker compose -p ticket-e2e --env-file .env.e2e ps` — every service + `postgres-*` +
+  `kafka` + `kafka-connect` healthy; `kafka-init` / `connect-init` completed.
+- `curl -fsS "$GATEWAY_URL/api/v1/events?limit=1"` (default `$GATEWAY_URL=http://localhost:18000`)
+  returns 200 (Kong ↔ event-service path alive). Adjust per which services the target saga needs.
+- Connector: `curl -fsS localhost:18083/connectors/<svc>-outbox/status` shows `connector.state`
+  and **every task** `RUNNING` — a healthy container can still have a `FAILED` task (a real race
+  this repo's outbox connectors hit against a freshly created DB); if so, `curl -X POST
+  localhost:18083/connectors/<svc>-outbox/tasks/0/restart` and recheck before proceeding.
 
 ### 2. Happy path
 Drive the saga in order, capturing IDs and the JWT between steps. A representative
@@ -44,8 +54,8 @@ booking saga:
 1. `POST /api/v1/auth/register` → 201.
 2. `POST /api/v1/auth/login` → 200, extract the token → `JWT_TOKEN`.
 3. `POST /api/v1/events` (create an event with a known small seat count, e.g. 3) → capture
-   `event_id`. (If event creation isn't exposed yet, seed via
-   `docker compose exec postgres-event psql` and say so in the report.)
+   `event_id`. (If event creation isn't exposed yet, seed via `docker compose -p ticket-e2e
+   --env-file .env.e2e exec postgres-event psql` and say so in the report.)
 4. `POST /api/v1/bookings` with `Authorization: Bearer $JWT_TOKEN` for 1 seat → expect `202`
    (or the design's "accepted, pending" contract) and a `booking_id`.
 5. Poll `GET /api/v1/bookings/{booking_id}` until status is terminal or a ~10 s timeout.
@@ -58,8 +68,10 @@ booking saga:
 - `analytics-service` DB: the outcome read-model row exists exactly once.
 - `processed_events` in each consuming DB: exactly one row per delivered event id (no dupes).
 - **Every** `<topic>.dlq` is empty — for each saga topic:
-  `docker compose exec kafka kafka-console-consumer.sh --bootstrap-server localhost:9092
-  --topic <topic>.dlq --from-beginning --timeout-ms 5000` → expect 0 messages / a timeout.
+  `docker compose -p ticket-e2e --env-file .env.e2e exec kafka kafka-console-consumer.sh
+  --bootstrap-server localhost:9092 --topic <topic>.dlq --from-beginning --timeout-ms 5000`
+  (in-network bootstrap address, unaffected by the host-side port remap) → expect 0 messages / a
+  timeout.
 - `outbox_events` in every producer DB is empty (rows are deleted in-txn by design).
 
 ### 3. Failure / compensation path
