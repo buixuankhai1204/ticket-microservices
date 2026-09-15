@@ -77,15 +77,27 @@ trace context as **event metadata in a header**, not in the business payload:
   `traceparent` header.
 
 ### 4. Metrics  (every service)
-- A Prometheus `/metrics` endpoint (Go: `promhttp`; Rust: `metrics-exporter-prometheus`),
-  **separate** from `/healthz` and `/readyz`, unauthenticated but bound to the service port
-  (Kong doesn't route to it).
-- **RED** on HTTP: request count, error count (5xx), duration histogram — labelled by route
-  and status class, low cardinality (no user id, no raw path with ids in it — use the route
-  pattern).
+- A Prometheus `/metrics` endpoint (Go: `promhttp`; Rust: `metrics-exporter-prometheus` —
+  **not** `axum-prometheus`, which pins axum 0.8 and conflicts with the axum 0.7 these
+  services are on; a hand-rolled `axum::middleware::from_fn` reading `MatchedPath` works with
+  either version), **separate** from `/healthz` and `/readyz`, unauthenticated but bound to
+  the service port (Kong doesn't route to it).
+- **RED on HTTP is already done for all four services** — `http_requests_total` /
+  `http_requests_duration_seconds`, labels `method`/`path`/`status` (the registered route
+  pattern, e.g. `/api/v1/events/{eventID}`, never a raw path with real ids — low cardinality).
+  Same metric/label names on both stacks so one Grafana query covers every service. Reference
+  implementations: `services/event-service/internal/adapter/http/metrics.go` (Go) and
+  `services/user-service/src/adapter/http/metrics.rs` (Rust). A new service should copy one of
+  these rather than reinvent the naming.
+- The scrape/visualization layer already exists too — Prometheus + Grafana OSS run in
+  `docker-compose.yml` (config under `monitoring/`), with a provisioned "Service RED Metrics"
+  dashboard. Retrofitting a **new** service's HTTP metrics means adding it to
+  `monitoring/prometheus/prometheus.yml`'s `scrape_configs` (in-network `<service>:<port>`
+  target), not standing up new infra.
 - **Consumer metrics** (if it consumes): messages processed / skipped / retried / dead-
   lettered per topic+group, handler duration, and consumer lag if the client exposes it.
-  DLQ-write count is a page-worthy signal — make sure it's a distinct counter.
+  DLQ-write count is a page-worthy signal — make sure it's a distinct counter. **Not yet
+  implemented anywhere** — this is still open work whenever a consumer gets retrofitted.
 
 ## Instructions
 
@@ -95,7 +107,10 @@ trace context as **event metadata in a header**, not in the business payload:
 3. `docker-compose.yml`: add an `otel-collector` service (`otel/opentelemetry-collector` with
    a minimal `otelcol.yaml` exporting to logs or to a backend if one is present) on
    `ticket-network`, and set `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` +
-   `OTEL_SERVICE_NAME` on the target service. Add `OTEL_*` to `.env.example`.
+   `OTEL_SERVICE_NAME` on the target service. Add `OTEL_*` to `.env.example`. For metrics
+   (piece 4) on a **new** service, just add a `scrape_configs` entry to
+   `monitoring/prometheus/prometheus.yml` — Prometheus and Grafana themselves are already
+   running and don't need touching.
 4. Keep it framework-agnostic where the code is: `domain` and `usecase` use the existing
    logger interface and `otel`'s global tracer (no exporter type in a signature); the
    exporter/provider lives in `platform/` and is wired in the composition root only.

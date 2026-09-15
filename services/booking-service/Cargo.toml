@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 axum = "0.7"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "uuid", "chrono", "json", "macros", "migrate"] }
