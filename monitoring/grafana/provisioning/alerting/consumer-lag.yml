@@ -1,0 +1,63 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: kafka-consumer-lag
+    folder: Saga integrity
+    interval: 1m
+    rules:
+      - uid: consumer-lag-not-draining
+        title: Consumer lag not draining
+        condition: C
+        for: 0s
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.consumergroup }} on {{ $labels.topic }} has not caught up in 10 minutes"
+          description: >-
+            Committed lag for this consumer group never reached zero during the last
+            10 minutes, so the consumer is behind or stuck and its saga step is
+            delayed. Lag is summed over partitions; partitions with no committed
+            offset (reported as -1 by the exporter) are counted as 0.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: sum by (consumergroup, topic) (clamp_min(kafka_consumergroup_lag, 0))
+              instant: false
+              range: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: min
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              datasource:
+                type: __expr__
+                uid: __expr__

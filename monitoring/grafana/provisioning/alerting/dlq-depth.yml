@@ -1,0 +1,61 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: kafka-dlq
+    folder: Kafka
+    interval: 1m
+    rules:
+      - uid: dlq-depth-nonzero
+        title: DLQ has messages
+        condition: C
+        for: 0s
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.topic }} holds {{ $values.B }} dead-lettered message(s)"
+          description: >-
+            Every message on a <topic>.dlq is a saga step that did not complete (poison
+            message, permanent rejection, or retries exhausted). Depth is log-end offset
+            minus oldest retained offset, so it clears when DLQ retention drops the messages.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: sum by (topic) (kafka_topic_partition_current_offset{topic=~".+[.]dlq"} - kafka_topic_partition_oldest_offset{topic=~".+[.]dlq"})
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              datasource:
+                type: __expr__
+                uid: __expr__

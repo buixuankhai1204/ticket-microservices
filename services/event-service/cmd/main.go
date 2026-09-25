@@ -49,6 +49,7 @@ func run(log logger.Logger) error {
 		return err
 	}
 	defer pool.Close()
+	db.RegisterPoolMetrics(pool)
 
 	if err := db.Migrate(ctx, pool); err != nil {
 		return err
