@@ -89,6 +89,8 @@ async fn main() {
         pending_timeout_secs + 2 * reaper_interval_secs as i64,
     );
 
+    let metrics_pool = pool.clone();
+
     let state = Arc::new(AppState {
         get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
         list_bookings: ListBookingsUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
@@ -134,7 +136,14 @@ async fn main() {
     let app = build_router(state)
         .route(
             "/metrics",
-            get(move || async move { metrics_handle.render() }),
+            get(move || {
+                let pool = metrics_pool.clone();
+                let handle = metrics_handle.clone();
+                async move {
+                    metrics::record_pool_stats(&pool);
+                    handle.render()
+                }
+            }),
         )
         .layer(from_fn(metrics::track_metrics))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));

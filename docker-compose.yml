@@ -355,6 +355,24 @@ services:
     networks:
       - ticket-network
 
+  # Exposes committed consumer-group lag (kafka_consumergroup_lag) read from the
+  # broker, so it covers every Go and Rust consumer and keeps reporting when a
+  # consumer is down. In-network only, like kafka; Prometheus scrapes :9308.
+  # --group.filter matches the <service>-<EventType> group naming (skips the
+  # ticket-connect worker group); --topic.filter keeps just the saga topics + DLQs.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.10.0
+    command:
+      - "--kafka.server=kafka:9092"
+      - "--kafka.version=3.7.0"
+      - '--group.filter=.*-service-.*'
+      - '--topic.filter=.*\.events(\.dlq)?'
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
   # Probes each Debezium connector's /status on kafka-connect and reports
   # probe_success 1/0 (connector AND its task RUNNING; 404 counts as down).
   # In-network only; Prometheus drives it via the kafka-connect-connectors job.

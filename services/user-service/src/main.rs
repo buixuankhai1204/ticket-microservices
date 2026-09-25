@@ -214,6 +214,8 @@ async fn main() {
         )),
     );
 
+    let metrics_pool = pool.clone();
+
     let state = Arc::new(AppState {
         register_user: RegisterUserUseCase::new(
             pool.clone(),
@@ -255,7 +257,14 @@ async fn main() {
     let app = build_router(state)
         .route(
             "/metrics",
-            get(move || async move { metrics_handle.render() }),
+            get(move || {
+                let pool = metrics_pool.clone();
+                let handle = metrics_handle.clone();
+                async move {
+                    metrics::record_pool_stats(&pool);
+                    handle.render()
+                }
+            }),
         )
         .layer(from_fn(metrics::track_metrics))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));

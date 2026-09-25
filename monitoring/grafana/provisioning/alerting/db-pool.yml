@@ -1,0 +1,62 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: db-pool
+    folder: Service health
+    interval: 1m
+    rules:
+      - uid: db-pool-saturated
+        title: DB connection pool nearly full
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} is using {{ $values.B }} of its DB connection pool"
+          description: >-
+            More than 80% of the pool's connections have been checked out for 5
+            minutes. Once it is full, requests queue for a connection and latency
+            climbs. Go services also report db_pool_empty_acquire_wait_seconds_total
+            (time spent waiting for a connection); the Rust services do not.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: db_pool_connections_in_use / db_pool_connections_max
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.8]
+              datasource:
+                type: __expr__
+                uid: __expr__

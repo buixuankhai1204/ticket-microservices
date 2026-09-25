@@ -1,0 +1,116 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: critical-routes
+    folder: Service health
+    interval: 1m
+    rules:
+      - uid: critical-routes-5xx
+        title: Booking or login routes returning 5xx
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} {{ $labels.path }} is returning 5xx on {{ $values.B }} of requests"
+          description: >-
+            More than 5% of requests to this booking or login route returned 5xx
+            over the last 5 minutes (only evaluated once the route has served at
+            least 10 requests in that window, so a single error on a quiet route
+            does not fire it).
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: '(sum by (job, path) (rate(http_requests_total{path=~"/api/v1/bookings.*|/api/v1/auth/login|/api/v1/auth/register", status=~"5.."}[5m])) / sum by (job, path) (rate(http_requests_total{path=~"/api/v1/bookings.*|/api/v1/auth/login|/api/v1/auth/register"}[5m]))) and sum by (job, path) (increase(http_requests_total{path=~"/api/v1/bookings.*|/api/v1/auth/login|/api/v1/auth/register"}[5m])) >= 10'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.05]
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      - uid: critical-routes-p95-latency
+        title: Booking or login routes slow
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} {{ $labels.path }} p95 latency is {{ $values.B }}s"
+          description: >-
+            The 95th percentile latency of this booking or login route has been
+            above 1 second for 5 minutes (only evaluated once the route has served
+            at least 10 requests in that window).
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: 'histogram_quantile(0.95, sum by (le, job, path) (rate(http_requests_duration_seconds_bucket{path=~"/api/v1/bookings.*|/api/v1/auth/login|/api/v1/auth/register"}[5m]))) and sum by (job, path) (increase(http_requests_duration_seconds_count{path=~"/api/v1/bookings.*|/api/v1/auth/login|/api/v1/auth/register"}[5m])) >= 10'
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [1]
+              datasource:
+                type: __expr__
+                uid: __expr__
