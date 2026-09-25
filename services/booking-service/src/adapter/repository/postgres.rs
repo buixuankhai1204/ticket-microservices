@@ -132,6 +132,35 @@ impl BookingRepository for PostgresBookingRepository {
         row.map(Booking::try_from).transpose()
     }
 
+    async fn count_oversold_seats(&self, conn: &mut PgConnection) -> Result<i64, BookingError> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM ( \
+                 SELECT 1 FROM bookings, unnest(seat_ids) AS seat_id \
+                 WHERE status = 'confirmed' \
+                 GROUP BY event_id, seat_id \
+                 HAVING count(*) > 1 \
+             ) oversold",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(repo_err)
+    }
+
+    async fn count_stuck_pending(
+        &self,
+        conn: &mut PgConnection,
+        older_than_secs: i64,
+    ) -> Result<i64, BookingError> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM bookings \
+             WHERE status = 'pending' AND created_at < now() - make_interval(secs => $1)",
+        )
+        .bind(older_than_secs as f64)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(repo_err)
+    }
+
     async fn list_for_user(
         &self,
         conn: &mut PgConnection,

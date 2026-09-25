@@ -22,6 +22,12 @@ pub trait BookingRepository: Send + Sync {
         conn: &mut PgConnection,
         older_than_secs: i64,
     ) -> Result<Option<Booking>, BookingError>;
+    async fn count_oversold_seats(&self, conn: &mut PgConnection) -> Result<i64, BookingError>;
+    async fn count_stuck_pending(
+        &self,
+        conn: &mut PgConnection,
+        older_than_secs: i64,
+    ) -> Result<i64, BookingError>;
     async fn list_for_user(
         &self,
         conn: &mut PgConnection,
