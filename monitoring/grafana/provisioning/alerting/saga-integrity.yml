@@ -1,0 +1,174 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: booking-integrity
+    folder: Saga integrity
+    interval: 1m
+    rules:
+      - uid: booking-oversold-seats
+        title: Seat sold twice
+        condition: C
+        for: 0s
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $values.B }} seat(s) have more than one confirmed booking"
+          description: >-
+            Two customers hold the same ticket. Counted in booking-service as
+            (event_id, seat_id) pairs appearing in more than one confirmed booking.
+            Must always be zero.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: bookings_oversold_seats
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+      - uid: booking-stuck-pending
+        title: Bookings stuck pending
+        condition: C
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $values.B }} booking(s) still pending past the reaper timeout"
+          description: >-
+            Pending bookings older than BOOKING_PENDING_TIMEOUT plus two reaper
+            intervals. The reaper should have cancelled them, so either the reaper
+            is not running or the saga reply never arrived.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: bookings_stuck_pending
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              datasource:
+                type: __expr__
+                uid: __expr__
+
+  - orgId: 1
+    name: kafka-connect
+    folder: Saga integrity
+    interval: 1m
+    rules:
+      - uid: debezium-connector-down
+        title: Debezium connector not running
+        condition: C
+        for: 1m
+        noDataState: Alerting
+        execErrState: Error
+        isPaused: false
+        labels:
+          severity: page
+        annotations:
+          summary: "Connector {{ $labels.connector }} is not RUNNING"
+          description: >-
+            The connector or its task is FAILED, PAUSED, UNASSIGNED, missing, or
+            Kafka Connect is unreachable. While it is down no outbox events for
+            that service reach Kafka, so its saga steps silently stop.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: probe_success{job="kafka-connect-connectors"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              datasource:
+                type: __expr__
+                uid: __expr__
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+              datasource:
+                type: __expr__
+                uid: __expr__

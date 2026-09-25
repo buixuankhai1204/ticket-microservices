@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use adapter::health_reporter::run_booking_health_reporter;
 use adapter::http::{build_router, metrics, ApiDoc, AppState};
 use adapter::messaging::kafka::{CancelBookingHandler, ConfirmBookingHandler, SagaConsumer};
 use adapter::repository::postgres::PostgresBookingRepository;
@@ -20,7 +21,7 @@ use platform::db;
 use platform::port::BookingRepository;
 use usecase::{
     CancelBookingUseCase, ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase,
-    ListBookingsUseCase, ReapPendingBookingsUseCase,
+    ListBookingsUseCase, ReapPendingBookingsUseCase, ReportBookingHealthUseCase,
 };
 
 #[tokio::main]
@@ -61,6 +62,10 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
+    let health_interval_secs: u64 = env::var("BOOKING_HEALTH_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
 
     let booking_repository: Arc<dyn BookingRepository> = Arc::new(PostgresBookingRepository::new());
 
@@ -77,6 +82,11 @@ async fn main() {
         Arc::clone(&booking_repository),
         pending_timeout_secs,
         100,
+    );
+    let health_reporter = ReportBookingHealthUseCase::new(
+        pool.clone(),
+        Arc::clone(&booking_repository),
+        pending_timeout_secs + 2 * reaper_interval_secs as i64,
     );
 
     let state = Arc::new(AppState {
@@ -107,14 +117,19 @@ async fn main() {
     )
     .expect("failed to create SeatReservationFailed consumer");
 
+    let metrics_handle = metrics::install_recorder();
+
     let shutdown = CancellationToken::new();
     let background_tasks = vec![
         tokio::spawn(confirm_consumer.run(shutdown.clone())),
         tokio::spawn(cancel_consumer.run(shutdown.clone())),
         tokio::spawn(reaper.run(shutdown.clone(), Duration::from_secs(reaper_interval_secs))),
+        tokio::spawn(run_booking_health_reporter(
+            health_reporter,
+            shutdown.clone(),
+            Duration::from_secs(health_interval_secs),
+        )),
     ];
-
-    let metrics_handle = metrics::install_recorder();
 
     let app = build_router(state)
         .route(

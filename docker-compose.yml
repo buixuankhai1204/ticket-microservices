@@ -355,6 +355,18 @@ services:
     networks:
       - ticket-network
 
+  # Probes each Debezium connector's /status on kafka-connect and reports
+  # probe_success 1/0 (connector AND its task RUNNING; 404 counts as down).
+  # In-network only; Prometheus drives it via the kafka-connect-connectors job.
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+    volumes:
+      - ./monitoring/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    networks:
+      - ticket-network
+
   # Scrapes RED metrics (request rate, error rate, latency) off every service's
   # /metrics endpoint -- see monitoring/prometheus/prometheus.yml for targets.
   # Kong doesn't front this: it's reached directly on its own host port.
