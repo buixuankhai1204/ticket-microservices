@@ -186,8 +186,9 @@ invocation, not an HTTP call from the usecase.
   `platform/port` + `pgx`/`pgxpool` but never `adapter`.
 - Summarize what was added and what the user still fills in (persistence columns via
   `/new-migration`, validation rules). Note that `saga-consistency-reviewer` should audit any
-  `publish:`/`consume:` step and `unit-test-writer` / `integration-test-writer` cover the new
-  domain / usecase code. Do not write tests here — that's a separate pass.
+  `publish:`/`consume:` step and `unit-test-writer` covers the new domain code (the repo keeps
+  unit tests only, so use cases have no automated tests). Do not write tests here — that's a
+  separate pass.
 
 ## Reference (implemented)
 `user-service` (Rust) writes `outbox_events` with `aggregate_type = "user"` (`UserCreated`

@@ -13,10 +13,10 @@ and assert. They run in milliseconds and never touch Docker.
 `usecase` is deliberately **out of scope** here. In this repo the use case owns the
 transaction boundary — it holds the `*pgxpool.Pool` / `PgPool` and calls `Begin`/`Commit` —
 so a `pgx.Tx` / `&mut PgConnection` can't be meaningfully faked, and a "unit" test of a use
-case would be an integration test in disguise. Use-case orchestration coverage (error
-propagation, not-found mapping, saga-event fields, "non-DB work before `Begin`") belongs to
-`integration-test-writer`, which runs it against a real Postgres. See `@CLAUDE.md` for the
-layering.
+case would be an integration test in disguise. The repo keeps unit tests only (no integration
+or end-to-end tier), so use-case orchestration (error propagation, not-found mapping,
+saga-event fields, "non-DB work before `Begin`") is intentionally left without automated
+tests rather than covered by a faked transaction. See `@CLAUDE.md` for the layering.
 
 ## Constraint: small and coverage-driven, not exhaustive
 

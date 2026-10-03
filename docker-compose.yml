@@ -36,8 +36,8 @@ services:
       KAFKA_CFG_NODE_ID: "0"
       KAFKA_CFG_PROCESS_ROLES: controller,broker
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
-      # EXTERNAL is for host-side clients only (e.g. the e2e/ Go module's kafka-go
-      # client) -- every in-network service still talks to PLAINTEXT://kafka:9092.
+      # EXTERNAL is for host-side clients only -- every in-network service still
+      # talks to PLAINTEXT://kafka:9092.
       KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094,CONTROLLER://:9093
       KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_HOST_PORT:-9094}
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT

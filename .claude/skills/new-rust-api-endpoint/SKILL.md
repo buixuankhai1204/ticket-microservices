@@ -178,7 +178,8 @@ invocation, not an HTTP call from the usecase.
   `crate::platform::port` + `sqlx` but never `adapter`.
 - Summarize what was added and what the user still fills in. Note that
   `saga-consistency-reviewer` should audit any `publish:`/`consume:` step and
-  `unit-test-writer` / `integration-test-writer` cover the new code. Don't write tests here.
+  `unit-test-writer` covers the new domain code (the repo keeps unit tests only, so use cases
+  have no automated tests). Don't write tests here.
 
 ## Reference (implemented)
 `user-service` writes `outbox_events` with `aggregate_type = "user"` — `UserCreated` on the

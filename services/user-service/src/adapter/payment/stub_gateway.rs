@@ -4,8 +4,8 @@ use uuid::Uuid;
 use crate::domain::{ChargeOutcome, ChargeRequest, PaymentError, PaymentGateway};
 
 /// What the stub does on every `charge` call — selected by `PAYMENT_STUB_OUTCOME`
-/// so `e2e-saga-tester` can drive the happy path *and* the dunning / give-up
-/// paths without a real provider.
+/// so the happy path *and* the dunning / give-up paths can be driven without a
+/// real provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StubOutcome {
     Succeed,

@@ -1,9 +1,8 @@
 # Saga: renewal-subscriptions
 
 > Status: **design only** — no code wired yet. This file is the contract that
-> `saga-consistency-reviewer` and `e2e-saga-tester` check the implementation
-> against. Wire it with the runs in [§11](#11-next-actions), each a separate
-> reviewable step.
+> `saga-consistency-reviewer` checks the implementation against. Wire it with the
+> runs in [§11](#11-next-actions), each a separate reviewable step.
 
 > **Read this first — it is not a seat-reservation-shaped saga, and it adds no new
 > service.** Subscription renewal is a **feature of `user-service`** (Rust/axum).
@@ -621,8 +620,9 @@ lives correctly inside one existing service. **Recommendation: keep it as
 designed.** `saga-consistency-reviewer` should check the *publish* side (new
 `aggregate_type`, topic + DLQ present) and the `analytics-service` consumer groups
 against this doc; the Job A/B/reaper/reconciliation logic is `/review-concurrency`
-and `integration-test-writer` territory (contended `FOR UPDATE SKIP LOCKED` claim,
-crash-between-TX1-and-TX2, duplicate provider call, dunning-schedule walk).
+territory, and its trickiest cases (contended `FOR UPDATE SKIP LOCKED` claim,
+crash-between-TX1-and-TX2, duplicate provider call, dunning-schedule walk) have no
+automated coverage — the repo keeps unit tests only — so exercise them by hand.
 
 ## 11. Next actions
 
@@ -632,8 +632,8 @@ crash-between-TX1-and-TX2, duplicate provider call, dunning-schedule walk).
 > `[]consumerRunner` slice.
 
 Run in order. Run `/plan` before the `publish:` / `consume:` steps. Then
-`saga-consistency-reviewer` after the batch and `e2e-saga-tester` once the stack
-is up.
+`saga-consistency-reviewer` after the batch, and drive the saga by hand once the
+stack is up.
 
 ```
 # --- Kong (edit by hand — one route on the EXISTING user-service, §9) -------------

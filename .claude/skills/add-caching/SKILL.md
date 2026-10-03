@@ -95,6 +95,6 @@ point at `/new-go-api-endpoint` / `/new-rust-api-endpoint`.
    `clean-architecture-check.sh` hook knows about `adapter/cache/`.
 
 8. **Hand off.** Summarize the key scheme, TTL + jitter chosen and why, the invalidation
-   points, the staleness window, and the fail-open behaviour. Note for the user that
-   `integration-test-writer` should add a cache hit/miss/invalidation test and a
-   "Redis down ⇒ still 200 from DB" test.
+   points, the staleness window, and the fail-open behaviour. List what to check by hand
+   (the repo keeps unit tests only): a cache hit/miss/invalidation pass and "Redis down ⇒
+   still 200 from DB".
