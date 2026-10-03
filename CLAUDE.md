@@ -245,8 +245,8 @@ the publish path.
 (name, `aggregate_type`, topic, delivery guarantee, payload), the happy path, **every**
 failure sequence, the compensation map (a compensation is a new forward transaction, not a
 rollback), the stuck-saga timeout/reaper policy, and the topic/connector infra delta. That
-artifact is what `saga-consistency-reviewer` and `e2e-saga-tester` check the implementation
-against. Skip it only for a plain `http:` operation on one service.
+artifact is what `saga-consistency-reviewer` checks the implementation against. Skip it only
+for a plain `http:` operation on one service.
 
 Wiring each step is then `/new-go-api-endpoint` / `/new-rust-api-endpoint` — pass
 `publish:<EventName>:<aggregate_type>` and/or `consume:<EventName>:<topic>` alongside (or
@@ -303,9 +303,6 @@ the affected skill(s)/agent(s), nothing else.
 | `migration-reviewer` | Read-only: migration files for rolling-deploy safety — lock-heavy DDL, breaking changes without expand/contract, `CONCURRENTLY` in a txn, missing indexes |
 | `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
 | `unit-test-writer` | Writer: `domain`-only unit tests (pure entities/invariants, no mocks, no DB) — one happy path plus one test per uncovered branch, sized to coverage, not exhaustive |
-| `integration-test-writer` | Writer: integration tests vs real Postgres — one happy path per usecase plus only the categories that usecase's shape needs (contended claim, consumer idempotency, IDOR), not a fixed checklist |
-| `e2e-saga-tester` | Read-only, ad hoc: drives the dedicated `ticket-e2e` stack (never the dev stack) through a saga via Kong and asserts DB + DLQ state, happy path and compensation path |
-| `e2e-test-writer` | Writer: turns a saga `e2e-saga-tester` has already confirmed passes into a persistent, rerunnable Go suite (`e2e/`, `-tags=e2e`) against that same dedicated stack — happy path, reachable failure sequences, a real idempotency test via a duplicate Kafka produce, and a poison-message/DLQ test |
 
 `api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
 `docs/sagas/` artifact, checked by `saga-consistency-reviewer`. `api-contract-reviewer`
@@ -315,23 +312,12 @@ checks code against `kong.yml`, not against the API docs — the two don't overl
 Swagger UI at `/swagger/` for Go, `/swagger-ui` for Rust). `api-doc-sync` still generates
 from source, not by curling that live endpoint — ask before changing that.
 
-`unit-test-writer` and `integration-test-writer` split by test *type*, not language.
-`usecase` orchestration is `integration-test-writer`'s job (the use case owns the
-transaction, so a `pgx.Tx` / `PgConnection` can't be faked). `e2e-saga-tester` and
-`e2e-test-writer` are the third tier — the running multi-service stack, driven through Kong.
-Neither ever touches `docker compose up -d`'s normal dev stack: both target a **second,
-dedicated `docker compose` project** (`ticket-e2e`, configured by `.env.e2e`, every host port
-the dev stack's + 10000) that either agent can bring up itself (`scripts/run-e2e.sh`, or
-`docker compose -p ticket-e2e --env-file .env.e2e up -d`) — unlike the dev stack, nothing
-valuable lives there, so it's fair game to start/reuse freely. The two split by *durability*,
-not by what they check: `e2e-saga-tester` is the read-only, one-off pass you reach for while a
-saga is still being verified (it leaves no code behind); `e2e-test-writer` is what you run once
-that pass is green, to lock the same ground into a suite under `e2e/` that keeps proving it on
-every future run — including a proper idempotency test (a duplicate Kafka produce onto the
-topic) that `e2e-saga-tester` can't safely do against a live consumer group. Use
-`unit-test-writer` after a `domain` change, `integration-test-writer` after a `usecase` change,
-`e2e-saga-tester` once a saga's steps are all wired, and `e2e-test-writer` once
-`e2e-saga-tester` is green.
+The repo keeps **unit tests only**: `unit-test-writer` covers the `domain` layer (Go
+`*_test.go` next to the file; Rust inline `#[cfg(test)]` modules). There is deliberately no
+integration or end-to-end tier — no suite against a real Postgres, no `e2e/` module, no
+dedicated `ticket-e2e` stack. `usecase` orchestration (the use case owns the transaction, so a
+`pgx.Tx` / `PgConnection` can't be faked) and the cross-service sagas are therefore verified by
+hand against the running stack. Use `unit-test-writer` after a `domain` change.
 
 ### Hooks (`.claude/settings.json` + `.claude/hooks/`)
 
@@ -379,8 +365,7 @@ notes below are just the built-in Claude Code features it leans on:
 - **Background tasks** — once services exist, run each service's test suite as a background
   task when working across more than one service at a time (e.g. verifying `booking-service`
   and `event-service` both still pass after a saga change), instead of blocking on one before
-  starting the next. `e2e-saga-tester` against a running stack is a good background job while
-  you keep editing.
+  starting the next.
 - **Checkpoints** (`Esc` `Esc`, or `/rewind`) — useful for backing out of an exploratory
   scaffold that went the wrong direction, but they don't replace git and don't capture
   filesystem changes made outside Claude Code (`rm`/`mv`/`cp` in a terminal, edits in another

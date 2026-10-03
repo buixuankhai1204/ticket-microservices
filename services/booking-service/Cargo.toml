@@ -22,7 +22,3 @@ thiserror = "1"
 jsonwebtoken = "9"
 utoipa = { version = "4", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "6", features = ["axum"] }
-
-[dev-dependencies]
-# Real Postgres for integration tests (services/booking-service/tests/), needs Docker.
-testcontainers-modules = { version = "0.15", features = ["postgres"] }

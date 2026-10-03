@@ -119,5 +119,5 @@ trace context as **event metadata in a header**, not in the business payload:
    `platform/`-only).
 6. Hand off: list what was added per piece, the new env vars, and — if piece 3 ran — that
    the `outbox_events` migration and the connector JSON both changed and need redeploying
-   together. Note `integration-test-writer` / `e2e-saga-tester` can assert a single trace id
-   spans the saga.
+   together. Note that a single trace id spanning the saga has no automated check (the repo
+   keeps unit tests only) — confirm it by hand in the trace backend.

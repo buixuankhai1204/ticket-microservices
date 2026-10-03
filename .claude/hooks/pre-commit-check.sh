@@ -42,13 +42,6 @@ if [ -n "$GO_FILES" ]; then
       [ -n "$UNFORMATTED" ] && fail "gofmt: unformatted files in $mod_dir:\n$UNFORMATTED\nRun: gofmt -w $mod_dir"
       VET_OUT=$(cd "$mod_dir" && go vet ./... 2>&1)
       VET_STATUS=$?
-      # A module entirely gated behind a build tag (e.g. e2e/'s //go:build e2e on every
-      # file, including non-test files) has no packages at all without that tag -- not a
-      # vet failure, just the wrong invocation. Retry once with -tags=e2e before failing.
-      if [ "$VET_STATUS" -ne 0 ] && echo "$VET_OUT" | grep -q "matched no packages"; then
-        VET_OUT=$(cd "$mod_dir" && go vet -tags=e2e ./... 2>&1)
-        VET_STATUS=$?
-      fi
       [ "$VET_STATUS" -eq 0 ] || fail "go vet failed in $mod_dir:\n$VET_OUT"
     done
   else

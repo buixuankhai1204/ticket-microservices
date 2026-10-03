@@ -67,6 +67,7 @@ interleaving of two (or more) concurrent requests that breaks it — not just "t
 A findings list, most-severe first (oversell / double-booking always first). Per finding:
 `file:line`, one-sentence summary, the concrete two-request interleaving that fails, and a
 one-line suggested direction (e.g. "atomic `UPDATE ... WHERE available_seats >= :n` and check
-`RowsAffected`, return 409 on 0"). Note that `integration-test-writer`'s concurrent-oversell
-test (fire N requests at M<N seats, assert exactly M succeed) is the regression guard for
-any fix. If nothing is wrong, say so briefly rather than padding the report.
+`RowsAffected`, return 409 on 0"). Note that a concurrency fix has no automated regression
+guard (the repo keeps unit tests only), so say how to reproduce it by hand (e.g. fire N
+requests at M<N seats, assert exactly M succeed). If nothing is wrong, say so briefly rather
+than padding the report.

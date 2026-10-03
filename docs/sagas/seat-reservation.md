@@ -1,9 +1,9 @@
 # Saga: seat-reservation
 
 > Status: **design only** — no code wired yet. This file is the contract that
-> `saga-consistency-reviewer` and `e2e-saga-tester` check the implementation
-> against. Wire it with the `/new-go-api-endpoint` runs in [§11](#11-next-actions),
-> each a separate reviewable step.
+> `saga-consistency-reviewer` checks the implementation against. Wire it with the
+> `/new-go-api-endpoint` runs in [§11](#11-next-actions), each a separate reviewable
+> step.
 
 ## 1. Summary
 
@@ -462,8 +462,8 @@ sequence with per-step state) before wiring it.
 > stay Go (`/new-go-api-endpoint`). ~~struck~~ lines are **already done**.
 
 Run in order. Each `/new-*-api-endpoint` is a separate reviewable step; run
-`saga-consistency-reviewer` after the batch and `e2e-saga-tester` once the stack
-is up.
+`saga-consistency-reviewer` after the batch, then drive the saga by hand once the
+stack is up.
 
 ```
 # --- scaffold + schema -----------------------------------------------------------
