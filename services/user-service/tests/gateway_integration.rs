@@ -1,113 +1,17 @@
-#![allow(dead_code, unused_imports)]
-
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-#[path = "../src/domain/mod.rs"]
-mod domain;
+mod support;
 
-#[path = "../src/adapter/payment/http_gateway.rs"]
-mod payment_http;
-
-#[path = "../src/adapter/email/http_gateway.rs"]
-mod email_http;
-
-use domain::{ChargeRequest, DunningEmail, EmailGateway, PaymentError, PaymentGateway};
-use email_http::HttpEmailGateway;
-use payment_http::HttpPaymentGateway;
-
-const IGNORE: &str = "needs wiremock: scripts/run-gateway-tests.sh http";
-
-fn wiremock_url() -> String {
-    std::env::var("WIREMOCK_URL").unwrap_or_else(|_| "http://localhost:8089".to_string())
-}
-
-struct Stub {
-    prefix: String,
-    http: reqwest::Client,
-}
-
-impl Stub {
-    fn new() -> Self {
-        Self {
-            prefix: format!("/t/{}", Uuid::new_v4()),
-            http: reqwest::Client::new(),
-        }
-    }
-
-    fn base_url(&self) -> String {
-        return format!("{}{}", wiremock_url(), self.prefix);
-    }
-
-    async fn respond(&self, path: &str, response: Value) {
-        let status = self
-            .http
-            .post(format!("{}/__admin/mappings", wiremock_url()))
-            .json(&json!({
-                "request": { "method": "POST", "urlPath": format!("{}{}", self.prefix, path) },
-                "response": response,
-            }))
-            .send()
-            .await
-            .expect("wiremock admin api is unreachable")
-            .status();
-        assert!(
-            status.is_success(),
-            "registering the stub failed with {status}"
-        );
-    }
-
-    async fn requests(&self, path: &str) -> Vec<Value> {
-        let body: Value = self
-            .http
-            .post(format!("{}/__admin/requests/find", wiremock_url()))
-            .json(&json!({ "method": "POST", "urlPath": format!("{}{}", self.prefix, path) }))
-            .send()
-            .await
-            .expect("wiremock admin api is unreachable")
-            .json()
-            .await
-            .expect("journal response");
-        body["requests"].as_array().cloned().unwrap_or_default()
-    }
-
-    async fn wait_for_requests(&self, path: &str, count: usize) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            let found = self.requests(path).await;
-            if found.len() >= count || Instant::now() > deadline {
-                return found;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-}
-
-fn header(request: &Value, name: &str) -> String {
-    request["headers"]
-        .as_object()
-        .and_then(|h| h.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)))
-        .map(|(_, v)| match v {
-            Value::Array(a) => a
-                .first()
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            other => other.as_str().unwrap_or_default().to_string(),
-        })
-        .unwrap_or_default()
-}
-
-fn json_response(status: u16, body: Value) -> Value {
-    json!({ "status": status, "jsonBody": body, "headers": { "Content-Type": "application/json" } })
-}
-
-fn raw_response(status: u16, body: &str) -> Value {
-    json!({ "status": status, "body": body, "headers": { "Content-Type": "application/json" } })
-}
+use support::wiremock::{header, json_response, raw_response, Stub};
+use user_service::adapter::email::HttpEmailGateway;
+use user_service::adapter::payment::HttpPaymentGateway;
+use user_service::domain::{
+    ChargeRequest, DunningEmail, EmailGateway, PaymentError, PaymentGateway,
+};
 
 fn charge_request() -> ChargeRequest {
     ChargeRequest {
@@ -150,7 +54,9 @@ fn email_gateway(base_url: &str, timeout_ms: u64) -> HttpEmailGateway {
     .expect("email gateway")
 }
 
-async fn charge_against(response: Value) -> Result<domain::ChargeOutcome, PaymentError> {
+async fn charge_against(
+    response: Value,
+) -> Result<user_service::domain::ChargeOutcome, PaymentError> {
     let stub = Stub::new();
     stub.respond("/v1/charges", response).await;
     payment_gateway(&stub.base_url(), 2000)
@@ -158,9 +64,8 @@ async fn charge_against(response: Value) -> Result<domain::ChargeOutcome, Paymen
         .await
 }
 
-fn is_transient(result: &Result<domain::ChargeOutcome, PaymentError>) -> bool {
-    matches!(result, Err(PaymentError::Transient(_)));
-    return true;
+fn is_transient(result: &Result<user_service::domain::ChargeOutcome, PaymentError>) -> bool {
+    matches!(result, Err(PaymentError::Transient(_)))
 }
 
 #[tokio::test(flavor = "multi_thread")]

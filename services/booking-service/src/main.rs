@@ -1,10 +1,4 @@
-mod adapter;
-mod domain;
-mod platform;
-mod usecase;
-
 use std::env;
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::middleware::from_fn;
@@ -13,111 +7,60 @@ use tokio_util::sync::CancellationToken;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use adapter::health_reporter::run_booking_health_reporter;
-use adapter::http::{build_router, metrics, ApiDoc, AppState};
-use adapter::messaging::kafka::{CancelBookingHandler, ConfirmBookingHandler, SagaConsumer};
-use adapter::repository::postgres::PostgresBookingRepository;
-use platform::db;
-use platform::port::BookingRepository;
-use usecase::{
-    CancelBookingUseCase, ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase,
-    ListBookingsUseCase, ReapPendingBookingsUseCase, ReportBookingHealthUseCase,
-};
+use booking_service::adapter::health_reporter::run_booking_health_reporter;
+use booking_service::adapter::http::{build_router, metrics, ApiDoc};
+use booking_service::app::{self, App, AppConfig};
+use booking_service::platform::{self, db};
+
+fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 #[tokio::main]
 async fn main() {
     platform::logging::init();
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let max_connections: u32 = env::var("DB_MAX_CONNECTIONS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10);
-
-    let pool = db::build_pool(&database_url, max_connections)
+    let pool = db::build_pool(&database_url, env_parse("DB_MAX_CONNECTIONS", 10))
         .await
         .expect("failed to connect to postgres");
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+    app::migrate(&pool)
         .await
         .expect("failed to run database migrations");
 
-    let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-    let jwt_issuer = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
-
-    let kafka_brokers = env::var("KAFKA_BROKERS").expect("KAFKA_BROKERS must be set");
-    let seat_reservation_topic = env::var("KAFKA_SEAT_RESERVATION_EVENTS_TOPIC")
-        .unwrap_or_else(|_| "seat_reservation.events".to_string());
-    let max_attempts: u32 = env::var("KAFKA_CONSUMER_MAX_ATTEMPTS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5);
-
-    let pending_timeout_secs: i64 = env::var("BOOKING_PENDING_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(120);
-    let reaper_interval_secs: u64 = env::var("BOOKING_REAPER_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(30);
-    let health_interval_secs: u64 = env::var("BOOKING_HEALTH_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60);
-
-    let booking_repository: Arc<dyn BookingRepository> = Arc::new(PostgresBookingRepository::new());
-
-    let confirm_booking = Arc::new(ConfirmBookingUseCase::new(
-        pool.clone(),
-        Arc::clone(&booking_repository),
-    ));
-    let cancel_booking = Arc::new(CancelBookingUseCase::new(
-        pool.clone(),
-        Arc::clone(&booking_repository),
-    ));
-    let reaper = ReapPendingBookingsUseCase::new(
-        pool.clone(),
-        Arc::clone(&booking_repository),
-        pending_timeout_secs,
-        100,
-    );
-    let health_reporter = ReportBookingHealthUseCase::new(
-        pool.clone(),
-        Arc::clone(&booking_repository),
-        pending_timeout_secs + 2 * reaper_interval_secs as i64,
-    );
+    let config = AppConfig {
+        jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
+        jwt_issuer: env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string()),
+        kafka_brokers: env::var("KAFKA_BROKERS").expect("KAFKA_BROKERS must be set"),
+        seat_reservation_topic: env::var("KAFKA_SEAT_RESERVATION_EVENTS_TOPIC")
+            .unwrap_or_else(|_| "seat_reservation.events".to_string()),
+        consumer_group_suffix: env::var("KAFKA_GROUP_SUFFIX").unwrap_or_default(),
+        consumer_max_attempts: env_parse("KAFKA_CONSUMER_MAX_ATTEMPTS", 5),
+        pending_timeout_secs: env_parse("BOOKING_PENDING_TIMEOUT", 120),
+        reaper_interval_secs: env_parse("BOOKING_REAPER_INTERVAL", 30),
+    };
+    let reaper_interval_secs = config.reaper_interval_secs;
+    let health_interval_secs: u64 = env_parse("BOOKING_HEALTH_INTERVAL", 60);
 
     let metrics_pool = pool.clone();
+    let application = App::new(pool, config);
 
-    let state = Arc::new(AppState {
-        get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
-        list_bookings: ListBookingsUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
-        create_booking: CreateBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
-        db_pool: pool,
-        jwt_secret,
-        jwt_issuer,
-    });
-
-    let confirm_consumer = SagaConsumer::new(
-        &kafka_brokers,
-        &seat_reservation_topic,
-        max_attempts,
-        ConfirmBookingHandler {
-            use_case: confirm_booking,
-        },
-    )
-    .expect("failed to create SeatReserved consumer");
-    let cancel_consumer = SagaConsumer::new(
-        &kafka_brokers,
-        &seat_reservation_topic,
-        max_attempts,
-        CancelBookingHandler {
-            use_case: cancel_booking,
-        },
-    )
-    .expect("failed to create SeatReservationFailed consumer");
+    let confirm_consumer = application
+        .confirm_consumer()
+        .expect("failed to create SeatReserved consumer");
+    let cancel_consumer = application
+        .cancel_consumer()
+        .expect("failed to create SeatReservationFailed consumer");
+    let App {
+        state,
+        reaper,
+        health_reporter,
+        ..
+    } = application;
 
     let metrics_handle = metrics::install_recorder();
 
@@ -133,7 +76,7 @@ async fn main() {
         )),
     ];
 
-    let app = build_router(state)
+    let router = build_router(state)
         .route(
             "/metrics",
             get(move || {
@@ -148,10 +91,7 @@ async fn main() {
         .layer(from_fn(metrics::track_metrics))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
-    let port: u16 = env::var("PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8083);
+    let port: u16 = env_parse("PORT", 8083);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .expect("failed to bind listener");
@@ -159,7 +99,7 @@ async fn main() {
     tracing::info!(port, "booking-service listening");
 
     let server_shutdown = shutdown.clone();
-    axum::serve(listener, app)
+    axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             server_shutdown.cancel();

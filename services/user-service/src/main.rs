@@ -1,8 +1,3 @@
-mod adapter;
-mod domain;
-mod platform;
-mod usecase;
-
 use std::env;
 use std::sync::Arc;
 
@@ -12,20 +7,14 @@ use chrono::Duration;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use adapter::email::{HttpEmailGateway, StubEmailGateway};
-use adapter::http::{build_router, metrics, ApiDoc, AppState};
-use adapter::payment::{HttpPaymentGateway, StubOutcome, StubPaymentGateway};
-use adapter::repository::postgres::PostgresUserRepository;
-use adapter::repository::renewal_attempt_postgres::PostgresRenewalAttemptRepository;
-use adapter::repository::subscription_postgres::PostgresSubscriptionRepository;
-use adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
-use domain::{EmailGateway, PasswordHasher, PaymentGateway, RenewalPolicy, TokenIssuer};
-use platform::db;
-use platform::port::{RenewalAttemptRepository, SubscriptionRepository, UserRepository};
-use usecase::{
-    CreateSubscriptionUseCase, EnqueueDueRenewalsUseCase, EnqueueOutcome, GetSubscriptionUseCase,
-    GetUserProfileUseCase, ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase,
-    ProcessOutcome, ProcessRenewalAttemptUseCase, RegisterUserUseCase, RetryRenewalNowUseCase,
+use user_service::adapter::email::{HttpEmailGateway, StubEmailGateway};
+use user_service::adapter::http::{build_router, metrics, ApiDoc};
+use user_service::adapter::payment::{HttpPaymentGateway, StubOutcome, StubPaymentGateway};
+use user_service::app::{self, run_renewal_batch, App, AppConfig, Gateways};
+use user_service::domain::{EmailGateway, PaymentGateway, RenewalPolicy};
+use user_service::platform::{self, db};
+use user_service::usecase::{
+    EnqueueDueRenewalsUseCase, EnqueueOutcome, ProcessRenewalAttemptUseCase,
     SendDunningEmailUseCase,
 };
 
@@ -106,47 +95,13 @@ fn spawn_renewal_job_b(
             tokio::time::interval(std::time::Duration::from_secs(interval_secs.max(1)));
         loop {
             ticker.tick().await;
-
-            match process
-                .reap_stale_charging(Duration::seconds(charging_timeout_secs))
-                .await
-            {
-                Ok(0) => {}
-                Ok(n) => tracing::warn!(reaped = n, "reset stale 'charging' renewal attempts"),
-                Err(e) => tracing::error!(error = %e, "renewal charging reaper failed"),
-            }
-
-            for _ in 0..batch {
-                match process.execute().await {
-                    Ok(ProcessOutcome::NothingDue) => break,
-                    Ok(ProcessOutcome::Skipped) => {
-                        tracing::debug!("renewal attempt skipped (row no longer charging)")
-                    }
-                    Ok(ProcessOutcome::Dunning { email }) => {
-                        let subscription_id = email.subscription_id;
-                        if let Err(e) = dunning.execute(email).await {
-                            tracing::error!(error = %e, "dunning email use case failed");
-                        }
-                        tracing::info!(%subscription_id, "renewal dunning advanced");
-                    }
-                    Ok(ProcessOutcome::Renewed { subscription_id }) => {
-                        tracing::info!(%subscription_id, "subscription renewed")
-                    }
-                    Ok(ProcessOutcome::RetryScheduled { subscription_id }) => {
-                        tracing::info!(%subscription_id, "renewal retry scheduled")
-                    }
-                    Ok(ProcessOutcome::GaveUp { subscription_id }) => {
-                        tracing::warn!(%subscription_id, "renewal gave up — provider outage")
-                    }
-                    Ok(ProcessOutcome::Canceled { subscription_id }) => {
-                        tracing::warn!(%subscription_id, "subscription canceled — dunning exhausted")
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "renewal Job B iteration failed");
-                        break;
-                    }
-                }
-            }
+            run_renewal_batch(
+                &process,
+                &dunning,
+                batch,
+                Duration::seconds(charging_timeout_secs),
+            )
+            .await;
         }
     });
 }
@@ -162,25 +117,9 @@ async fn main() {
         .await
         .expect("failed to connect to postgres");
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+    app::migrate(&pool)
         .await
         .expect("failed to run database migrations");
-
-    let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-    let jwt_issuer_key = env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string());
-
-    let user_repository: Arc<dyn UserRepository> = Arc::new(PostgresUserRepository::new());
-    let subscription_repository: Arc<dyn SubscriptionRepository> =
-        Arc::new(PostgresSubscriptionRepository::new());
-    let renewal_attempt_repository: Arc<dyn RenewalAttemptRepository> =
-        Arc::new(PostgresRenewalAttemptRepository::new());
-    let password_hasher: Arc<dyn PasswordHasher> = Arc::new(Argon2PasswordHasher::new());
-    let token_issuer: Arc<dyn TokenIssuer> = Arc::new(JwtTokenIssuer::new(
-        &jwt_secret,
-        Duration::hours(1),
-        jwt_issuer_key.clone(),
-    ));
 
     let payment_gateway: Arc<dyn PaymentGateway> = match provider_base_url(
         "PAYMENT_PROVIDER_BASE_URL",
@@ -225,70 +164,27 @@ async fn main() {
         None => Arc::new(StubEmailGateway::from_env("EMAIL_STUB_FAIL")),
     };
 
-    // JWT verification for the service's own JWT-protected routes (Kong verifies
-    // at the edge too; this is defence in depth and how a handler reads `sub`).
-    let jwt_decoding_key = jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes());
-    let mut jwt_validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
-    jwt_validation.set_issuer(&[jwt_issuer_key]);
-    jwt_validation.validate_aud = false;
-
-    spawn_renewal_job_a(Arc::new(EnqueueDueRenewalsUseCase::new(
+    let application = App::new(
         pool.clone(),
-        renewal_attempt_repository.clone(),
-    )));
+        AppConfig {
+            jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
+            jwt_issuer: env::var("JWT_ISSUER").unwrap_or_else(|_| "user-service".to_string()),
+            renewal_policy: renewal_policy_from_env(),
+        },
+        Gateways {
+            payment: payment_gateway,
+            email: email_gateway,
+        },
+    );
 
+    spawn_renewal_job_a(application.enqueue_due_renewals.clone());
     spawn_renewal_job_b(
-        Arc::new(ProcessRenewalAttemptUseCase::new(
-            pool.clone(),
-            renewal_attempt_repository.clone(),
-            subscription_repository.clone(),
-            payment_gateway,
-            renewal_policy_from_env(),
-        )),
-        Arc::new(SendDunningEmailUseCase::new(
-            pool.clone(),
-            renewal_attempt_repository.clone(),
-            email_gateway,
-        )),
+        application.process_renewal.clone(),
+        application.send_dunning_email.clone(),
     );
 
     let metrics_pool = pool.clone();
-
-    let state = Arc::new(AppState {
-        register_user: RegisterUserUseCase::new(
-            pool.clone(),
-            user_repository.clone(),
-            password_hasher.clone(),
-        ),
-        login_user: LoginUserUseCase::new(
-            pool.clone(),
-            user_repository.clone(),
-            password_hasher,
-            token_issuer,
-        ),
-        get_user_profile: GetUserProfileUseCase::new(pool.clone(), user_repository.clone()),
-        list_users: ListUsersUseCase::new(pool.clone(), user_repository),
-        create_subscription: CreateSubscriptionUseCase::new(
-            pool.clone(),
-            subscription_repository.clone(),
-        ),
-        get_subscription: GetSubscriptionUseCase::new(
-            pool.clone(),
-            subscription_repository.clone(),
-        ),
-        list_subscriptions: ListSubscriptionsUseCase::new(
-            pool.clone(),
-            subscription_repository.clone(),
-        ),
-        retry_renewal_now: RetryRenewalNowUseCase::new(
-            pool.clone(),
-            subscription_repository,
-            renewal_attempt_repository,
-        ),
-        db_pool: pool,
-        jwt_decoding_key,
-        jwt_validation,
-    });
+    let state = application.state.clone();
 
     let metrics_handle = metrics::install_recorder();
 

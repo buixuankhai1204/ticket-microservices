@@ -255,7 +255,17 @@ fn header_str<'a>(msg: &'a BorrowedMessage<'a>, key: &str) -> Option<&'a str> {
 }
 
 pub struct ConfirmBookingHandler {
-    pub use_case: Arc<ConfirmBookingUseCase>,
+    use_case: Arc<ConfirmBookingUseCase>,
+    group: String,
+}
+
+impl ConfirmBookingHandler {
+    pub fn new(use_case: Arc<ConfirmBookingUseCase>, group_suffix: &str) -> Self {
+        Self {
+            use_case,
+            group: format!("booking-service-SeatReserved{group_suffix}"),
+        }
+    }
 }
 
 #[async_trait]
@@ -263,7 +273,7 @@ impl SagaHandler for ConfirmBookingHandler {
     type Event = SeatReserved;
 
     fn group_id(&self) -> &str {
-        "booking-service-SeatReserved"
+        &self.group
     }
 
     fn event_type(&self) -> &str {
@@ -276,7 +286,17 @@ impl SagaHandler for ConfirmBookingHandler {
 }
 
 pub struct CancelBookingHandler {
-    pub use_case: Arc<CancelBookingUseCase>,
+    use_case: Arc<CancelBookingUseCase>,
+    group: String,
+}
+
+impl CancelBookingHandler {
+    pub fn new(use_case: Arc<CancelBookingUseCase>, group_suffix: &str) -> Self {
+        Self {
+            use_case,
+            group: format!("booking-service-SeatReservationFailed{group_suffix}"),
+        }
+    }
 }
 
 #[async_trait]
@@ -284,7 +304,7 @@ impl SagaHandler for CancelBookingHandler {
     type Event = SeatReservationFailed;
 
     fn group_id(&self) -> &str {
-        "booking-service-SeatReservationFailed"
+        &self.group
     }
 
     fn event_type(&self) -> &str {

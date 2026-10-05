@@ -17,6 +17,7 @@ type Config struct {
 	KafkaBrokers             []string
 	KafkaBookingEventsTopic  string
 	KafkaConsumerMaxAttempts int
+	KafkaGroupSuffix         string
 
 	SeatHoldTimeoutSecs    int
 	SeatReaperIntervalSecs int
@@ -70,6 +71,8 @@ func Load() (Config, error) {
 	if v := os.Getenv("KAFKA_BOOKING_EVENTS_TOPIC"); v != "" {
 		cfg.KafkaBookingEventsTopic = v
 	}
+
+	cfg.KafkaGroupSuffix = os.Getenv("KAFKA_GROUP_SUFFIX")
 
 	if v := os.Getenv("KAFKA_CONSUMER_MAX_ATTEMPTS"); v != "" {
 		n, err := strconv.Atoi(v)
