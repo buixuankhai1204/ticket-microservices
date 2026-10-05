@@ -303,6 +303,7 @@ the affected skill(s)/agent(s), nothing else.
 | `migration-reviewer` | Read-only: migration files for rolling-deploy safety — lock-heavy DDL, breaking changes without expand/contract, `CONCURRENTLY` in a txn, missing indexes |
 | `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
 | `unit-test-writer` | Writer: `domain`-only unit tests, few and high-value — arithmetic, boundaries, scheduling, idempotency, found bugs; refactors domain code that is hard to test instead of mocking |
+| `gateway-test-writer` | Writer: opt-in gateway integration tests for adapters that wrap an external component: Kafka consumer + DLQ adapters vs the compose Kafka (offset commits, DLQ record shape, retry classification, never losing a message) and the payment/email HTTP adapters vs WireMock (status → saga-arm mapping, `Idempotency-Key`, timeouts) |
 
 `api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
 `docs/sagas/` artifact, checked by `saga-consistency-reviewer`. `api-contract-reviewer`
@@ -312,12 +313,25 @@ checks code against `kong.yml`, not against the API docs — the two don't overl
 Swagger UI at `/swagger/` for Go, `/swagger-ui` for Rust). `api-doc-sync` still generates
 from source, not by curling that live endpoint — ask before changing that.
 
-The repo keeps **unit tests only**: `unit-test-writer` covers the `domain` layer (Go
-`*_test.go` next to the file; Rust inline `#[cfg(test)]` modules). There is deliberately no
-integration or end-to-end tier — no suite against a real Postgres, no `e2e/` module, no
-dedicated `ticket-e2e` stack. `usecase` orchestration (the use case owns the transaction, so a
-`pgx.Tx` / `PgConnection` can't be faked) and the cross-service sagas are therefore verified by
-hand against the running stack. Use `unit-test-writer` after a `domain` change.
+The repo has two automated test tiers. **Unit tests**: `unit-test-writer` covers the
+`domain` layer (Go `*_test.go` next to the file; Rust inline `#[cfg(test)]` modules). **Gateway
+integration tests**: `gateway-test-writer` covers the adapters that wrap an external
+component, run against the real thing (or a stub of it): the Kafka consumer + dead-letter
+adapters (`event-service`, `analytics-service`, `booking-service`) against the single-node
+Kafka in `docker-compose.yml`, and `user-service`'s `HttpPaymentGateway` / `HttpEmailGateway`
+against a WireMock container (compose profile `gateway-test`). They are opt-in (Go `//go:build integration`; Rust `tests/*.rs` with
+`#[ignore]`, reaching the bin-only crate through `#[path = "../src/…"]` includes) and run with
+`scripts/run-gateway-tests.sh`, so plain `go test ./...` / `cargo test` stay hermetic. There is
+deliberately no DB-backed tier and no end-to-end tier — no suite against a real Postgres, no
+`e2e/` module, no `ticket-e2e` stack. `usecase` orchestration (the use case owns the
+transaction, so a `pgx.Tx` / `PgConnection` can't be faked) and the cross-service sagas are
+verified by hand against the running stack. Use `unit-test-writer` after a `domain` change and
+`gateway-test-writer` after changing a Kafka consumer adapter or an outbound HTTP gateway.
+
+A consumer adapter must never commit past a message it has not fully resolved. A handler
+failure — in practice a failed dead-letter write — retries **the same message in place**; it
+does not move on to the next one (a later commit would silently commit past it and lose it).
+An empty payload is poison and goes to the DLQ like any other undeserializable message.
 
 Two rules govern those tests. **If a domain test is hard to write, the domain code is the
 problem** — refactor it (no mocks, no time-freezing crates) rather than work around it: a

@@ -12,9 +12,9 @@ use chrono::Duration;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-use adapter::email::StubEmailGateway;
+use adapter::email::{HttpEmailGateway, StubEmailGateway};
 use adapter::http::{build_router, metrics, ApiDoc, AppState};
-use adapter::payment::{StubOutcome, StubPaymentGateway};
+use adapter::payment::{HttpPaymentGateway, StubOutcome, StubPaymentGateway};
 use adapter::repository::postgres::PostgresUserRepository;
 use adapter::repository::renewal_attempt_postgres::PostgresRenewalAttemptRepository;
 use adapter::repository::subscription_postgres::PostgresSubscriptionRepository;
@@ -34,6 +34,10 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn provider_base_url(key: &str) -> Option<String> {
+    env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
 fn renewal_policy_from_env() -> RenewalPolicy {
@@ -178,14 +182,48 @@ async fn main() {
         jwt_issuer_key.clone(),
     ));
 
-    // Outbound gateways for renewal Job B. Stubs — no real provider is wired
-    // (docs/sagas/renewal-subscriptions.md §9). `PAYMENT_STUB_OUTCOME` and
-    // `EMAIL_STUB_FAIL` let a test drive the failure paths.
-    let payment_gateway: Arc<dyn PaymentGateway> = Arc::new(StubPaymentGateway::new(
-        StubOutcome::from_env("PAYMENT_STUB_OUTCOME"),
-    ));
-    let email_gateway: Arc<dyn EmailGateway> =
-        Arc::new(StubEmailGateway::from_env("EMAIL_STUB_FAIL"));
+    let payment_gateway: Arc<dyn PaymentGateway> = match provider_base_url(
+        "PAYMENT_PROVIDER_BASE_URL",
+    ) {
+        Some(base_url) => {
+            let timeout_secs: u64 = env_parse("PAYMENT_TIMEOUT_SECS", 30);
+            let charging_timeout_secs: u64 = env_parse("RENEWAL_CHARGING_TIMEOUT_SECS", 900);
+            assert!(
+                timeout_secs < charging_timeout_secs,
+                "PAYMENT_TIMEOUT_SECS must be shorter than RENEWAL_CHARGING_TIMEOUT_SECS, otherwise the reaper can reset a row whose charge is still in flight"
+            );
+            let api_key = env::var("PAYMENT_PROVIDER_API_KEY").expect(
+                "PAYMENT_PROVIDER_API_KEY must be set when PAYMENT_PROVIDER_BASE_URL is set",
+            );
+            Arc::new(
+                HttpPaymentGateway::new(
+                    &base_url,
+                    api_key,
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .expect("failed to build the payment provider client"),
+            )
+        }
+        None => Arc::new(StubPaymentGateway::new(StubOutcome::from_env(
+            "PAYMENT_STUB_OUTCOME",
+        ))),
+    };
+    let email_gateway: Arc<dyn EmailGateway> = match provider_base_url("EMAIL_PROVIDER_BASE_URL") {
+        Some(base_url) => {
+            let timeout_secs: u64 = env_parse("EMAIL_TIMEOUT_SECS", 10);
+            let api_key = env::var("EMAIL_PROVIDER_API_KEY")
+                .expect("EMAIL_PROVIDER_API_KEY must be set when EMAIL_PROVIDER_BASE_URL is set");
+            Arc::new(
+                HttpEmailGateway::new(
+                    &base_url,
+                    api_key,
+                    std::time::Duration::from_secs(timeout_secs),
+                )
+                .expect("failed to build the email provider client"),
+            )
+        }
+        None => Arc::new(StubEmailGateway::from_env("EMAIL_STUB_FAIL")),
+    };
 
     // JWT verification for the service's own JWT-protected routes (Kong verifies
     // at the edge too; this is defence in depth and how a handler reads `sub`).

@@ -190,8 +190,9 @@ invocation, not an HTTP call from the usecase.
   `/new-migration`, validation rules). Note that `saga-consistency-reviewer` should audit any
   `publish:`/`consume:` step and `unit-test-writer` covers the new domain code, and only the
   high-value logic (arithmetic, boundaries, scheduling, idempotency), not plain state changes
-  or guards. Use cases have no automated tests. Do not write tests here — that's a separate
-  pass.
+  or guards. Use cases have no automated tests. For a `consume:` step, `gateway-test-writer`
+  covers the Kafka consumer adapter (opt-in, `scripts/run-gateway-tests.sh kafka`). Do not
+  write tests here — that's a separate pass.
 
 ## Reference (implemented)
 `user-service` (Rust) writes `outbox_events` with `aggregate_type = "user"` (`UserCreated`

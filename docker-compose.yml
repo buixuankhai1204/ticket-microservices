@@ -420,6 +420,20 @@ services:
     networks:
       - ticket-network
 
+  # Stand-in for the third-party payment/email providers, used only by the gateway
+  # integration tests (scripts/run-gateway-tests.sh http). Behind a profile so a normal
+  # `docker compose up` never starts it.
+  wiremock:
+    image: wiremock/wiremock:3.9.1
+    profiles: ["gateway-test"]
+    command:
+      - "--disable-banner"
+      - "--max-request-journal-entries=2000"
+    ports:
+      - "${WIREMOCK_HOST_PORT:-8089}:8080"
+    networks:
+      - ticket-network
+
 volumes:
   postgres_user_data:
   postgres_analytics_data:

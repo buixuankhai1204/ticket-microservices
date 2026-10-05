@@ -113,15 +113,18 @@ func (c *Consumer[E]) Run(ctx context.Context) error {
 			continue
 		}
 
-		if err := c.handle(ctx, m); err != nil {
+		for {
+			err := c.handle(ctx, m)
+			if err == nil {
+				break
+			}
 			if ctx.Err() != nil {
 				return nil
 			}
-			c.log.Error("message not processed, will be redelivered", "err", err.Error(), "offset", m.Offset)
+			c.log.Error("message not processed, retrying in place", "err", err.Error(), "offset", m.Offset)
 			if sleep(ctx, time.Second) != nil {
 				return nil
 			}
-			continue
 		}
 
 		if err := c.reader.CommitMessages(ctx, m); err != nil {
