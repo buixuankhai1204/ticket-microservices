@@ -1,6 +1,6 @@
 ---
 name: unit-test-writer
-description: Writes a small, coverage-driven set of unit tests for the domain layer of a Go or Rust service - pure entity methods and business invariants, no mocks, no DB/network. One happy-path test per function, plus only the edge cases needed to hit every distinct branch at high coverage - not one test per conceivable input variant. Use after implementing or changing domain code, before opening a PR.
+description: Writes a few high-value unit tests for the domain layer of a Go or Rust service - only logic that is easy to get wrong and hard to spot by hand (arithmetic, boundaries, scheduling, idempotency, a bug just found), never plain state changes, guard clauses, field-copying constructors, constants or mappings. If a test is hard to write because the domain code hides the clock, randomness or I/O, it refactors the code instead of mocking. Use after implementing or changing domain code, before opening a PR.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
@@ -18,27 +18,53 @@ or end-to-end tier), so use-case orchestration (error propagation, not-found map
 saga-event fields, "non-DB work before `Begin`") is intentionally left without automated
 tests rather than covered by a faked transaction. See `@CLAUDE.md` for the layering.
 
-## Constraint: small and coverage-driven, not exhaustive
+## Rule 1: hard to test means the design is wrong
 
-Do not enumerate every conceivable input. For each constructor/method under test:
+If a test is hard to write, treat that as a finding about the code, not a testing problem.
+Hidden wall-clock reads, randomness, global state or I/O inside `domain` are the usual causes.
+Do not reach for a mock or a time-freezing crate; refactor the domain code so the test is
+trivial, then write it, and report the refactor in your output.
 
-1. **Write exactly one happy-path test first** — the normal, valid-input call.
-2. **Run coverage, then add a test only for a branch the happy path didn't reach** — one test
-   per *distinct code path* (each `if`/`match` arm, each domain error a function can return),
-   not per input variant. If three different malformed inputs (empty string, whitespace-only,
-   too-long) all hit the same `if len(name) == 0 || ...` check and return the same
-   `ErrInvalidName`, write **one** of them, not three — they're the same branch and a coverage
-   tool will already show it green after the first.
-3. **Stop once every branch is covered.** A domain file with 4 `if`-guarded error returns needs
-   on the order of 5 tests total (1 happy path + 4 branches), not a matrix of boundary values
-   around each guard. That's the target shape: small test count, high branch coverage, because
-   the two are the same thing for pure logic like this.
+- A domain method whose result is derived from the clock (a schedule, a deadline, a backoff)
+  takes `now` as a parameter. The `usecase` passes `Utc::now()` / `time.Now().UTC()`.
+- Pure audit stamps (`created_at`, `updated_at`) and minting a UUID inside an entity
+  constructor are fine as they are. They are not hard to test and are not worth a test.
+- Pure arithmetic stays separate from impure inputs (e.g. backoff math takes no clock; jitter
+  is added by the caller from the injected `now`).
 
-Exceptions worth a second test even after their branch is "covered": an invariant method whose
-bug would be a *silent wrong answer* rather than a wrong error (e.g. `Pagination` clamping
-`limit` to `MaxLimit` instead of rejecting it — the clamped *value* needs asserting, not just
-that no error was returned), and a constructor that mints a UUID or a saga event (assert the ID
-is a real v4 UUID and the event payload keys match `docs/sagas/*.md`, not just "no error").
+## Rule 2: write only high-value tests
+
+A test earns its place only if it covers logic that is **easy to get wrong and hard to see by
+hand**, or a bug that was actually found. Typical keepers:
+
+- arithmetic and boundaries (backoff and caps, off-by-one in a schedule index, month-end and
+  leap-year date math, integer overflow, `limit` clamping)
+- scheduling and multi-step sequences (walk a retry or dunning schedule through every step in
+  one test)
+- idempotency and terminal-state semantics that a redelivered saga event depends on
+- a regression test for any bug you find, which must fail before the fix and pass after
+
+Do **not** write tests for what is easy to read or debug by hand:
+
+- plain state changes (`status = Confirmed`, a counter `+= 1`) and setters
+- guard clauses that are a single `if` returning an error, or several inputs hitting the
+  same branch
+- constructors that only copy fields, `from_persisted` pass-throughs, `as_str` / `parse`
+  round trips, constants, and `match` mappings
+- derive-generated behavior (serde, `Debug`, `PartialEq`)
+
+Prefer one test that walks a scenario over several tests of the same shape, and merge
+same-shape tests (idempotent + refuses-terminal, cap accepted + cap exceeded) into one.
+
+**Coverage target: about 60% of a service's domain lines, measured on production code with the
+inline `#[cfg(test)]` module excluded (Rust inline tests otherwise inflate the number).** Stop
+at roughly that level; never add trivial tests to go higher. If a service is below it, add
+the missing test with the best value per test (typically one table-driven contract test, such
+as an event routing table), not several small guard tests. If a service is above it, cut the
+lowest-value tests first.
+
+If you find a bug (overflow, wrong boundary, silent wrong answer), say so explicitly and fix
+it; never weaken a test to match broken behavior.
 
 ## Where tests live
 
@@ -49,20 +75,15 @@ is a real v4 UUID and the event payload keys match `docs/sagas/*.md`, not just "
 
 ## After writing
 
-Check coverage, don't guess it:
-```
-go test -cover ./services/<service-name>/internal/domain/...
-cargo tarpaulin --manifest-path services/<service-name>/Cargo.toml   # or cargo llvm-cov
-```
-If the report shows an uncovered line, add the one test that reaches it — don't pre-emptively
-add tests for lines that are already covered. Then confirm at least the happy-path test
-actually exercises the logic: temporarily break the relevant `domain` code and confirm it
-fails, then restore it and confirm it passes — a test that passes either way isn't testing
-anything. If a test reveals an actual bug in the implementation, say so explicitly rather than
-weakening the test to match broken behavior.
+Run the tests, plus `go build ./... && go vet ./... && gofmt -l .` (Go) or
+`cargo clippy --all-targets -- -D warnings && cargo fmt --check` (Rust).
+
+Then prove each new test can fail: temporarily break the relevant `domain` line (drop the cap,
+make a `<` into `<=`, shift an index by one), confirm exactly that test fails, and restore the
+file byte-for-byte. A test that passes either way isn't testing anything.
 
 ## Output
 
-The coverage percentage achieved (from the tool, not an estimate), the test count, and any
-line the tool still shows uncovered along with why (e.g. an unreachable defensive branch) —
-don't pad the suite to chase 100% on genuinely dead code.
+The tests added (one line each, saying what could silently go wrong without it), any domain
+refactor made to make a test possible, any bug found, and anything you deliberately did not
+test.

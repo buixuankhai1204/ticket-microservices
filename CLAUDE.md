@@ -302,7 +302,7 @@ the affected skill(s)/agent(s), nothing else.
 | `saga-consistency-reviewer` | Read-only, whole-repo: the choreography graph — orphan events, missing topics/DLQs/connectors, missing compensations, non-idempotent consumers, partition-wedge risk, stuck sagas |
 | `migration-reviewer` | Read-only: migration files for rolling-deploy safety — lock-heavy DDL, breaking changes without expand/contract, `CONCURRENTLY` in a txn, missing indexes |
 | `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
-| `unit-test-writer` | Writer: `domain`-only unit tests (pure entities/invariants, no mocks, no DB) — one happy path plus one test per uncovered branch, sized to coverage, not exhaustive |
+| `unit-test-writer` | Writer: `domain`-only unit tests, few and high-value — arithmetic, boundaries, scheduling, idempotency, found bugs; refactors domain code that is hard to test instead of mocking |
 
 `api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
 `docs/sagas/` artifact, checked by `saga-consistency-reviewer`. `api-contract-reviewer`
@@ -318,6 +318,17 @@ integration or end-to-end tier — no suite against a real Postgres, no `e2e/` m
 dedicated `ticket-e2e` stack. `usecase` orchestration (the use case owns the transaction, so a
 `pgx.Tx` / `PgConnection` can't be faked) and the cross-service sagas are therefore verified by
 hand against the running stack. Use `unit-test-writer` after a `domain` change.
+
+Two rules govern those tests. **If a domain test is hard to write, the domain code is the
+problem** — refactor it (no mocks, no time-freezing crates) rather than work around it: a
+domain method whose result is derived from the clock (a schedule, a deadline, a backoff)
+takes `now` as a parameter and `usecase` passes `Utc::now()` / `time.Now().UTC()`, while pure
+audit stamps and a UUID minted in the constructor stay as they are. And **write only
+high-value tests** — logic that is easy to get wrong and hard to see by hand (arithmetic,
+boundaries, scheduling, idempotency, a bug just found), not plain state changes, single-`if`
+guards, field-copying constructors, constants or mappings. The target is about 60% domain
+line coverage per service, measured on production code only (exclude the inline test module),
+reached with the fewest tests — merge same-shape tests into one scenario.
 
 ### Hooks (`.claude/settings.json` + `.claude/hooks/`)
 

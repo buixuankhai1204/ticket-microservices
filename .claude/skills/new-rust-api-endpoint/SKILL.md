@@ -34,7 +34,10 @@ step*. For a plain `http:` operation, go to step 1.
 - **`src/domain/`** — a new entity's ID field is `uuid::Uuid` (`uuid` crate, feature `v4`),
   minted with `Uuid::new_v4()` in the **entity constructor**. A new business rule is a method
   on the entity returning a domain error variant (`BookingError::SeatUnavailable`), not an
-  ad-hoc check in the usecase.
+  ad-hoc check in the usecase. A method whose result is derived from the clock (a schedule,
+  deadline or backoff) takes `now: DateTime<Utc>`; the usecase passes `Utc::now()`. A product
+  of client-supplied ints used in a size/count limit is bounds-checked per factor before
+  multiplying (or uses checked arithmetic).
 - **`src/platform/port.rs`** — add new methods to the `#[async_trait]` `Repository` trait
   here; each takes `conn: &mut PgConnection` alongside its domain args. Don't define it on the
   postgres adapter first; don't put it in `domain`.
@@ -178,8 +181,9 @@ invocation, not an HTTP call from the usecase.
   `crate::platform::port` + `sqlx` but never `adapter`.
 - Summarize what was added and what the user still fills in. Note that
   `saga-consistency-reviewer` should audit any `publish:`/`consume:` step and
-  `unit-test-writer` covers the new domain code (the repo keeps unit tests only, so use cases
-  have no automated tests). Don't write tests here.
+  `unit-test-writer` covers the new domain code, and only the high-value logic (arithmetic,
+  boundaries, scheduling, idempotency), not plain state changes or guards. Use cases have no
+  automated tests. Don't write tests here.
 
 ## Reference (implemented)
 `user-service` writes `outbox_events` with `aggregate_type = "user"` — `UserCreated` on the

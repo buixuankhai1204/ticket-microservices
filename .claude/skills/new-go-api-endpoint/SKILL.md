@@ -36,7 +36,9 @@ Follow @CLAUDE.md's layer rules. Concretely:
 - **`internal/domain/`** — a new entity's ID field is `uuid.UUID` (`github.com/google/uuid`),
   minted with `uuid.New()` in the **entity constructor**. A new business rule is a method on
   the entity returning a domain error (`ErrSeatUnavailable`), not an ad-hoc check in the
-  usecase.
+  usecase. A method whose result is derived from the clock (a schedule, deadline or backoff)
+  takes `now time.Time`; the usecase passes `time.Now().UTC()`. A product of client-supplied
+  ints used in a size/count limit is bounds-checked per factor before multiplying.
 - **`internal/platform/port/`** — add new methods to the `Repository` interface here; each
   takes `ctx context.Context, tx pgx.Tx, …`. Don't define it on the postgres adapter first;
   don't put it in `domain`.
@@ -186,9 +188,10 @@ invocation, not an HTTP call from the usecase.
   `platform/port` + `pgx`/`pgxpool` but never `adapter`.
 - Summarize what was added and what the user still fills in (persistence columns via
   `/new-migration`, validation rules). Note that `saga-consistency-reviewer` should audit any
-  `publish:`/`consume:` step and `unit-test-writer` covers the new domain code (the repo keeps
-  unit tests only, so use cases have no automated tests). Do not write tests here — that's a
-  separate pass.
+  `publish:`/`consume:` step and `unit-test-writer` covers the new domain code, and only the
+  high-value logic (arithmetic, boundaries, scheduling, idempotency), not plain state changes
+  or guards. Use cases have no automated tests. Do not write tests here — that's a separate
+  pass.
 
 ## Reference (implemented)
 `user-service` (Rust) writes `outbox_events` with `aggregate_type = "user"` (`UserCreated`

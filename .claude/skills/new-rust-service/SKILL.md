@@ -35,7 +35,9 @@ declares itself.
   and **pure** outbound-gateway traits naming no driver type (`trait PasswordHasher`,
   `trait Cache`), `#[async_trait]` where async so they're usable as `Arc<dyn Trait + Send +
   Sync>`. Entity IDs are `uuid::Uuid` (`uuid` crate, feature `v4`), minted with
-  `Uuid::new_v4()` in the constructor. Zero `use` of `sqlx`/`axum`/`tokio`.
+  `Uuid::new_v4()` in the constructor. A domain method whose result is derived from the
+  clock (schedule, deadline, backoff) takes `now: DateTime<Utc>` rather than calling
+  `Utc::now()`, so it can be tested exactly. Zero `use` of `sqlx`/`axum`/`tokio`.
 - **`src/platform/port.rs`** (`mod port`) — the port traits that name the connection handle,
   `Repository` above all. May `use sqlx` (for `PgConnection`) and `crate::domain`; never
   `crate::adapter` or `crate::usecase`. Every method takes `conn: &mut PgConnection`

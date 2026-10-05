@@ -162,3 +162,89 @@ impl DomainEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn events_route_to_their_aggregate_topic_keyed_by_the_right_id() {
+        let ts = Utc.with_ymd_and_hms(2031, 3, 4, 5, 6, 7).unwrap();
+        let date = NaiveDate::from_ymd_opt(2031, 3, 31).unwrap();
+        let user_id = Uuid::new_v4();
+        let subscription_id = Uuid::new_v4();
+
+        let created = DomainEvent::UserCreated(UserCreated::new(user_id, "a@b.c".to_string(), ts));
+        let logged_in =
+            DomainEvent::UserLoggedIn(UserLoggedIn::new(user_id, "a@b.c".to_string(), ts));
+        let renewed = DomainEvent::SubscriptionRenewed(SubscriptionRenewed {
+            event_id: Uuid::new_v4(),
+            subscription_id,
+            user_id,
+            plan_id: "pro".to_string(),
+            renewal_attempt_id: Uuid::new_v4(),
+            period_start: date,
+            new_period_end: date,
+            amount_minor: 1,
+            currency: "USD".to_string(),
+            provider_charge_id: "ch_1".to_string(),
+            attempt_count: 1,
+            renewed_at: ts,
+        });
+        let failed = DomainEvent::SubscriptionPaymentFailed(SubscriptionPaymentFailed {
+            event_id: Uuid::new_v4(),
+            subscription_id,
+            user_id,
+            plan_id: "pro".to_string(),
+            renewal_attempt_id: Uuid::new_v4(),
+            period_end: date,
+            amount_minor: 1,
+            currency: "USD".to_string(),
+            decline_code: "card_declined".to_string(),
+            dunning_attempt: 1,
+            dunning_max: 4,
+            next_attempt_at: ts,
+            failed_at: ts,
+        });
+        let canceled = DomainEvent::SubscriptionCanceled(SubscriptionCanceled {
+            event_id: Uuid::new_v4(),
+            subscription_id,
+            user_id,
+            plan_id: "pro".to_string(),
+            renewal_attempt_id: Uuid::new_v4(),
+            period_end: date,
+            reason: "dunning_exhausted".to_string(),
+            dunning_attempts: 4,
+            canceled_at: ts,
+        });
+
+        for (event, event_type, aggregate_type, aggregate_id) in [
+            (&created, "UserCreated", "user", user_id),
+            (&logged_in, "UserLoggedIn", "user", user_id),
+            (
+                &renewed,
+                "SubscriptionRenewed",
+                "subscription",
+                subscription_id,
+            ),
+            (
+                &failed,
+                "SubscriptionPaymentFailed",
+                "subscription",
+                subscription_id,
+            ),
+            (
+                &canceled,
+                "SubscriptionCanceled",
+                "subscription",
+                subscription_id,
+            ),
+        ] {
+            assert_eq!(event.event_type(), event_type);
+            assert_eq!(event.aggregate_type(), aggregate_type);
+            assert_eq!(event.aggregate_id(), aggregate_id);
+            assert_eq!(event.payload()["event_id"], event.event_id().to_string());
+        }
+    }
+}
