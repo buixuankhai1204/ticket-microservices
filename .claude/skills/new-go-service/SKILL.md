@@ -33,7 +33,9 @@ only — enforce by import discipline, not just folder names:
   `ErrSeatUnavailable` if taken — the entity enforces the rule, not the caller), a shared
   `Pagination` value type, and **pure** outbound-gateway ports that name no infra type
   (`PasswordHasher`, `Cache`). Entity IDs are `uuid.UUID` (`github.com/google/uuid`), minted
-  with `uuid.New()` in the constructor — never an auto-increment integer. Zero imports of
+  with `uuid.New()` in the constructor — never an auto-increment integer. A domain method
+  whose result is derived from the clock (schedule, deadline, backoff) takes `now time.Time`
+  rather than calling `time.Now()`, so it can be tested exactly. Zero imports of
   this repo's other packages, of `pgx`/`pgxpool`, or of `net/http`.
 - **`internal/platform/port/`** (`package port`) — the port interfaces that name the DB
   transaction handle, `Repository` above all. May import `pgx` (for `pgx.Tx`) and `domain`;

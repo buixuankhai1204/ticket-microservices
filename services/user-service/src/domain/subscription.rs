@@ -164,3 +164,70 @@ impl Subscription {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn advance_clamps_to_month_end_and_rolls_over_the_year() {
+        let month = BillingInterval::Month;
+        assert_eq!(month.advance(date(2031, 1, 31)), Some(date(2031, 2, 28)));
+        assert_eq!(month.advance(date(2032, 1, 31)), Some(date(2032, 2, 29)));
+        assert_eq!(month.advance(date(2031, 12, 31)), Some(date(2032, 1, 31)));
+        assert_eq!(
+            BillingInterval::Year.advance(date(2032, 2, 29)),
+            Some(date(2033, 2, 28))
+        );
+        assert_eq!(month.advance(NaiveDate::MAX), None);
+    }
+
+    #[test]
+    fn new_normalizes_input_and_rejects_invalid_fields() {
+        let user_id = Uuid::new_v4();
+        let sub = Subscription::new(
+            user_id,
+            "  pro  ".to_string(),
+            BillingInterval::Month,
+            999,
+            " usd ".to_string(),
+            " pm_1 ".to_string(),
+        )
+        .unwrap();
+        assert_eq!(sub.plan_id, "pro");
+        assert_eq!(sub.currency, "USD");
+        assert_eq!(sub.payment_method_id, "pm_1");
+        assert_eq!(sub.status, SubscriptionStatus::Active);
+        assert_eq!(
+            sub.current_period_end,
+            BillingInterval::Month
+                .advance(sub.created_at.date_naive())
+                .unwrap()
+        );
+
+        for (plan, price, currency, method) in [
+            ("", 1, "USD", "pm"),
+            ("pro", -1, "USD", "pm"),
+            ("pro", 1, "US", "pm"),
+            ("pro", 1, "USD", ""),
+        ] {
+            let err = Subscription::new(
+                user_id,
+                plan.to_string(),
+                BillingInterval::Month,
+                price,
+                currency.to_string(),
+                method.to_string(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, UserError::InvalidSubscription(_)),
+                "{plan}/{price}/{currency}/{method}"
+            );
+        }
+    }
+}

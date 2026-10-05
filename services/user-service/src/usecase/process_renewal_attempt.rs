@@ -166,7 +166,7 @@ impl ProcessRenewalAttemptUseCase {
                 }
             }
             Err(PaymentError::Transient(message)) => {
-                match fresh.mark_transient_failure(message, &self.policy) {
+                match fresh.mark_transient_failure(message, &self.policy, now) {
                     TransientOutcome::WillRetry => {
                         self.renewal_attempt_repository
                             .settle(&mut tx, &fresh)

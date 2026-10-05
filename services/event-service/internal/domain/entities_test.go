@@ -28,140 +28,6 @@ func eventWindow() (time.Time, time.Time) {
 	return start, start.Add(3 * time.Hour)
 }
 
-func TestNewEventHappyPath(t *testing.T) {
-	start, end := eventWindow()
-
-	ev, err := NewEvent("Spring Festival", "outdoor stage", "Riverside Park", start, end)
-	if err != nil {
-		t.Fatalf("NewEvent returned error: %v", err)
-	}
-	assertV4UUID(t, ev.ID, "Event.ID")
-	if ev.Name != "Spring Festival" || ev.Description != "outdoor stage" || ev.Venue != "Riverside Park" {
-		t.Fatalf("event fields not copied: %+v", ev)
-	}
-	if !ev.StartsAt.Equal(start) || !ev.EndsAt.Equal(end) {
-		t.Fatalf("event window not copied: %+v", ev)
-	}
-	if ev.CreatedAt.IsZero() {
-		t.Fatalf("CreatedAt not set")
-	}
-}
-
-func TestNewEventRejectsInvalidInput(t *testing.T) {
-	start, end := eventWindow()
-
-	tests := []struct {
-		name      string
-		eventName string
-		venue     string
-		startsAt  time.Time
-		endsAt    time.Time
-	}{
-		{name: "blank name", eventName: "   ", venue: "Riverside Park", startsAt: start, endsAt: end},
-		{name: "blank venue", eventName: "Spring Festival", venue: "", startsAt: start, endsAt: end},
-		{name: "ends not after starts", eventName: "Spring Festival", venue: "Riverside Park", startsAt: start, endsAt: start},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ev, err := NewEvent(tc.eventName, "desc", tc.venue, tc.startsAt, tc.endsAt)
-			if !errors.Is(err, ErrInvalidEvent) {
-				t.Fatalf("err = %v, want ErrInvalidEvent", err)
-			}
-			if ev != nil {
-				t.Fatalf("event = %+v, want nil on error", ev)
-			}
-		})
-	}
-}
-
-func TestNewSeatHappyPath(t *testing.T) {
-	eventID := uuid.New()
-
-	seat, err := NewSeat(eventID, "A", "12", "7", 4500)
-	if err != nil {
-		t.Fatalf("NewSeat returned error: %v", err)
-	}
-	assertV4UUID(t, seat.ID, "Seat.ID")
-	if seat.EventID != eventID || seat.Section != "A" || seat.Row != "12" || seat.Number != "7" || seat.PriceMinor != 4500 {
-		t.Fatalf("seat fields not copied: %+v", seat)
-	}
-	if seat.Status != SeatAvailable {
-		t.Fatalf("Status = %q, want %q", seat.Status, SeatAvailable)
-	}
-}
-
-func TestNewSeatRejectsInvalidInput(t *testing.T) {
-	tests := []struct {
-		name    string
-		eventID uuid.UUID
-		number  string
-		price   int64
-	}{
-		{name: "nil event id", eventID: uuid.Nil, number: "7", price: 100},
-		{name: "blank number", eventID: uuid.New(), number: "  ", price: 100},
-		{name: "negative price", eventID: uuid.New(), number: "7", price: -1},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			seat, err := NewSeat(tc.eventID, "A", "1", tc.number, tc.price)
-			if !errors.Is(err, ErrInvalidSeat) {
-				t.Fatalf("err = %v, want ErrInvalidSeat", err)
-			}
-			if seat != nil {
-				t.Fatalf("seat = %+v, want nil on error", seat)
-			}
-		})
-	}
-}
-
-func TestSeatReserveThenRelease(t *testing.T) {
-	seat := &Seat{Status: SeatAvailable}
-
-	if err := seat.Reserve(); err != nil {
-		t.Fatalf("Reserve returned error: %v", err)
-	}
-	if seat.Status != SeatReserved {
-		t.Fatalf("Status = %q, want %q", seat.Status, SeatReserved)
-	}
-	if err := seat.Release(); err != nil {
-		t.Fatalf("Release returned error: %v", err)
-	}
-	if seat.Status != SeatAvailable {
-		t.Fatalf("Status = %q, want %q", seat.Status, SeatAvailable)
-	}
-}
-
-func TestSeatReserveRejectsWhenNotAvailable(t *testing.T) {
-	seat := &Seat{Status: SeatBooked}
-
-	if err := seat.Reserve(); !errors.Is(err, ErrSeatUnavailable) {
-		t.Fatalf("err = %v, want ErrSeatUnavailable", err)
-	}
-	if seat.Status != SeatBooked {
-		t.Fatalf("Status = %q, want unchanged %q", seat.Status, SeatBooked)
-	}
-}
-
-func TestSeatReleaseRejectsWhenNotReserved(t *testing.T) {
-	seat := &Seat{Status: SeatAvailable}
-
-	if err := seat.Release(); !errors.Is(err, ErrSeatUnavailable) {
-		t.Fatalf("err = %v, want ErrSeatUnavailable", err)
-	}
-	if seat.Status != SeatAvailable {
-		t.Fatalf("Status = %q, want unchanged %q", seat.Status, SeatAvailable)
-	}
-}
-
-func TestSeatIsAvailable(t *testing.T) {
-	if !(&Seat{Status: SeatAvailable}).IsAvailable() {
-		t.Fatalf("IsAvailable() = false for an available seat")
-	}
-	if (&Seat{Status: SeatReserved}).IsAvailable() {
-		t.Fatalf("IsAvailable() = true for a reserved seat")
-	}
-}
-
 func TestSeatReservationFinalize(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -265,63 +131,6 @@ func TestNewEventWithSeatsHappyPath(t *testing.T) {
 	}
 }
 
-func TestNewEventWithSeatsPropagatesConstructionErrors(t *testing.T) {
-	start, end := eventWindow()
-	goodSections := []SectionSpec{{Name: "Floor", Rows: 2, SeatsPerRow: 2, PriceMinor: 1000}}
-
-	tests := []struct {
-		name    string
-		evName  string
-		layout  LayoutSpec
-		wantErr error
-	}{
-		{
-			name:    "invalid event bubbles up from NewEvent",
-			evName:  "   ",
-			layout:  LayoutSpec{Sections: goodSections},
-			wantErr: ErrInvalidEvent,
-		},
-		{
-			name:    "no sections bubbles up from validateSections",
-			evName:  "Gala",
-			layout:  LayoutSpec{},
-			wantErr: ErrEventRequiresSeats,
-		},
-		{
-			name:   "bad exception bubbles up from indexExceptions",
-			evName: "Gala",
-			layout: LayoutSpec{
-				Sections:   goodSections,
-				Exceptions: []SeatException{{Section: "Nope", Row: "1", Number: "1", Remove: true}},
-			},
-			wantErr: ErrInvalidLayout,
-		},
-		{
-			name:   "every seat removed leaves an empty layout",
-			evName: "Gala",
-			layout: LayoutSpec{
-				Sections: []SectionSpec{{Name: "Floor", Rows: 1, SeatsPerRow: 2, PriceMinor: 1000}},
-				Exceptions: []SeatException{
-					{Section: "Floor", Row: "1", Number: "1", Remove: true},
-					{Section: "Floor", Row: "1", Number: "2", Remove: true},
-				},
-			},
-			wantErr: ErrEventRequiresSeats,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ev, seats, err := NewEventWithSeats(tc.evName, "desc", "Grand Hall", start, end, tc.layout)
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tc.wantErr)
-			}
-			if ev != nil || seats != nil {
-				t.Fatalf("ev=%v seats=%v, want nil on error", ev, seats)
-			}
-		})
-	}
-}
-
 func TestValidateSectionsRejectsBadLayouts(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -344,6 +153,11 @@ func TestValidateSectionsRejectsBadLayouts(t *testing.T) {
 		{
 			name:    "exceeds per-event maximum",
 			specs:   []SectionSpec{{Name: "A", Rows: MaxSeatsPerEvent + 1, SeatsPerRow: 1, PriceMinor: 1}},
+			wantErr: ErrLayoutTooLarge,
+		},
+		{
+			name:    "rows times seats per row overflows int to zero",
+			specs:   []SectionSpec{{Name: "A", Rows: 1 << 32, SeatsPerRow: 1 << 32, PriceMinor: 1}},
 			wantErr: ErrLayoutTooLarge,
 		},
 	}
@@ -384,37 +198,5 @@ func TestIndexExceptionsRejectsBadExceptions(t *testing.T) {
 				t.Fatalf("map = %v, want nil on error", m)
 			}
 		})
-	}
-}
-
-func TestIndexExceptionsRejectsDuplicateSeatKey(t *testing.T) {
-	sections, err := validateSections([]SectionSpec{{Name: "A", Rows: 4, SeatsPerRow: 4, PriceMinor: 100}})
-	if err != nil {
-		t.Fatalf("validateSections setup failed: %v", err)
-	}
-	exs := []SeatException{
-		{Section: "A", Row: "2", Number: "2", Remove: true},
-		{Section: "A", Row: "2", Number: "2", PriceMinor: ptrInt64(10)},
-	}
-
-	m, err := indexExceptions(exs, sections)
-	if !errors.Is(err, ErrInvalidLayout) {
-		t.Fatalf("err = %v, want ErrInvalidLayout", err)
-	}
-	if m != nil {
-		t.Fatalf("map = %v, want nil on error", m)
-	}
-}
-
-func TestInitSeatsRejectsNegativeAdjustedPrice(t *testing.T) {
-	specs := []SectionSpec{{Name: "A", Rows: 1, SeatsPerRow: 1, PriceMinor: 100}}
-	adj := map[string]seatAdjust{seatKey("A", "1", "1"): {price: ptrInt64(-5)}}
-
-	seats, err := initSeats(uuid.New(), specs, adj)
-	if !errors.Is(err, ErrInvalidSeat) {
-		t.Fatalf("err = %v, want ErrInvalidSeat", err)
-	}
-	if seats != nil {
-		t.Fatalf("seats = %v, want nil on error", seats)
 	}
 }

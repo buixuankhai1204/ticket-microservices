@@ -48,6 +48,11 @@ Check, in priority order:
    `jwt` plugin but doesn't, and a new JWT-issuing service with no matching `consumers[].
    jwt_secrets` entry (its tokens will be rejected — or, worse, a stale entry with a shared
    dev secret left in place for prod).
+8. **Integer overflow in size/count limits** — a limit checked on a product of client-supplied
+   integers (`rows * seats_per_row`, `qty * price`) wraps silently in Go `int` / Rust release
+   builds, so the check passes and the later allocation or loop is unbounded. Require each
+   factor to be bounded against the limit *before* multiplying (or use checked arithmetic).
+   Worth extra suspicion on any route Kong exposes without the `jwt` plugin.
 
 For each finding: `file:line`, the concrete exploit scenario (not just "this is insecure"),
 and severity. Cross-reference `saga-consistency-reviewer` for consumer-wedging / DLQ

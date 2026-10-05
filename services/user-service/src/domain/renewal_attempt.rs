@@ -134,12 +134,14 @@ impl RenewalAttempt {
         &mut self,
         error: String,
         policy: &RenewalPolicy,
+        now: DateTime<Utc>,
     ) -> TransientOutcome {
         self.last_error = Some(error);
-        self.updated_at = Utc::now();
+        self.updated_at = now;
         if self.attempt_count < policy.max_transient_attempts {
             self.status = RenewalAttemptStatus::FailedRetryable;
-            self.next_attempt_at = Utc::now() + policy.backoff(self.attempt_count);
+            let jitter = Duration::milliseconds(i64::from(now.timestamp_subsec_millis()));
+            self.next_attempt_at = now + policy.backoff(self.attempt_count) + jitter;
             TransientOutcome::WillRetry
         } else {
             self.status = RenewalAttemptStatus::GivenUp;
@@ -210,17 +212,14 @@ pub struct RenewalPolicy {
 }
 
 impl RenewalPolicy {
-    /// `min(base * 2^(attempt-1), cap)` plus sub-second jitter derived from the
-    /// wall clock (no RNG dependency) to spread a thundering herd.
+    /// `min(base * 2^(attempt-1), cap)`.
     pub fn backoff(&self, attempt_count: i32) -> Duration {
         let exp = attempt_count.saturating_sub(1).clamp(0, 20) as u32;
         let scaled = self
             .backoff_base
             .checked_mul(2_i32.saturating_pow(exp))
             .unwrap_or(self.backoff_cap);
-        let capped = scaled.min(self.backoff_cap);
-        let jitter = Duration::milliseconds(i64::from(Utc::now().timestamp_subsec_millis()));
-        capped + jitter
+        scaled.min(self.backoff_cap)
     }
 }
 
@@ -232,5 +231,139 @@ impl Default for RenewalPolicy {
             backoff_cap: Duration::hours(48),
             dunning_schedule_days: vec![1, 3, 5, 7],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
+    }
+
+    fn attempt(attempt_count: i32, period_end: NaiveDate) -> RenewalAttempt {
+        RenewalAttempt {
+            id: Uuid::new_v4(),
+            subscription_id: Uuid::new_v4(),
+            period_end,
+            idempotency_key: String::new(),
+            status: RenewalAttemptStatus::Charging,
+            attempt_count,
+            dunning_attempt_count: 0,
+            next_attempt_at: at(2031, 1, 1),
+            provider_charge_id: None,
+            last_error: None,
+            created_at: at(2031, 1, 1),
+            updated_at: at(2031, 1, 1),
+        }
+    }
+
+    #[test]
+    fn backoff_doubles_per_attempt_then_caps_without_overflowing() {
+        let policy = RenewalPolicy::default();
+
+        assert_eq!(policy.backoff(1), Duration::hours(6));
+        assert_eq!(policy.backoff(2), Duration::hours(12));
+        assert_eq!(policy.backoff(3), Duration::hours(24));
+        assert_eq!(policy.backoff(4), Duration::hours(48));
+        assert_eq!(policy.backoff(5), Duration::hours(48));
+        assert_eq!(policy.backoff(i32::MAX), Duration::hours(48));
+    }
+
+    #[test]
+    fn transient_failure_below_the_max_reschedules_with_backoff_and_jitter() {
+        let policy = RenewalPolicy::default();
+        let now = Utc.with_ymd_and_hms(2031, 3, 4, 5, 6, 7).unwrap() + Duration::milliseconds(250);
+        let mut a = attempt(1, NaiveDate::from_ymd_opt(2031, 3, 31).unwrap());
+
+        let outcome = a.mark_transient_failure("timeout".to_string(), &policy, now);
+
+        assert_eq!(outcome, TransientOutcome::WillRetry);
+        assert_eq!(a.status, RenewalAttemptStatus::FailedRetryable);
+        assert_eq!(a.last_error.as_deref(), Some("timeout"));
+        assert_eq!(a.updated_at, now);
+        assert_eq!(
+            a.next_attempt_at,
+            now + Duration::hours(6) + Duration::milliseconds(250)
+        );
+    }
+
+    #[test]
+    fn transient_failure_at_the_max_gives_up_and_keeps_the_schedule() {
+        let policy = RenewalPolicy::default();
+        let mut a = attempt(
+            policy.max_transient_attempts,
+            NaiveDate::from_ymd_opt(2031, 3, 31).unwrap(),
+        );
+        let scheduled = a.next_attempt_at;
+
+        let outcome = a.mark_transient_failure("timeout".to_string(), &policy, at(2031, 3, 4));
+
+        assert_eq!(outcome, TransientOutcome::GaveUp);
+        assert_eq!(a.status, RenewalAttemptStatus::GivenUp);
+        assert_eq!(a.next_attempt_at, scheduled);
+    }
+
+    #[test]
+    fn permanent_decline_walks_the_dunning_schedule_then_exhausts() {
+        let policy = RenewalPolicy {
+            dunning_schedule_days: vec![1, 3],
+            ..RenewalPolicy::default()
+        };
+        let mut a = attempt(1, NaiveDate::from_ymd_opt(2031, 3, 31).unwrap());
+
+        let first = a.mark_permanent_decline("card_declined".to_string(), &policy);
+        assert_eq!(
+            first,
+            DunningOutcome::Continue {
+                dunning_attempt: 1,
+                dunning_max: 2
+            }
+        );
+        assert_eq!(a.status, RenewalAttemptStatus::FailedPermanent);
+        assert_eq!(a.next_attempt_at, at(2031, 4, 1));
+
+        let second = a.mark_permanent_decline("card_declined".to_string(), &policy);
+        assert_eq!(
+            second,
+            DunningOutcome::Continue {
+                dunning_attempt: 2,
+                dunning_max: 2
+            }
+        );
+        assert_eq!(a.next_attempt_at, at(2031, 4, 3));
+
+        let third = a.mark_permanent_decline("card_declined".to_string(), &policy);
+        assert_eq!(
+            third,
+            DunningOutcome::Exhausted {
+                dunning_attempts: 2
+            }
+        );
+        assert_eq!(a.next_attempt_at, at(2031, 4, 3));
+    }
+
+    #[test]
+    fn requeue_now_refuses_a_succeeded_or_in_flight_attempt_and_requeues_the_rest() {
+        let period_end = NaiveDate::from_ymd_opt(2031, 3, 31).unwrap();
+        for status in [
+            RenewalAttemptStatus::Succeeded,
+            RenewalAttemptStatus::Charging,
+        ] {
+            let mut a = attempt(1, period_end);
+            a.status = status;
+            assert!(matches!(
+                a.requeue_now().unwrap_err(),
+                UserError::RenewalNotRetryable(_)
+            ));
+            assert_eq!(a.status, status);
+        }
+
+        let mut a = attempt(1, period_end);
+        a.status = RenewalAttemptStatus::GivenUp;
+        a.requeue_now().unwrap();
+        assert_eq!(a.status, RenewalAttemptStatus::FailedRetryable);
     }
 }

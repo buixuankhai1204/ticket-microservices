@@ -117,6 +117,9 @@ func validateSections(specs []SectionSpec) (map[string]SectionSpec, error) {
 		if _, dup := byName[s.Name]; dup {
 			return nil, ErrInvalidLayout
 		}
+		if s.Rows > MaxSeatsPerEvent || s.SeatsPerRow > MaxSeatsPerEvent {
+			return nil, ErrLayoutTooLarge
+		}
 		byName[s.Name] = s
 
 		total += s.Rows * s.SeatsPerRow
