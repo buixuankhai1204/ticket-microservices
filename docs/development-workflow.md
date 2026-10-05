@@ -154,9 +154,10 @@ Run in this order; each is read-only and reports `file:line` + consequence + sev
 | 5 | `api-contract-reviewer` | changed routes in ≥1 service (also: periodically) |
 | 6 | `scalability-review` | added or changed a service (statelessness, pool, N+1, tx scope, metrics) |
 
-Then tests: `unit-test-writer` after any `domain` change, and `gateway-test-writer` after
-changing a Kafka consumer adapter or an outbound HTTP gateway (run
-`scripts/run-gateway-tests.sh kafka|http`).
+Then tests: `unit-test-writer` after any `domain` change, `gateway-test-writer` after changing
+a Kafka consumer adapter or an outbound HTTP gateway (run `scripts/run-gateway-tests.sh
+kafka|http`), and `component-test-writer` after changing a use case, handler, repository or
+consumer wiring (run `scripts/run-component-tests.sh event|booking|user`).
 
 Then static checks (the `pre-commit-check.sh` hook also runs these on `git commit`, scoped to
 staged files' services):

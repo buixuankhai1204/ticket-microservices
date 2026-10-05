@@ -53,8 +53,8 @@ Where tests live and how they stay opt-in:
 - Go: `internal/adapter/messaging/kafka/consumer_integration_test.go`, first line
   `//go:build integration`, run with `go test -tags integration`.
 - Rust: `tests/kafka_integration.rs`, every test `#[ignore = "needs kafka: …"]`; the crate is
-  bin-only, so include the code under test with `#[path = "../src/…"] mod …;` and
-  `#![allow(dead_code, unused_imports)]`.
+  lib + bin, so import the code under test from the library crate (`booking_service::…`,
+  `user_service::…`); shared helpers live in `tests/support/`.
 - Run everything with `scripts/run-gateway-tests.sh kafka` (starts only the Kafka service).
 
 ## Outbound HTTP adapters (user-service payment + email)
@@ -86,8 +86,8 @@ prefix** (`/t/<uuid>`) and verifies what arrived through the request journal
 next to its assertion. WireMock provides status, `fixedDelayMilliseconds`, and
 `fault: CONNECTION_RESET_BY_PEER | EMPTY_RESPONSE | MALFORMED_RESPONSE_CHUNK |
 RANDOM_DATA_THEN_CLOSE`; a refused connection uses a closed local port. The test is
-`services/user-service/tests/gateway_integration.rs` (`#[ignore]`, `#[path]` includes of
-`domain` and the two adapters). Run it with `scripts/run-gateway-tests.sh http`, which starts
+`services/user-service/tests/gateway_integration.rs` (`#[ignore]`, importing the two adapters
+from the `user_service` library; WireMock helpers in `tests/support/wiremock.rs`). Run it with `scripts/run-gateway-tests.sh http`, which starts
 and removes the container.
 
 ## After writing

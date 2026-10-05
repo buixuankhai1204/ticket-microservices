@@ -11,13 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	httpadapter "github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/http"
-	kafkaconsumer "github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/messaging/kafka"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/repository/postgres"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/app"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/config"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/db"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/logger"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/usecase"
 
 	_ "github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/docs"
 )
@@ -55,48 +52,24 @@ func run(log logger.Logger) error {
 		return err
 	}
 
-	repo := postgres.New()
-	listEvents := usecase.NewListEventsUseCase(pool, repo)
-	getEvent := usecase.NewGetEventUseCase(pool, repo)
-	listEventSeats := usecase.NewListEventSeatsUseCase(pool, repo)
-	createNewEvent := usecase.NewCreateNewEventUseCase(pool, repo)
-	reserveSeat := usecase.NewReserveSeatUseCase(pool, repo)
-	finalizeSeat := usecase.NewFinalizeSeatUseCase(pool, repo)
-	releaseSeat := usecase.NewReleaseSeatUseCase(pool, repo)
-	reapHeldReservations := usecase.NewReapHeldReservationsUseCase(pool, repo, cfg.SeatHoldTimeoutSecs)
-
-	handler := httpadapter.NewHandler(listEvents, getEvent, listEventSeats, createNewEvent)
-	health := httpadapter.NewHealthHandler(pool)
-	router := httpadapter.NewRouter(handler, health,
-		httpadapter.RequestID(),
-		httpadapter.AccessLog(log),
-		httpadapter.Metrics(),
-	)
+	application := app.New(pool, cfg, log)
+	reapHeldReservations := application.ReapHeldReservations
 
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           router,
+		Handler:           application.Router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	kafkaCfg := kafkaconsumer.Config{
-		Brokers:     cfg.KafkaBrokers,
-		Topic:       cfg.KafkaBookingEventsTopic,
-		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
-	}
-	consumers := []consumerRunner{
-		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingRequestedSpec(reserveSeat), log),
-		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingConfirmedSpec(finalizeSeat), log),
-		kafkaconsumer.NewConsumer(kafkaCfg, kafkaconsumer.BookingCancelledSpec(releaseSeat), log),
-	}
+	consumers := application.NewConsumers()
 	for _, c := range consumers {
-		defer func(c consumerRunner) { _ = c.Close() }(c)
+		defer func(c app.Consumer) { _ = c.Close() }(c)
 	}
 
 	var consumersWG sync.WaitGroup
 	for _, c := range consumers {
 		consumersWG.Add(1)
-		go func(c consumerRunner) {
+		go func(c app.Consumer) {
 			defer consumersWG.Done()
 			if err := c.Run(ctx); err != nil {
 				log.Error("kafka consumer exited with error", "err", err.Error())
@@ -151,9 +124,4 @@ func run(log logger.Logger) error {
 	consumersWG.Wait()
 	reaperWG.Wait()
 	return nil
-}
-
-type consumerRunner interface {
-	Run(context.Context) error
-	Close() error
 }
