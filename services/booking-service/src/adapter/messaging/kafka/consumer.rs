@@ -131,16 +131,24 @@ impl<H: SagaHandler> SagaConsumer<H> {
                 },
             };
 
-            match self.process(&msg).await {
-                Ok(()) => {
-                    if let Err(e) = self.consumer.commit_message(&msg, CommitMode::Sync) {
-                        tracing::error!(err = %e, "offset commit failed; message may be redelivered");
+            loop {
+                match self.process(&msg).await {
+                    Ok(()) => break,
+                    Err(e) => {
+                        tracing::error!(err = %e, "message not processed; retrying in place");
+                        tokio::select! {
+                            _ = shutdown.cancelled() => {
+                                tracing::info!(group = self.handler.group_id(), "kafka consumer stopping");
+                                return;
+                            }
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
                     }
                 }
-                Err(e) => {
-                    tracing::error!(err = %e, "message not processed; will be redelivered");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+            }
+
+            if let Err(e) = self.consumer.commit_message(&msg, CommitMode::Sync) {
+                tracing::error!(err = %e, "offset commit failed; message may be redelivered");
             }
         }
     }
@@ -156,7 +164,10 @@ impl<H: SagaHandler> SagaConsumer<H> {
             }
         }
 
-        let payload = msg.payload().ok_or_else(|| "empty payload".to_string())?;
+        let Some(payload) = msg.payload() else {
+            tracing::error!("empty payload -> dlq");
+            return self.to_dlq(msg, "parse: empty payload").await;
+        };
         let ev: H::Event = match serde_json::from_slice(payload) {
             Ok(ev) => ev,
             Err(e) => {

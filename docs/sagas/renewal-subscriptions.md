@@ -504,6 +504,44 @@ Parameterize like `user.events`: `KAFKA_SUBSCRIPTION_EVENTS_TOPIC` (default
 Both are *pure* outbound-gateway ports (name no infra type), so per CLAUDE.md they
 live in `domain` (`src/domain/ports.rs`, next to `PasswordHasher`).
 
+### Provider HTTP contract (what the adapters implement and the gateway tests pin)
+
+No vendor is chosen, so the adapters speak the semantics this saga already depends on
+(§5.1, §5.2, §5.4, §5.9). Selecting a real provider changes only the adapters and this
+table. `user-service` uses `HttpPaymentGateway` / `HttpEmailGateway` when
+`PAYMENT_PROVIDER_BASE_URL` / `EMAIL_PROVIDER_BASE_URL` is set, and the stubs otherwise.
+
+`POST {PAYMENT_PROVIDER_BASE_URL}/v1/charges`, headers `Idempotency-Key`
+(`renew:{subscription_id}:{period_end}`, identical on every attempt) and
+`Authorization: Bearer`, JSON body `{amount_minor, currency, payment_method_id}`. The card
+token travels only in the body, never in the URL or a log line. Redirects are not followed.
+
+| Provider response | Adapter result | Saga arm |
+|---|---|---|
+| `200`/`201` with `{"id": "<non-empty>"}` | `Ok(ChargeOutcome { provider_charge_id })` | 3a |
+| `402` with `error.code` in `card_declined`, `expired_card`, `insufficient_funds` | `Declined { code }` | 3c |
+| `402` with an unknown or missing code | `Declined { "other" }` (the event catalog allows only the three codes plus `other`) | 3c |
+| `408`, `429`, any `5xx` | `Transient` | 3b |
+| connect error, timeout, reset, empty or malformed response, other `2xx`, `2xx` with a bad body or empty `id` | `Transient` | 3b |
+| any other `4xx` or `3xx` (`400`/`401`/`403`/`404`/`409`/`422`, redirects) | `Transient` plus an `error` log | 3b |
+
+Two of those rows are deliberate. An unusable success response is **Transient**, not `Ok`
+and not `Declined`: the provider may have charged, and a retry with the same
+`Idempotency-Key` returns the original charge. A rejected request (`401`, `422`, …) is our
+own bad key or request, so it is **Transient**, never `Declined`: otherwise one bad API key
+would walk every subscriber through dunning to `SubscriptionCanceled`.
+
+`PAYMENT_TIMEOUT_SECS` (default 30) must be shorter than `RENEWAL_CHARGING_TIMEOUT_SECS`
+(default 900); `user-service` refuses to start otherwise, so the reaper cannot reset a row
+whose charge is still in flight.
+
+`POST {EMAIL_PROVIDER_BASE_URL}/v1/emails`, headers `Idempotency-Key` (the
+`SubscriptionPaymentFailed` event id) and `Authorization: Bearer`, JSON body
+`{to_user_id, subscription_id, template, period_end, amount_minor, currency, dunning_attempt,
+dunning_max}`. Any non-`2xx` response or transport error is `Err(EmailError)`, so the
+`sent_emails` ledger row is not written and the next dunning pass retries (§5.9).
+`EMAIL_TIMEOUT_SECS` defaults to 10.
+
 ### Migrations
 
 **user-service** (Rust, `sqlx::migrate!`, `services/user-service/migrations/`).
@@ -622,7 +660,7 @@ designed.** `saga-consistency-reviewer` should check the *publish* side (new
 against this doc; the Job A/B/reaper/reconciliation logic is `/review-concurrency`
 territory, and its trickiest cases (contended `FOR UPDATE SKIP LOCKED` claim,
 crash-between-TX1-and-TX2, duplicate provider call, dunning-schedule walk) have no
-automated coverage — the repo keeps unit tests only — so exercise them by hand.
+automated coverage — only domain unit tests and the gateway tests exist — so exercise them by hand.
 
 ## 11. Next actions
 

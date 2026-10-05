@@ -92,7 +92,8 @@ State the dependency's failure policy in a comment on the decorator and in the h
    imports the breaker lib + `domain` — never `usecase`. `domain` gains no new imports.
 
 7. **Hand off.** Summarize: the four layers' chosen values and why, the fail-open/closed
-   decision, the env vars added. List what to verify by hand (the repo keeps unit tests
-   only): retry stops at the cap; a non-idempotent call is not retried; the breaker opens
+   decision, the env vars added. List what to verify: add these as cases to the gateway
+   integration harness (see `gateway-test-writer`) when the dependency is an HTTP or Kafka
+   adapter, otherwise by hand: retry stops at the cap; a non-idempotent call is not retried; the breaker opens
    after N failures and fails fast; the bulkhead rejects over the limit; the documented
    fallback fires.

@@ -96,5 +96,5 @@ point at `/new-go-api-endpoint` / `/new-rust-api-endpoint`.
 
 8. **Hand off.** Summarize the key scheme, TTL + jitter chosen and why, the invalidation
    points, the staleness window, and the fail-open behaviour. List what to check by hand
-   (the repo keeps unit tests only): a cache hit/miss/invalidation pass and "Redis down ⇒
+   (no automated test covers a cache): a cache hit/miss/invalidation pass and "Redis down ⇒
    still 200 from DB".

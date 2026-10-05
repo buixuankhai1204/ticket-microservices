@@ -218,10 +218,14 @@ Host ports for each service's own Postgres: `postgres-user` 5433, `postgres-anal
 
 ## Testing
 
-The repo keeps unit tests only. They cover pure logic (mostly the `domain` layer), run in
-milliseconds, and need no Docker, database, or broker. There is no integration or end-to-end
-tier: `usecase` orchestration and the cross-service sagas are verified by hand against the
-running stack.
+Unit tests cover pure logic (mostly the `domain` layer), run in milliseconds, and need no
+Docker, database, or broker. On top of that there are **gateway integration tests**: the
+Kafka consumer and dead-letter adapters run against the real single-node Kafka from
+`docker-compose.yml`, and `user-service`'s payment and email HTTP adapters run against a
+WireMock container (compose profile `gateway-test`). They are opt-in (a `integration` build tag for Go, `#[ignore]` for Rust),
+so plain `go test ./...` and `cargo test` stay fast and Docker-free. There is no DB-backed
+or end-to-end tier: `usecase` orchestration and the cross-service sagas are verified by hand
+against the running stack.
 
 ```bash
 # Go services
@@ -229,6 +233,9 @@ cd services/event-service && go test ./... && go vet ./...
 
 # Rust services
 cd services/user-service && cargo test
+
+# Gateway integration tests (needs Docker): kafka | http | all
+scripts/run-gateway-tests.sh kafka
 ```
 
 ## Project layout

@@ -183,7 +183,8 @@ invocation, not an HTTP call from the usecase.
   `saga-consistency-reviewer` should audit any `publish:`/`consume:` step and
   `unit-test-writer` covers the new domain code, and only the high-value logic (arithmetic,
   boundaries, scheduling, idempotency), not plain state changes or guards. Use cases have no
-  automated tests. Don't write tests here.
+  automated tests. For a `consume:` step, `gateway-test-writer` covers the Kafka consumer
+  adapter (opt-in, `scripts/run-gateway-tests.sh kafka`). Don't write tests here.
 
 ## Reference (implemented)
 `user-service` writes `outbox_events` with `aggregate_type = "user"` — `UserCreated` on the

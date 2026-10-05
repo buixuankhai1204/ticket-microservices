@@ -85,8 +85,10 @@ This is the highest-risk change type. Do not skip the design step.
      wedge a partition; no state can stick in `pending`. Run it after **every** `publish:` /
      `consume:` step and again before the PR.
    - `docker compose up -d` (§8), then drive the saga through Kong by hand and check the DB
-     and DLQ state on the happy path and the compensation path. The repo has no automated
-     integration or end-to-end tests.
+     and DLQ state on the happy path and the compensation path. The saga itself has no
+     automated end-to-end test; the only integration tests are the opt-in gateway tests
+     (`scripts/run-gateway-tests.sh`), which cover the Kafka consumer adapters and the outbound
+     HTTP gateways.
    - Then §7.
 
 ---
@@ -152,7 +154,9 @@ Run in this order; each is read-only and reports `file:line` + consequence + sev
 | 5 | `api-contract-reviewer` | changed routes in ≥1 service (also: periodically) |
 | 6 | `scalability-review` | added or changed a service (statelessness, pool, N+1, tx scope, metrics) |
 
-Then tests: `unit-test-writer` after any `domain` change (the repo keeps unit tests only).
+Then tests: `unit-test-writer` after any `domain` change, and `gateway-test-writer` after
+changing a Kafka consumer adapter or an outbound HTTP gateway (run
+`scripts/run-gateway-tests.sh kafka|http`).
 
 Then static checks (the `pre-commit-check.sh` hook also runs these on `git commit`, scoped to
 staged files' services):
