@@ -41,9 +41,9 @@ only — enforce by import discipline, not just folder names:
   transaction handle, `Repository` above all. May import `pgx` (for `pgx.Tx`) and `domain`;
   never `usecase`, `adapter`, or `cmd`. Every method takes `ctx context.Context, tx pgx.Tx, …`.
 - **`internal/usecase/`** — one type per use case (`BookSeatUseCase`), constructor-injected
-  with the `platform/port` interfaces it needs **and the `*pgxpool.Pool`**. It **owns the
-  transaction boundary**: one `tx` per flow (`pool.BeginTx(ctx, pgx.TxOptions{AccessMode:
-  pgx.ReadOnly})` for reads, `pool.Begin(ctx)` for writes), threaded through every repository
+  with the `platform/port` interfaces it needs **and a `port.Transactor`** (the `*pgxpool.Pool` in production). It **owns the
+  transaction boundary**: one `tx` per flow (`db.BeginTx(ctx, pgx.TxOptions{AccessMode:
+  pgx.ReadOnly})` for reads, `db.Begin(ctx)` for writes), threaded through every repository
   call, then `Commit`. All non-DB work (entity construction, hashing, payload building) runs
   **before** `Begin` so a pooled connection is never pinned across CPU-bound work. Imports
   `domain`, `platform/port`, `pgx`/`pgxpool`; never `adapter`.

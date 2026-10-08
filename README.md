@@ -218,30 +218,17 @@ Host ports for each service's own Postgres: `postgres-user` 5433, `postgres-anal
 
 ## Testing
 
-Unit tests cover pure logic (mostly the `domain` layer), run in milliseconds, and need no
-Docker, database, or broker. On top of that there are **gateway integration tests**: the
-Kafka consumer and dead-letter adapters run against the real single-node Kafka from
-`docker-compose.yml`, and `user-service`'s payment and email HTTP adapters run against a
-WireMock container (compose profile `gateway-test`). **Component tests** run a whole service
-in-process through a real HTTP listener with a real Postgres (one throwaway database per test,
-compose profile `component-test`) and the real Kafka, stubbing only external providers; they
-cover `event-service`, `booking-service` and `user-service`. Both kinds are opt-in (build tags
-for Go, `#[ignore]` for Rust), so plain `go test ./...` and `cargo test` stay fast and
-Docker-free. There is no end-to-end tier: the cross-service sagas are verified by hand against
-the running stack.
+Tests follow [testing-in-microservices](https://github.com/buixuankhai1204/testing-in-microservices):
+unit tests sit next to the code, and each service's `tests/` folder has one file per other type
+(integration, component in-process and out-of-process, contract, e2e). The Docker tiers start their
+own Postgres / Kafka with Testcontainers; the e2e tier needs the compose stack and `E2E_BASE_URL`.
 
 ```bash
-# Go services
-cd services/event-service && go test ./... && go vet ./...
-
-# Rust services
-cd services/user-service && cargo test
-
-# Gateway integration tests (needs Docker): kafka | http | all
-scripts/run-gateway-tests.sh kafka
-
-# Component tests (needs Docker): event | booking | user | all
-scripts/run-component-tests.sh all
+scripts/run-tests.sh unit all                 # no Docker
+scripts/run-tests.sh integration event        # analytics | event | booking | user | all
+scripts/run-tests.sh component all
+scripts/run-tests.sh contract all
+E2E_BASE_URL=http://localhost:8000 scripts/run-tests.sh e2e all
 ```
 
 ## Project layout

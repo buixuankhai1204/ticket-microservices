@@ -51,15 +51,19 @@ Every service (Go or Rust) follows Clean Architecture, dependencies pointing inw
   **not** live here — see `platform/port`.
 - `platform/port` — the port interfaces/traits that name the DB transaction handle, the
   `Repository` above all: `internal/platform/port/` (Go, `package port`) / `src/platform/port.rs`
-  (Rust). Allowed to import the driver *for the handle type only* (`pgx.Tx` / `&mut PgConnection`)
+  (Rust). Allowed to import the driver *for the handle type only* (`pgx.Tx` / sqlx's connection)
   and `domain`; never `usecase`, `adapter`, or `cmd`. Every `Repository` method takes
-  `ctx, tx pgx.Tx, …` (Go) / `conn: &mut PgConnection, …` (Rust).
-- `usecase` — orchestrates one business flow per type. Holds the `*pgxpool.Pool` / `PgPool` and
+  `ctx, tx pgx.Tx, …` (Go) / `tx: &mut Tx, …` (Rust, where `Tx` wraps the sqlx transaction and
+  `tx.conn()` yields the `PgConnection`). It also holds the `Transactor` port (`Begin`/`BeginTx`
+  in Go, `begin`/`begin_read_only` in Rust) that use cases open transactions through, so a
+  unit test can hand a use case a fake transaction.
+- `usecase` — orchestrates one business flow per type. Holds a `port.Transactor` (the
+  `*pgxpool.Pool` in Go, a `PgTransactor` over the `PgPool` in Rust) and
   **owns the transaction boundary**: it opens one transaction per flow (read-only for reads,
   read-write for writes), threads that handle through every repository call, and commits. All
   non-DB work (entity construction, hashing, payload building) happens *before* `Begin` so a
   pooled connection is never pinned across CPU-bound work. Depends on `domain` + `platform/port`
-  + `pgx`/`pgxpool` (or `sqlx`) for the handle; never imports `adapter`. Ports and the pool are
+  + `pgx`/`pgxpool` (or `sqlx`) for the handle; never imports `adapter`. Ports and the transactor are
   constructor-injected.
 - `adapter/http` — controllers/handlers and DTOs, translate transport at the edge, depend on
   `usecase`'s public interface.
@@ -302,9 +306,9 @@ the affected skill(s)/agent(s), nothing else.
 | `saga-consistency-reviewer` | Read-only, whole-repo: the choreography graph — orphan events, missing topics/DLQs/connectors, missing compensations, non-idempotent consumers, partition-wedge risk, stuck sagas |
 | `migration-reviewer` | Read-only: migration files for rolling-deploy safety — lock-heavy DDL, breaking changes without expand/contract, `CONCURRENTLY` in a txn, missing indexes |
 | `api-doc-sync` | Writer: keeps `docs/openapi/*.yaml`, the Postman collection, and `docs/curl-examples.md` in sync with handler code (code wins) |
-| `unit-test-writer` | Writer: `domain`-only unit tests, few and high-value — arithmetic, boundaries, scheduling, idempotency, found bugs; refactors domain code that is hard to test instead of mocking |
-| `component-test-writer` | Writer: opt-in component tests for one service through its edges (HTTP, Kafka in, scheduled jobs) with real Postgres (DB per test) and Kafka and WireMock for external providers; asserts observable state, about 60% of the component scope |
-| `gateway-test-writer` | Writer: opt-in gateway integration tests for adapters that wrap an external component: Kafka consumer + DLQ adapters vs the compose Kafka (offset commits, DLQ record shape, retry classification, never losing a message) and the payment/email HTTP adapters vs WireMock (status → saga-arm mapping, `Idempotency-Key`, timeouts) |
+| `unit-test-writer` | Writer: unit tests next to the code — `domain` rules with no mocks, use cases against a mocked `Repository` and a fake transaction; few and high-value |
+| `component-test-writer` | Writer: component tests in `tests/` — one service in-process over real HTTP and Postgres with Kafka stubbed, or its compiled binary as a child process with real Postgres and Kafka |
+| `integration-test-writer` | Writer: integration tests in `tests/` for the adapters that wrap an external component — the Postgres repository and the Kafka consumer + dead-letter adapter against Testcontainers, the payment/email HTTP adapters against an in-process stub server |
 
 `api-doc-sync` documents the HTTP surface only; the Kafka contract is `design-saga`'s
 `docs/sagas/` artifact, checked by `saga-consistency-reviewer`. `api-contract-reviewer`
@@ -314,28 +318,31 @@ checks code against `kong.yml`, not against the API docs — the two don't overl
 Swagger UI at `/swagger/` for Go, `/swagger-ui` for Rust). `api-doc-sync` still generates
 from source, not by curling that live endpoint — ask before changing that.
 
-The repo has three automated test tiers. **Unit tests**: `unit-test-writer` covers the
-`domain` layer (Go `*_test.go` next to the file; Rust inline `#[cfg(test)]` modules). **Gateway
-integration tests**: `gateway-test-writer` covers the adapters that wrap an external
-component, run against the real thing (or a stub of it): the Kafka consumer + dead-letter
-adapters (`event-service`, `analytics-service`, `booking-service`) against the single-node
-Kafka in `docker-compose.yml`, and `user-service`'s `HttpPaymentGateway` / `HttpEmailGateway`
-against a WireMock container (compose profile `gateway-test`). **Component tests**:
-`component-test-writer` runs one whole service in-process through a real HTTP listener with a
-real Postgres (a throwaway database per test, migrations applied, on the compose profile
-`component-test`) and the real Kafka, stubbing only external providers, and asserts observable
-state from the edges (HTTP in, Kafka events in, reapers and renewal Job B through their use case).
-The services run their production composition (`internal/app` in Go; `app::App` in the Rust
-crates, which are lib + bin). Gateway and component tests are opt-in (Go `//go:build
-integration` / `component`; Rust `tests/*.rs` with `#[ignore]`) and run with
-`scripts/run-gateway-tests.sh` and `scripts/run-component-tests.sh`, so plain `go test ./...` /
-`cargo test` stay hermetic. Component coverage is a stopping rule of about 60% of the component
-scope (`usecase` + `adapter/http` + `adapter/repository` + `adapter/messaging`), not a gate.
-There is deliberately no end-to-end tier — no `e2e/` module, no `ticket-e2e` stack — so the
-cross-service sagas are verified by hand against the running stack. Use `unit-test-writer`
-after a `domain` change, `gateway-test-writer` after changing a Kafka consumer adapter or an
-outbound HTTP gateway, and `component-test-writer` after changing a use case, handler,
-repository or consumer wiring.
+Tests follow github.com/buixuankhai1204/testing-in-microservices: six types, **unit tests next
+to the code and one file per other type in the service's `tests/` folder** (`integration_repository`,
+`integration_kafka`, `component_in_process`, `component_out_of_process`, `contract_consumer`,
+`e2e`, with shared helpers in `tests/common`).
+
+| Type | Real | Faked | Run |
+|---|---|---|---|
+| Unit | the code under test | its collaborators: mocked `Repository` (gomock / mockall), fake transaction | `go test ./...` / `cargo test` |
+| Integration | our adapter + a real Postgres / Kafka started with Testcontainers | nothing else (the payment/email HTTP adapters use an in-process stub server) | `-tags integration` / `--ignored` |
+| Component, in-process | the wiring over real HTTP and a real Postgres (throwaway DB per test) | Kafka: events go straight to the code the consumer calls | `-tags component` / `--ignored` |
+| Component, out-of-process | the compiled binary, real Postgres and Kafka | the other services (the test produces their events) | `-tags component` / `--ignored` |
+| Contract | our event parsing / outbound HTTP client | the other side, as Pact messages or interactions (pacts committed in `pacts/`) | `-tags contract` / `cargo test` |
+| E2E | the running stack through Kong | nothing | `-tags e2e` / `--ignored`, with `E2E_BASE_URL` |
+
+`scripts/run-tests.sh [unit|integration|component|contract|e2e] [analytics|event|booking|user|all]`
+runs a tier for one or all services. Docker tiers start their own containers, or reuse
+`TEST_DATABASE_URL` / `TEST_KAFKA_BROKERS`. Generated gomock files are git-ignored: run
+`go generate ./internal/usecase/` before the Go unit tests. The Go contract tests need the Pact
+FFI library (`pact-go install -d ~/.pact/lib`, then `CGO_LDFLAGS="-L$HOME/.pact/lib"`). The only
+production change testing asks for is the `Transactor` port; do not restructure a service for a
+test. `WriteOutbox` deletes the row it inserts, so component tests read published events through
+a test-only trigger that copies each outbox row into an `outbox_tap` table. Use
+`unit-test-writer` after a `domain` or use-case change, `integration-test-writer` after changing
+a repository, a Kafka consumer adapter or an outbound HTTP gateway, and `component-test-writer`
+after changing a handler or consumer wiring.
 
 A consumer adapter must never commit past a message it has not fully resolved. A handler
 failure — in practice a failed dead-letter write — retries **the same message in place**; it
@@ -349,9 +356,8 @@ takes `now` as a parameter and `usecase` passes `Utc::now()` / `time.Now().UTC()
 audit stamps and a UUID minted in the constructor stay as they are. And **write only
 high-value tests** — logic that is easy to get wrong and hard to see by hand (arithmetic,
 boundaries, scheduling, idempotency, a bug just found), not plain state changes, single-`if`
-guards, field-copying constructors, constants or mappings. The target is about 60% domain
-line coverage per service, measured on production code only (exclude the inline test module),
-reached with the fewest tests — merge same-shape tests into one scenario.
+guards, field-copying constructors, constants or mappings. Keep each suite about the size
+of the reference project's — merge same-shape tests into one scenario.
 
 ### Hooks (`.claude/settings.json` + `.claude/hooks/`)
 

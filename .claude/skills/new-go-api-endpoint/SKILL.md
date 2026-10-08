@@ -43,7 +43,7 @@ Follow @CLAUDE.md's layer rules. Concretely:
   takes `ctx context.Context, tx pgx.Tx, …`. Don't define it on the postgres adapter first;
   don't put it in `domain`.
 - **`internal/usecase/`** — add `<UseCaseName>UseCase`, constructor-injected with the
-  `platform/port` ports it needs **and the `*pgxpool.Pool`**; one exported method
+  `platform/port` ports it needs **and a `port.Transactor`** (the `*pgxpool.Pool` in production); one exported method
   `Execute(ctx, input) (output, error)` — no framework types in the signature. It **owns the
   transaction**: do all non-DB work first (entity construction, hashing, payload building),
   then open one `tx` — `pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})` for a
@@ -188,11 +188,10 @@ invocation, not an HTTP call from the usecase.
   `platform/port` + `pgx`/`pgxpool` but never `adapter`.
 - Summarize what was added and what the user still fills in (persistence columns via
   `/new-migration`, validation rules). Note that `saga-consistency-reviewer` should audit any
-  `publish:`/`consume:` step and `unit-test-writer` covers the new domain code, and only the
-  high-value logic (arithmetic, boundaries, scheduling, idempotency), not plain state changes
-  or guards. Use cases have no automated tests. For a `consume:` step, `gateway-test-writer`
-  covers the Kafka consumer adapter (opt-in, `scripts/run-gateway-tests.sh kafka`). Do not
-  write tests here — that's a separate pass.
+  `publish:`/`consume:` step and `unit-test-writer` covers the new domain code and use case (mocked `Repository`, fake
+  transaction), `integration-test-writer` the repository and Kafka consumer adapter, and
+  `component-test-writer` the endpoint and the saga step end to end. Do not write tests here —
+  that's a separate pass (`scripts/run-tests.sh`).
 
 ## Reference (implemented)
 `user-service` (Rust) writes `outbox_events` with `aggregate_type = "user"` (`UserCreated`
