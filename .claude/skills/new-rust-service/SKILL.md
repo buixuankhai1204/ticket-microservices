@@ -40,12 +40,11 @@ declares itself.
   `Utc::now()`, so it can be tested exactly. Zero `use` of `sqlx`/`axum`/`tokio`.
 - **`src/platform/port.rs`** (`mod port`) — the port traits that name the connection handle,
   `Repository` above all. May `use sqlx` (for `PgConnection`) and `crate::domain`; never
-  `crate::adapter` or `crate::usecase`. Every method takes `conn: &mut PgConnection`
+  `crate::adapter` or `crate::usecase`. Every method takes `tx: &mut Tx`
   alongside its domain args.
 - **`src/usecase/`** — one struct per use case (`BookSeatUseCase`), holding `Arc<dyn
-  Repository>` (and other ports) **and a `PgPool`**, injected via `new()`. It **owns the
-  transaction boundary**: `let mut tx = self.db_pool.begin().await?;` (for a read, then
-  `sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?;`), threads `&mut *tx`
+  Repository>` (and other ports) **and an `Arc<dyn Transactor>`** (a `PgTransactor` over the `PgPool` in production), injected via `new()`. It **owns the
+  transaction boundary**: `let mut tx = self.transactor.begin().await?;` (`begin_read_only()` for a read), threads `&mut tx`
   through every repository call, then `tx.commit().await?` (drop = rollback on early `?`). All
   non-DB work (entity construction, Argon2 hashing, payload building) runs **before**
   `begin()`. `use`s `domain`, `crate::platform::port`, `sqlx`; never `adapter`.

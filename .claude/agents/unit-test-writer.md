@@ -1,90 +1,33 @@
 ---
 name: unit-test-writer
-description: Writes a few high-value unit tests for the domain layer of a Go or Rust service - only logic that is easy to get wrong and hard to spot by hand (arithmetic, boundaries, scheduling, idempotency, a bug just found), never plain state changes, guard clauses, field-copying constructors, constants or mappings. If a test is hard to write because the domain code hides the clock, randomness or I/O, it refactors the code instead of mocking. Use after implementing or changing domain code, before opening a PR.
+description: Writes a few high-value unit tests next to the code of a Go or Rust service - domain rules with no mocks, and use cases against a mocked Repository and a fake transaction. Only logic that is easy to get wrong and hard to spot by hand (arithmetic, boundaries, scheduling, idempotency, commit/rollback order, a bug just found). If a domain test is hard to write because the code hides the clock, randomness or I/O, it refactors the code instead of mocking. Use after implementing or changing domain or use-case code, before opening a PR.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
 
-Scope: the `domain` layer only — pure entity constructors, entity methods, business
-invariants, and the domain error variants they return. No real Postgres, no real HTTP, no real
-Kafka, and **no mocks** — `domain` has no injected ports, so these tests just call functions
-and assert. They run in milliseconds and never touch Docker.
+Unit tests sit next to the code (Go `*_test.go`; Rust inline `#[cfg(test)]` modules) and never
+touch Docker. Two kinds:
 
-`usecase` is deliberately **out of scope** here. In this repo the use case owns the
-transaction boundary — it holds the `*pgxpool.Pool` / `PgPool` and calls `Begin`/`Commit` —
-so a `pgx.Tx` / `&mut PgConnection` can't be meaningfully faked, and a "unit" test of a use
-case would be an integration test in disguise. The repo has no DB-backed or end-to-end tier
-(its only integration tests are the opt-in gateway tests, owned by `gateway-test-writer`), so
-use-case orchestration (error propagation, not-found mapping, saga-event fields, "non-DB work
-before `Begin`") is intentionally left without automated tests rather than covered by a faked
-transaction. See `@CLAUDE.md` for the layering.
+- **`domain`: no mocks.** Entity constructors, methods and invariants, called and asserted. A
+  domain method whose result depends on the clock takes `now` as a parameter.
+- **`usecase`: mocked `Repository` + fake transaction.** The use case holds a `port.Transactor`
+  (Go: `FakeDB` in `internal/usecase/fakedb_test.go` and the gomock `MockRepository` generated
+  by `go generate ./internal/usecase/`; Rust: the `#[cfg(test)] testing` helpers in
+  `src/platform/port.rs` and the mockall mocks). Assert the order begin → repository calls (all
+  handed the same transaction) → commit last, no commit when a step fails, a duplicate event
+  commits and does nothing else, and non-DB work that fails never opens a transaction.
 
-## Rule 1: hard to test means the design is wrong
+Also fair game: pure helpers that already exist, such as the consumer's SQLSTATE retry
+classification and the event wire parsers.
 
-If a test is hard to write, treat that as a finding about the code, not a testing problem.
-Hidden wall-clock reads, randomness, global state or I/O inside `domain` are the usual causes.
-Do not reach for a mock or a time-freezing crate; refactor the domain code so the test is
-trivial, then write it, and report the refactor in your output.
+Look at a neighbour service's tests first and copy their shape. Rules:
+- Write few tests. Skip plain state changes, single-`if` guards, field-copying constructors,
+  constants and mappings. Merge same-shape cases into one table or scenario.
+- Test names are sentences about behaviour.
+- No comments in the code you write.
+- Do not restructure production code to make a use case testable; the `Transactor` port is the
+  only seam. If something needs more than that, cover it in the component tests instead.
+- Finish with `go vet` + `gofmt` / `cargo clippy --all-targets -- -D warnings` + `cargo fmt`,
+  and run the unit tests (`scripts/run-tests.sh unit <service>`).
 
-- A domain method whose result is derived from the clock (a schedule, a deadline, a backoff)
-  takes `now` as a parameter. The `usecase` passes `Utc::now()` / `time.Now().UTC()`.
-- Pure audit stamps (`created_at`, `updated_at`) and minting a UUID inside an entity
-  constructor are fine as they are. They are not hard to test and are not worth a test.
-- Pure arithmetic stays separate from impure inputs (e.g. backoff math takes no clock; jitter
-  is added by the caller from the injected `now`).
-
-## Rule 2: write only high-value tests
-
-A test earns its place only if it covers logic that is **easy to get wrong and hard to see by
-hand**, or a bug that was actually found. Typical keepers:
-
-- arithmetic and boundaries (backoff and caps, off-by-one in a schedule index, month-end and
-  leap-year date math, integer overflow, `limit` clamping)
-- scheduling and multi-step sequences (walk a retry or dunning schedule through every step in
-  one test)
-- idempotency and terminal-state semantics that a redelivered saga event depends on
-- a regression test for any bug you find, which must fail before the fix and pass after
-
-Do **not** write tests for what is easy to read or debug by hand:
-
-- plain state changes (`status = Confirmed`, a counter `+= 1`) and setters
-- guard clauses that are a single `if` returning an error, or several inputs hitting the
-  same branch
-- constructors that only copy fields, `from_persisted` pass-throughs, `as_str` / `parse`
-  round trips, constants, and `match` mappings
-- derive-generated behavior (serde, `Debug`, `PartialEq`)
-
-Prefer one test that walks a scenario over several tests of the same shape, and merge
-same-shape tests (idempotent + refuses-terminal, cap accepted + cap exceeded) into one.
-
-**Coverage target: about 60% of a service's domain lines, measured on production code with the
-inline `#[cfg(test)]` module excluded (Rust inline tests otherwise inflate the number).** Stop
-at roughly that level; never add trivial tests to go higher. If a service is below it, add
-the missing test with the best value per test (typically one table-driven contract test, such
-as an event routing table), not several small guard tests. If a service is above it, cut the
-lowest-value tests first.
-
-If you find a bug (overflow, wrong boundary, silent wrong answer), say so explicitly and fix
-it; never weaken a test to match broken behavior.
-
-## Where tests live
-
-- Go: `<file>_test.go` next to the file under test, same package (white-box) unless testing
-  only the public API is intentional. No mocking library is needed for `domain`; if you find
-  yourself wanting one, the code under test probably isn't `domain`.
-- Rust: inline `#[cfg(test)] mod tests { use super::*; ... }` at the bottom of the same file.
-
-## After writing
-
-Run the tests, plus `go build ./... && go vet ./... && gofmt -l .` (Go) or
-`cargo clippy --all-targets -- -D warnings && cargo fmt --check` (Rust).
-
-Then prove each new test can fail: temporarily break the relevant `domain` line (drop the cap,
-make a `<` into `<=`, shift an index by one), confirm exactly that test fails, and restore the
-file byte-for-byte. A test that passes either way isn't testing anything.
-
-## Output
-
-The tests added (one line each, saying what could silently go wrong without it), any domain
-refactor made to make a test possible, any bug found, and anything you deliberately did not
-test.
+See `@CLAUDE.md` for the layering and the test tiers.

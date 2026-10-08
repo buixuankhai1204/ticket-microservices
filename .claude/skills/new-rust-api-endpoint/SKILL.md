@@ -39,15 +39,14 @@ step*. For a plain `http:` operation, go to step 1.
   of client-supplied ints used in a size/count limit is bounds-checked per factor before
   multiplying (or uses checked arithmetic).
 - **`src/platform/port.rs`** — add new methods to the `#[async_trait]` `Repository` trait
-  here; each takes `conn: &mut PgConnection` alongside its domain args. Don't define it on the
+  here; each takes `tx: &mut Tx` alongside its domain args. Don't define it on the
   postgres adapter first; don't put it in `domain`.
-- **`src/usecase/`** — add `<UseCaseName>UseCase` holding `Arc<dyn Trait>` ports **and a
-  `PgPool`**, injected via `new()`; one async method `execute(&self, input) -> Result<Output,
+- **`src/usecase/`** — add `<UseCaseName>UseCase` holding `Arc<dyn Trait>` ports **and an
+  `Arc<dyn Transactor>`**, injected via `new()`; one async method `execute(&self, input) -> Result<Output,
   DomainError>` — no `axum`/`sqlx` types in the signature. It **owns the transaction**: do
   all non-DB work first (entity construction, Argon2 hashing, payload building), then
-  `let mut tx = self.db_pool.begin().await.map_err(tx_err)?;` (for a read, follow with
-  `sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?`), pass `&mut *tx` to
-  every repo call, `tx.commit().await?` at the end (drop = rollback on early `?`). Any
+  `let mut tx = self.transactor.begin().await?;` (`begin_read_only()` for a read), pass
+  `&mut tx` to every repo call, `tx.commit().await?` at the end (drop = rollback on early `?`). Any
   `publish:` makes it a write flow.
   - If this operation is the service's **first `consume:` step**, its domain error's
     `Repository` variant must carry the Postgres error code, not just a message — a Kafka
@@ -60,7 +59,7 @@ step*. For a plain `http:` operation, go to step 1.
     struct shape touches every match site — grep `<DomainError>::Repository` across the crate
     and fix each one; a plain `Repository(_) => ...` becomes `Repository { .. } => ...`.
 - **`src/adapter/repository/postgres.rs`** — implement the new trait method(s). Each takes
-  `conn: &mut PgConnection` and runs on `&mut *conn`; **never** `pool.begin()` /
+  `tx: &mut Tx` and runs on `tx.conn()`; **never** `pool.begin()` /
   `tx.commit()` inside the adapter; it holds no pool.
 
 ## Step 2 — paginate if it returns a list (with `http:`)
@@ -68,7 +67,7 @@ step*. For a plain `http:` operation, go to step 1.
   Pagination { pub limit: i64, pub offset: i64 }`, `Pagination::new(limit, offset) ->
   Result<Self, DomainError>` rejecting `offset < 0` / `limit < 1`, clamping `limit` to
   `const MAX_LIMIT: i64 = 100`; absent input → `limit=20, offset=0`.
-- **`platform::port`** — the list method takes `conn: &mut PgConnection` + `Pagination`,
+- **`platform::port`** — the list method takes `tx: &mut Tx` + `Pagination`,
   returns `Result<(Vec<T>, i64), RepoError>` — the `i64` is the full match count.
 - **`repository`** — `SELECT … ORDER BY <stable col> LIMIT $1 OFFSET $2` plus a matching
   `SELECT COUNT(*)`, both on the one `&mut *tx`.
@@ -115,10 +114,10 @@ log-tailing CDC — you write the outbox row, no producer code.
   Do **not** add a `pending_events` carrier / `record_event()` to the entity — user-service's
   `User` still has that shape, but it's the old pattern; the usecase builds and writes events
   itself (below).
-- **`src/adapter/repository/postgres.rs`** — add `write_outbox(&self, conn: &mut PgConnection,
+- **`src/adapter/repository/postgres.rs`** — add `write_outbox(&self, tx: &mut Tx,
   ev: &DomainEvent) -> Result<(), RepoError>` (declared on the `crate::platform::port` trait).
   It `INSERT`s a row into `outbox_events` (`id, aggregate_id, aggregate_type, event_type,
-  payload JSONB, created_at`) **then `DELETE`s that same row** — both on `&mut *conn`. The
+  payload JSONB, created_at`) **then `DELETE`s that same row** — both on `tx.conn()`. The
   repo state-write method (`create`, `update_status`, …) does **only its own `INSERT`/`UPDATE`**
   — it does not loop the entity's events into the outbox. The **usecase** constructs each
   `DomainEvent` inline and calls `write_outbox(&mut *tx, &ev)` itself, once per event, right
@@ -181,10 +180,10 @@ invocation, not an HTTP call from the usecase.
   `crate::platform::port` + `sqlx` but never `adapter`.
 - Summarize what was added and what the user still fills in. Note that
   `saga-consistency-reviewer` should audit any `publish:`/`consume:` step and
-  `unit-test-writer` covers the new domain code, and only the high-value logic (arithmetic,
-  boundaries, scheduling, idempotency), not plain state changes or guards. Use cases have no
-  automated tests. For a `consume:` step, `gateway-test-writer` covers the Kafka consumer
-  adapter (opt-in, `scripts/run-gateway-tests.sh kafka`). Don't write tests here.
+  `unit-test-writer` covers the new domain code and use case (mockall `Repository`, fake
+  transaction), `integration-test-writer` the repository and Kafka consumer adapter, and
+  `component-test-writer` the endpoint and the saga step end to end. Don't write tests here
+  (`scripts/run-tests.sh`).
 
 ## Reference (implemented)
 `user-service` writes `outbox_events` with `aggregate_type = "user"` — `UserCreated` on the
