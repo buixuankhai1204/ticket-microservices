@@ -4,23 +4,21 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
 type ReleaseSeatUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewReleaseSeatUseCase(pool *pgxpool.Pool, repo port.Repository) *ReleaseSeatUseCase {
-	return &ReleaseSeatUseCase{pool: pool, repo: repo}
+func NewReleaseSeatUseCase(db port.Transactor, repo port.Repository) *ReleaseSeatUseCase {
+	return &ReleaseSeatUseCase{db: db, repo: repo}
 }
 
 func (uc *ReleaseSeatUseCase) Execute(ctx context.Context, ev domain.BookingCancelled) (alreadyProcessed bool, err error) {
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return false, &domain.RepositoryError{Err: err}
 	}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
@@ -20,12 +18,12 @@ type CreateNewEventInput struct {
 }
 
 type CreateNewEventUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewCreateNewEventUseCase(pool *pgxpool.Pool, repo port.Repository) *CreateNewEventUseCase {
-	return &CreateNewEventUseCase{pool: pool, repo: repo}
+func NewCreateNewEventUseCase(db port.Transactor, repo port.Repository) *CreateNewEventUseCase {
+	return &CreateNewEventUseCase{db: db, repo: repo}
 }
 
 func (uc *CreateNewEventUseCase) Execute(ctx context.Context, in CreateNewEventInput) (domain.Event, []domain.Seat, error) {
@@ -36,7 +34,7 @@ func (uc *CreateNewEventUseCase) Execute(ctx context.Context, in CreateNewEventI
 		return domain.Event{}, nil, err
 	}
 
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return domain.Event{}, nil, &domain.RepositoryError{Err: err}
 	}

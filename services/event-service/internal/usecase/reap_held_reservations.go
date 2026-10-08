@@ -4,24 +4,23 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
 type ReapHeldReservationsUseCase struct {
-	pool            *pgxpool.Pool
+	db              port.Transactor
 	repo            port.Repository
 	holdTimeoutSecs int
 }
 
-func NewReapHeldReservationsUseCase(pool *pgxpool.Pool, repo port.Repository, holdTimeoutSecs int) *ReapHeldReservationsUseCase {
-	return &ReapHeldReservationsUseCase{pool: pool, repo: repo, holdTimeoutSecs: holdTimeoutSecs}
+func NewReapHeldReservationsUseCase(db port.Transactor, repo port.Repository, holdTimeoutSecs int) *ReapHeldReservationsUseCase {
+	return &ReapHeldReservationsUseCase{db: db, repo: repo, holdTimeoutSecs: holdTimeoutSecs}
 }
 
 func (uc *ReapHeldReservationsUseCase) Execute(ctx context.Context) (reaped int, err error) {
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return 0, &domain.RepositoryError{Err: err}
 	}

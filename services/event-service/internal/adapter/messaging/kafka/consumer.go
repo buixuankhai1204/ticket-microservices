@@ -3,50 +3,29 @@ package kafka
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	segkafka "github.com/segmentio/kafka-go"
 
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/logger"
 )
 
-// retryableSQLSTATEs are transient at the database level: the same statement
-// against the same input could succeed on a later attempt. Everything else
-// (constraint/data/schema errors) is deterministic -- retrying only burns the
-// backoff ladder before an inevitable DLQ, so it goes straight there instead.
-var retryableSQLSTATEs = map[string]bool{
-	"40001": true, // serialization_failure
-	"40P01": true, // deadlock_detected
-	"55P03": true, // lock_not_available
-	"55006": true, // object_in_use
-	"53300": true, // too_many_connections
-	"08000": true, // connection_exception
-	"08001": true, // sqlclient_unable_to_establish_sqlconnection
-	"08003": true, // connection_does_not_exist
-	"08004": true, // sqlserver_rejected_establishment_of_sqlconnection
-	"08006": true, // connection_failure
-	"08007": true, // transaction_resolution_unknown
-	"08P01": true, // protocol_violation
-	"57P01": true, // admin_shutdown
-	"57P02": true, // crash_shutdown
-	"57P03": true, // cannot_connect_now
-}
-
+// Recorder is the use case a consumer drives: it owns the transaction and the
+// processed_events idempotency check, returning alreadyProcessed=true for a
+// duplicate.
 type Recorder[E any] interface {
 	Execute(ctx context.Context, ev E) (alreadyProcessed bool, err error)
 }
 
+// EventSpec is everything that differs between the consumer groups sharing one
+// topic. The engine below is otherwise identical for every event type.
 type EventSpec[E any] struct {
-	Group      string
-	EventType  string
-	Component  string
-	SuccessMsg string
-	Parse      func([]byte) (E, error)
-	LogFields  func(E) []any
+	Group      string                  // Kafka consumer group id
+	EventType  string                  // "event_type" header value this group owns
+	Component  string                  // logger component tag
+	SuccessMsg string                  // logged on a fresh (non-duplicate) apply
+	Parse      func([]byte) (E, error) // wire bytes -> domain event
+	LogFields  func(E) []any           // structured log context, e.g. event_id/user_id
 	Record     Recorder[E]
 }
 
@@ -57,18 +36,16 @@ type Config struct {
 }
 
 type Consumer[E any] struct {
-	reader      *segkafka.Reader
-	dlq         *segkafka.Writer
-	spec        EventSpec[E]
-	log         logger.Logger
-	maxAttempts int
+	reader    *segkafka.Reader
+	dlq       *KafkaDeadLetters
+	processor *Processor[E]
+	group     string
+	log       logger.Logger
 }
 
 func NewConsumer[E any](cfg Config, spec EventSpec[E], log logger.Logger) *Consumer[E] {
-	maxAttempts := cfg.MaxAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 5
-	}
+	dlq := NewKafkaDeadLetters(cfg.Brokers, cfg.Topic)
+	log = log.With("topic", cfg.Topic)
 	return &Consumer[E]{
 		reader: segkafka.NewReader(segkafka.ReaderConfig{
 			Brokers:        cfg.Brokers,
@@ -79,20 +56,15 @@ func NewConsumer[E any](cfg Config, spec EventSpec[E], log logger.Logger) *Consu
 			MaxWait:        500 * time.Millisecond,
 			CommitInterval: 0,
 		}),
-		dlq: &segkafka.Writer{
-			Addr:         segkafka.TCP(cfg.Brokers...),
-			Topic:        cfg.Topic + ".dlq",
-			Balancer:     &segkafka.Hash{},
-			RequiredAcks: segkafka.RequireAll,
-		},
-		spec:        spec,
-		log:         log.With("component", spec.Component, "topic", cfg.Topic),
-		maxAttempts: maxAttempts,
+		dlq:       dlq,
+		processor: NewProcessor(spec, dlq, DefaultRetryPolicy(cfg.MaxAttempts), log),
+		group:     spec.Group,
+		log:       log.With("component", spec.Component),
 	}
 }
 
 func (c *Consumer[E]) Run(ctx context.Context) error {
-	c.log.Info("consumer started", "group", c.spec.Group, "max_attempts", c.maxAttempts)
+	c.log.Info("consumer started", "group", c.group, "max_attempts", c.processor.policy.MaxAttempts)
 
 	for {
 		m, err := c.reader.FetchMessage(ctx)
@@ -109,7 +81,7 @@ func (c *Consumer[E]) Run(ctx context.Context) error {
 		}
 
 		for {
-			err := c.handle(ctx, m)
+			_, err := c.processor.Process(ctx, m)
 			if err == nil {
 				break
 			}
@@ -133,96 +105,6 @@ func (c *Consumer[E]) Run(ctx context.Context) error {
 
 func (c *Consumer[E]) Close() error {
 	return errors.Join(c.reader.Close(), c.dlq.Close())
-}
-
-func (c *Consumer[E]) handle(ctx context.Context, m segkafka.Message) error {
-	if t := headerValue(m, "event_type"); t != "" && t != c.spec.EventType {
-		c.log.Info("event_type not handled by this consumer, skipping", "event_type", t, "offset", m.Offset)
-		return nil
-	}
-
-	ev, parseErr := c.spec.Parse(m.Value)
-	if parseErr != nil {
-		c.log.Error("undeserializable message -> dlq", "err", parseErr.Error(), "offset", m.Offset)
-		return c.toDLQ(ctx, m, "parse: "+parseErr.Error())
-	}
-
-	log := c.log.With(append(c.spec.LogFields(ev), "offset", m.Offset)...)
-	backoff := 250 * time.Millisecond
-
-	for attempt := 1; ; attempt++ {
-		already, err := c.spec.Record.Execute(ctx, ev)
-		switch {
-		case err == nil:
-			if already {
-				log.Info("duplicate event skipped")
-			} else {
-				log.Info(c.spec.SuccessMsg)
-			}
-			return nil
-
-		case ctx.Err() != nil:
-			return ctx.Err()
-
-		case isRetryable(err):
-			if attempt >= c.maxAttempts {
-				log.Error("max retries exhausted -> dlq", "attempts", attempt, "err", err.Error())
-				return c.toDLQ(ctx, m, fmt.Sprintf("max-retries after %d attempts: %v", attempt, err))
-			}
-			log.Info("retryable error, backing off", "attempt", attempt, "backoff_ms", backoff.Milliseconds(), "err", err.Error())
-			if sleep(ctx, backoff) != nil {
-				return ctx.Err()
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-
-		default:
-			log.Error("permanent error -> dlq", "err", err.Error())
-			return c.toDLQ(ctx, m, "permanent: "+err.Error())
-		}
-	}
-}
-
-func (c *Consumer[E]) toDLQ(ctx context.Context, m segkafka.Message, reason string) error {
-	dead := segkafka.Message{
-		Key:   m.Key,
-		Value: m.Value,
-		Headers: []segkafka.Header{
-			{Key: "x-dlq-reason", Value: []byte(reason)},
-			{Key: "x-dlq-source-topic", Value: []byte(m.Topic)},
-			{Key: "x-dlq-source-partition", Value: []byte(strconv.Itoa(m.Partition))},
-			{Key: "x-dlq-source-offset", Value: []byte(strconv.FormatInt(m.Offset, 10))},
-			{Key: "x-dlq-at", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
-		},
-	}
-	if err := c.dlq.WriteMessages(ctx, dead); err != nil {
-		return fmt.Errorf("write to dlq: %w", err)
-	}
-	c.log.Error("message dead-lettered", "reason", reason, "offset", m.Offset)
-	return nil
-}
-
-func isRetryable(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return retryableSQLSTATEs[pgErr.Code]
-	}
-	// Not a database error at all (pool-acquire timeout, context deadline,
-	// broken connection): the repo still wrapped it in RepositoryError, and
-	// there's no reason to believe a retry can't succeed, so treat it as
-	// transient the same way the pre-SQLSTATE classifier did.
-	var repoErr *domain.RepositoryError
-	return errors.As(err, &repoErr)
-}
-
-func headerValue(m segkafka.Message, key string) string {
-	for _, h := range m.Headers {
-		if h.Key == key {
-			return string(h.Value)
-		}
-	}
-	return ""
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

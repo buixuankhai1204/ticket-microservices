@@ -100,6 +100,46 @@ above 100 is clamped, not rejected.
   also adds the `outbox_events` / `processed_events` migrations.
 - `docs/openapi/event-service.yaml` + Postman entry — run the `api-doc-sync` agent.
 
+## Testing
+
+One example of each kind of test, from the cheapest to the most expensive. Most tests sit at
+the bottom; edge cases go in unit and component tests, e2e only covers the main journeys.
+
+| Type | Where | Real | Faked |
+|---|---|---|---|
+| Unit | `internal/**/*_test.go` | the code under test | its collaborators: `Repository` (gomock), the transaction (`testsupport.FakeDB`), the dead-letter writer |
+| Integration | `internal/adapter/repository/postgres`, `internal/adapter/messaging/kafka` (`-tags integration`) | our adapter plus a real Postgres / Kafka (Testcontainers) | nothing else |
+| Component, in-process | `internal/app/component_test.go` (`-tags component`) | the production wiring over real HTTP and a real Postgres | Kafka: messages go straight into the consumers' `Inbox`, the dead-letter topic is a stub; published events are read from the outbox through a test-only trigger |
+| Component, out-of-process | `tests/component_out_of_process_test.go` (`-tags component`) | the compiled binary as its own process, real Postgres and Kafka, including the seat reaper | booking-service (the test produces its events) |
+| Contract | `tests/contract_consumer_test.go` (`-tags contract`) | our event handling | booking-service, as Pact messages (writes `pacts/`) |
+| End-to-end | `tests/e2e_test.go` (`-tags e2e`) | a running stack, through Kong | nothing |
+
+```bash
+go generate ./internal/testsupport/mocks/   # once, and after changing a port: mocks are not committed
+go test ./...                               # unit tests, no Docker
+go test -tags integration ./internal/...    # needs Docker (Postgres + Kafka containers)
+go test -tags component ./internal/app/ ./tests/
+E2E_BASE_URL=http://localhost:8000 go test -tags e2e ./tests/
+
+pact-go install -d ~/.pact/lib              # once, for the contract tests
+CGO_LDFLAGS="-L$HOME/.pact/lib" go test -tags contract ./tests/
+```
+
+Set `TEST_DATABASE_URL` / `TEST_KAFKA_BROKERS` to reuse a Postgres or Kafka you already run
+instead of starting containers. Each test gets its own throwaway database and its own topics,
+so tests run in parallel against one container. The dead-letter tests need a broker with topic
+auto-creation off, which the Testcontainers broker is.
+
+The use cases take a `port.Transactor` instead of the concrete pool, so unit tests hand them a
+fake transaction and a mocked `Repository`. The gomock files are generated, git-ignored and
+must exist before the unit tests compile: run `go generate ./internal/testsupport/mocks/`
+after cloning and whenever a port interface changes.
+
+`WriteOutbox` inserts the event and deletes it again in the same transaction, so tests cannot
+read it back. `testsupport.TapOutbox` installs a trigger in the throwaway database that copies
+every inserted outbox row into `outbox_tap`, which is how the component tests assert what the
+service published.
+
 ## API docs
 
 `docs/` (`docs.go`, `swagger.json`, `swagger.yaml`) is generated and committed. Regenerate
