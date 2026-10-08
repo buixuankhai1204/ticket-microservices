@@ -1,18 +1,39 @@
-package domain
+package domain_test
 
-import "testing"
+import (
+	"errors"
+	"testing"
 
-func TestNewPaginationClampsLimitToMaxLimit(t *testing.T) {
-	p, err := NewPagination(MaxLimit+250, 0)
-	if err != nil {
-		t.Fatalf("NewPagination returned error: %v", err)
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
+)
+
+func TestPaginationRejectsNonsenseAndClampsOversizedPages(t *testing.T) {
+	tests := []struct {
+		name      string
+		limit     int
+		offset    int
+		wantLimit int
+		wantErr   error
+	}{
+		{"typical page", 20, 40, 20, nil},
+		{"smallest page", 1, 0, 1, nil},
+		{"largest allowed page", domain.MaxLimit, 0, domain.MaxLimit, nil},
+		{"oversized page is clamped, not rejected", domain.MaxLimit + 250, 0, domain.MaxLimit, nil},
+		{"zero limit", 0, 0, 0, domain.ErrInvalidPagination},
+		{"negative offset", 10, -1, 0, domain.ErrInvalidPagination},
 	}
-	if p.Limit != MaxLimit {
-		t.Fatalf("Limit = %d, want clamped to %d", p.Limit, MaxLimit)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := domain.NewPagination(tc.limit, tc.offset)
+
+			if !errors.Is(err, tc.wantErr) || p.Limit != tc.wantLimit {
+				t.Fatalf("got (%+v, %v), want limit %d and error %v", p, err, tc.wantLimit, tc.wantErr)
+			}
+		})
 	}
 }
 
-func TestPaginationHasMore(t *testing.T) {
+func TestHasMoreIsTrueOnlyWhenRowsRemainBeyondThisPage(t *testing.T) {
 	tests := []struct {
 		name    string
 		offset  int
@@ -20,14 +41,16 @@ func TestPaginationHasMore(t *testing.T) {
 		total   int
 		want    bool
 	}{
-		{name: "rows remain after this page", offset: 0, pageLen: 20, total: 50, want: true},
-		{name: "final page", offset: 40, pageLen: 10, total: 50, want: false},
+		{"first of three pages", 0, 20, 50, true},
+		{"last page is short", 40, 10, 50, false},
+		{"last page is exactly full", 30, 20, 50, false},
+		{"empty result", 0, 0, 0, false},
+		{"offset beyond the end", 100, 0, 50, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := Pagination{Offset: tc.offset}
-			if got := p.HasMore(tc.pageLen, tc.total); got != tc.want {
-				t.Fatalf("HasMore(%d, %d) with offset %d = %v, want %v", tc.pageLen, tc.total, tc.offset, got, tc.want)
+			if got := (domain.Pagination{Offset: tc.offset}).HasMore(tc.pageLen, tc.total); got != tc.want {
+				t.Fatalf("HasMore(%d, %d) at offset %d = %v, want %v", tc.pageLen, tc.total, tc.offset, got, tc.want)
 			}
 		})
 	}

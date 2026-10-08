@@ -100,6 +100,36 @@ above 100 is clamped, not rejected.
   also adds the `outbox_events` / `processed_events` migrations.
 - `docs/openapi/event-service.yaml` + Postman entry — run the `api-doc-sync` agent.
 
+## Testing
+
+Unit tests sit next to the code; every other kind lives in `tests/`, one file per type.
+
+| Type | Where | Real | Faked |
+|---|---|---|---|
+| Unit | `internal/**/*_test.go` | the code under test | its collaborators: `Repository` (gomock) and the transaction (`FakeDB`) |
+| Integration | `tests/integration_repository_test.go`, `tests/integration_kafka_test.go` (`-tags integration`) | our adapter plus a real Postgres / Kafka (Testcontainers) | nothing else |
+| Component, in-process | `tests/component_in_process_test.go` (`-tags component`) | the production wiring over real HTTP and a real Postgres | Kafka: events are parsed and handed straight to the use cases; published events are read from the outbox through a test-only trigger |
+| Component, out-of-process | `tests/component_out_of_process_test.go` (`-tags component`) | the compiled binary, real Postgres and Kafka, including the seat reaper | booking-service (the test produces its events) |
+| Contract | `tests/contract_consumer_test.go` (`-tags contract`) | our event parsing | booking-service, as Pact messages (writes `pacts/`) |
+| End-to-end | `tests/e2e_test.go` (`-tags e2e`) | a running stack, through Kong | nothing |
+
+```bash
+go generate ./internal/usecase/             # once: the gomock file is generated and not committed
+go test ./...                               # unit tests, no Docker
+go test -tags integration ./tests/          # needs Docker
+go test -tags component ./tests/
+E2E_BASE_URL=http://localhost:8000 go test -tags e2e ./tests/
+
+pact-go install -d ~/.pact/lib              # once, for the contract tests
+CGO_LDFLAGS="-L$HOME/.pact/lib" go test -tags contract ./tests/
+```
+
+Set `TEST_DATABASE_URL` / `TEST_KAFKA_BROKERS` to reuse a Postgres or Kafka you already run. Each
+test gets its own throwaway database and topics. The use cases take a `port.Transactor` instead of
+the concrete pool so unit tests can hand them a fake transaction. `WriteOutbox` deletes the row it
+inserts, so `common.TapOutbox` installs a trigger in the test database that copies every inserted
+outbox row into `outbox_tap`; that is how tests see what was published.
+
 ## API docs
 
 `docs/` (`docs.go`, `swagger.json`, `swagger.yaml`) is generated and committed. Regenerate

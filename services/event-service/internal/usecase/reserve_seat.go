@@ -6,23 +6,22 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
 type ReserveSeatUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewReserveSeatUseCase(pool *pgxpool.Pool, repo port.Repository) *ReserveSeatUseCase {
-	return &ReserveSeatUseCase{pool: pool, repo: repo}
+func NewReserveSeatUseCase(db port.Transactor, repo port.Repository) *ReserveSeatUseCase {
+	return &ReserveSeatUseCase{db: db, repo: repo}
 }
 
 func (uc *ReserveSeatUseCase) Execute(ctx context.Context, ev domain.BookingRequested) (alreadyProcessed bool, err error) {
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return false, &domain.RepositoryError{Err: err}
 	}

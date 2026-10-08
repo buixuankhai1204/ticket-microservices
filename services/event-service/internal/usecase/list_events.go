@@ -4,23 +4,22 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
 type ListEventsUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewListEventsUseCase(pool *pgxpool.Pool, repo port.Repository) *ListEventsUseCase {
-	return &ListEventsUseCase{pool: pool, repo: repo}
+func NewListEventsUseCase(db port.Transactor, repo port.Repository) *ListEventsUseCase {
+	return &ListEventsUseCase{db: db, repo: repo}
 }
 
 func (uc *ListEventsUseCase) Execute(ctx context.Context, f domain.EventFilter, p domain.Pagination) ([]domain.Event, int, error) {
-	tx, err := uc.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := uc.db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, 0, &domain.RepositoryError{Err: err}
 	}
