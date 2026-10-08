@@ -5,23 +5,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/port"
 )
 
 type GetUserRegistrationUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewGetUserRegistrationUseCase(pool *pgxpool.Pool, repo port.Repository) *GetUserRegistrationUseCase {
-	return &GetUserRegistrationUseCase{pool: pool, repo: repo}
+func NewGetUserRegistrationUseCase(db port.Transactor, repo port.Repository) *GetUserRegistrationUseCase {
+	return &GetUserRegistrationUseCase{db: db, repo: repo}
 }
 
 func (uc *GetUserRegistrationUseCase) Execute(ctx context.Context, userID uuid.UUID) (domain.UserRegistration, error) {
-	tx, err := uc.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := uc.db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return domain.UserRegistration{}, &domain.RepositoryError{Err: err}
 	}

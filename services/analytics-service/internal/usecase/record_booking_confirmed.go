@@ -3,19 +3,17 @@ package usecase
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/port"
 )
 
 type RecordBookingConfirmedUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewRecordBookingConfirmedUseCase(pool *pgxpool.Pool, repo port.Repository) *RecordBookingConfirmedUseCase {
-	return &RecordBookingConfirmedUseCase{pool: pool, repo: repo}
+func NewRecordBookingConfirmedUseCase(db port.Transactor, repo port.Repository) *RecordBookingConfirmedUseCase {
+	return &RecordBookingConfirmedUseCase{db: db, repo: repo}
 }
 
 func (uc *RecordBookingConfirmedUseCase) Execute(ctx context.Context, ev domain.BookingConfirmed) (alreadyProcessed bool, err error) {
@@ -24,7 +22,7 @@ func (uc *RecordBookingConfirmedUseCase) Execute(ctx context.Context, ev domain.
 		return false, err
 	}
 
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return false, &domain.RepositoryError{Err: err}
 	}

@@ -61,6 +61,34 @@ not `UserCreated`.
 - `docs/openapi/analytics-service.yaml` + Postman entry for `/api/v1/analytics/users/{userID}`
   — run the `api-doc-sync` agent.
 
+## Testing
+
+Unit tests sit next to the code; every other kind lives in `tests/`, one file per type.
+
+| Type | Where | Real | Faked |
+|---|---|---|---|
+| Unit | `internal/**/*_test.go` | the code under test | its collaborators: `Repository` (gomock) and the transaction (`FakeDB`) |
+| Integration | `tests/integration_repository_test.go`, `tests/integration_kafka_test.go` (`-tags integration`) | our adapter plus a real Postgres / Kafka (Testcontainers) | nothing else |
+| Component, in-process | `tests/component_in_process_test.go` (`-tags component`) | HTTP handlers and use cases over a real Postgres | Kafka: events are parsed and handed straight to the use cases |
+| Component, out-of-process | `tests/component_out_of_process_test.go` (`-tags component`) | the compiled binary, real Postgres and Kafka | the other services (the test produces their events) |
+| Contract | `tests/contract_consumer_test.go` (`-tags contract`) | our event parsing | user-service and booking-service, as Pact messages (writes `pacts/`) |
+| End-to-end | `tests/e2e_test.go` (`-tags e2e`) | a running stack, through Kong | nothing |
+
+```bash
+go generate ./internal/usecase/             # once: the gomock file is generated and not committed
+go test ./...                               # unit tests, no Docker
+go test -tags integration ./tests/          # needs Docker
+go test -tags component ./tests/
+E2E_BASE_URL=http://localhost:8000 go test -tags e2e ./tests/
+
+pact-go install -d ~/.pact/lib              # once, for the contract tests
+CGO_LDFLAGS="-L$HOME/.pact/lib" go test -tags contract ./tests/
+```
+
+Set `TEST_DATABASE_URL` / `TEST_KAFKA_BROKERS` to reuse a Postgres or Kafka you already run. Each
+test gets its own throwaway database and topics. The use cases take a `port.Transactor` instead of
+the concrete pool so unit tests can hand them a fake transaction.
+
 ## API docs
 
 `docs/` (`docs.go`, `swagger.json`, `swagger.yaml`) is generated and committed. Both routes
