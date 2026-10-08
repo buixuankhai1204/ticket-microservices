@@ -4,11 +4,13 @@ use uuid::Uuid;
 
 use super::errors::{EmailError, PaymentError, UserError};
 
+#[cfg_attr(test, mockall::automock)]
 pub trait PasswordHasher: Send + Sync {
     fn hash(&self, password: &str) -> Result<String, UserError>;
     fn verify(&self, password: &str, hash: &str) -> Result<bool, UserError>;
 }
 
+#[cfg_attr(test, mockall::automock)]
 pub trait TokenIssuer: Send + Sync {
     fn issue(&self, user_id: Uuid, email: &str) -> Result<String, UserError>;
 }
@@ -32,6 +34,7 @@ pub struct ChargeOutcome {
 }
 
 /// Outbound port: charge a saved payment method. Pure — names no infra type.
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait PaymentGateway: Send + Sync {
     async fn charge(&self, request: ChargeRequest) -> Result<ChargeOutcome, PaymentError>;
@@ -53,6 +56,7 @@ pub struct DunningEmail {
 }
 
 /// Outbound port: send a transactional email. Pure — names no infra type.
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait EmailGateway: Send + Sync {
     async fn send(&self, email: DunningEmail) -> Result<(), EmailError>;

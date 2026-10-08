@@ -9,7 +9,9 @@ use crate::adapter::repository::subscription_postgres::PostgresSubscriptionRepos
 use crate::adapter::security::{Argon2PasswordHasher, JwtTokenIssuer};
 use crate::domain::{EmailGateway, PasswordHasher, PaymentGateway, RenewalPolicy, TokenIssuer};
 use crate::platform::db::DbPool;
-use crate::platform::port::{RenewalAttemptRepository, SubscriptionRepository, UserRepository};
+use crate::platform::port::{
+    PgTransactor, RenewalAttemptRepository, SubscriptionRepository, Transactor, UserRepository,
+};
 use crate::usecase::{
     CreateSubscriptionUseCase, EnqueueDueRenewalsUseCase, GetSubscriptionUseCase,
     GetUserProfileUseCase, ListSubscriptionsUseCase, ListUsersUseCase, LoginUserUseCase,
@@ -58,51 +60,53 @@ impl App {
         jwt_validation.set_issuer(&[config.jwt_issuer.as_str()]);
         jwt_validation.validate_aud = false;
 
+        let db: Arc<dyn Transactor> = Arc::new(PgTransactor::new(pool.clone()));
+
         let enqueue_due_renewals = Arc::new(EnqueueDueRenewalsUseCase::new(
-            pool.clone(),
+            db.clone(),
             renewal_attempt_repository.clone(),
         ));
         let process_renewal = Arc::new(ProcessRenewalAttemptUseCase::new(
-            pool.clone(),
+            db.clone(),
             renewal_attempt_repository.clone(),
             subscription_repository.clone(),
             gateways.payment,
             config.renewal_policy,
         ));
         let send_dunning_email = Arc::new(SendDunningEmailUseCase::new(
-            pool.clone(),
+            db.clone(),
             renewal_attempt_repository.clone(),
             gateways.email,
         ));
 
         let state = Arc::new(AppState {
             register_user: RegisterUserUseCase::new(
-                pool.clone(),
+                db.clone(),
                 user_repository.clone(),
                 password_hasher.clone(),
             ),
             login_user: LoginUserUseCase::new(
-                pool.clone(),
+                db.clone(),
                 user_repository.clone(),
                 password_hasher,
                 token_issuer,
             ),
-            get_user_profile: GetUserProfileUseCase::new(pool.clone(), user_repository.clone()),
-            list_users: ListUsersUseCase::new(pool.clone(), user_repository),
+            get_user_profile: GetUserProfileUseCase::new(db.clone(), user_repository.clone()),
+            list_users: ListUsersUseCase::new(db.clone(), user_repository),
             create_subscription: CreateSubscriptionUseCase::new(
-                pool.clone(),
+                db.clone(),
                 subscription_repository.clone(),
             ),
             get_subscription: GetSubscriptionUseCase::new(
-                pool.clone(),
+                db.clone(),
                 subscription_repository.clone(),
             ),
             list_subscriptions: ListSubscriptionsUseCase::new(
-                pool.clone(),
+                db.clone(),
                 subscription_repository.clone(),
             ),
             retry_renewal_now: RetryRenewalNowUseCase::new(
-                pool.clone(),
+                db,
                 subscription_repository,
                 renewal_attempt_repository,
             ),

@@ -24,3 +24,9 @@ jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 utoipa = { version = "4", features = ["axum_extras", "uuid"] }
 utoipa-swagger-ui = { version = "6", features = ["axum"] }
+
+[dev-dependencies]
+mockall = "0.13"
+pact_consumer = "1.4"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+wiremock = "0.6"

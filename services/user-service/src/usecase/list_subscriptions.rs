@@ -1,21 +1,22 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::tx_err;
 use crate::domain::{Pagination, Subscription, UserError};
-use crate::platform::port::SubscriptionRepository;
+use crate::platform::port::{SubscriptionRepository, Transactor};
 
 pub struct ListSubscriptionsUseCase {
-    db_pool: PgPool,
+    db: Arc<dyn Transactor>,
     subscription_repository: Arc<dyn SubscriptionRepository>,
 }
 
 impl ListSubscriptionsUseCase {
-    pub fn new(db_pool: PgPool, subscription_repository: Arc<dyn SubscriptionRepository>) -> Self {
+    pub fn new(
+        db: Arc<dyn Transactor>,
+        subscription_repository: Arc<dyn SubscriptionRepository>,
+    ) -> Self {
         Self {
-            db_pool,
+            db,
             subscription_repository,
         }
     }
@@ -27,16 +28,12 @@ impl ListSubscriptionsUseCase {
         user_id: Uuid,
         pagination: Pagination,
     ) -> Result<(Vec<Subscription>, i64), UserError> {
-        let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
-        sqlx::query("SET TRANSACTION READ ONLY")
-            .execute(&mut *tx)
-            .await
-            .map_err(tx_err)?;
+        let mut tx = self.db.begin_read_only().await?;
         let page = self
             .subscription_repository
             .list_for_user(&mut tx, user_id, pagination)
             .await?;
-        tx.commit().await.map_err(tx_err)?;
+        tx.commit().await?;
         Ok(page)
     }
 }

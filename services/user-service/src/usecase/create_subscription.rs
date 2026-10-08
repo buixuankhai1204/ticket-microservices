@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::tx_err;
 use crate::domain::{BillingInterval, Subscription, UserError};
-use crate::platform::port::SubscriptionRepository;
+use crate::platform::port::{SubscriptionRepository, Transactor};
 
 pub struct CreateSubscriptionInput {
     pub user_id: Uuid,
@@ -17,14 +15,17 @@ pub struct CreateSubscriptionInput {
 }
 
 pub struct CreateSubscriptionUseCase {
-    db_pool: PgPool,
+    db: Arc<dyn Transactor>,
     subscription_repository: Arc<dyn SubscriptionRepository>,
 }
 
 impl CreateSubscriptionUseCase {
-    pub fn new(db_pool: PgPool, subscription_repository: Arc<dyn SubscriptionRepository>) -> Self {
+    pub fn new(
+        db: Arc<dyn Transactor>,
+        subscription_repository: Arc<dyn SubscriptionRepository>,
+    ) -> Self {
         Self {
-            db_pool,
+            db,
             subscription_repository,
         }
     }
@@ -40,11 +41,11 @@ impl CreateSubscriptionUseCase {
             input.payment_method_id,
         )?;
 
-        let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
+        let mut tx = self.db.begin().await?;
         self.subscription_repository
             .create(&mut tx, &subscription)
             .await?;
-        tx.commit().await.map_err(tx_err)?;
+        tx.commit().await?;
 
         Ok(subscription)
     }

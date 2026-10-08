@@ -1,32 +1,25 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
-
-use super::tx_err;
 use crate::domain::{Pagination, User, UserError};
-use crate::platform::port::UserRepository;
+use crate::platform::port::{Transactor, UserRepository};
 
 pub struct ListUsersUseCase {
-    db_pool: PgPool,
+    db: Arc<dyn Transactor>,
     user_repository: Arc<dyn UserRepository>,
 }
 
 impl ListUsersUseCase {
-    pub fn new(db_pool: PgPool, user_repository: Arc<dyn UserRepository>) -> Self {
+    pub fn new(db: Arc<dyn Transactor>, user_repository: Arc<dyn UserRepository>) -> Self {
         Self {
-            db_pool,
+            db,
             user_repository,
         }
     }
 
     pub async fn execute(&self, pagination: Pagination) -> Result<(Vec<User>, i64), UserError> {
-        let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
-        sqlx::query("SET TRANSACTION READ ONLY")
-            .execute(&mut *tx)
-            .await
-            .map_err(tx_err)?;
+        let mut tx = self.db.begin_read_only().await?;
         let page = self.user_repository.list(&mut tx, pagination).await?;
-        tx.commit().await.map_err(tx_err)?;
+        tx.commit().await?;
         Ok(page)
     }
 }
