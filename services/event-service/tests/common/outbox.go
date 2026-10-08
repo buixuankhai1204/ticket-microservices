@@ -1,4 +1,4 @@
-package testsupport
+package common
 
 import (
 	"context"

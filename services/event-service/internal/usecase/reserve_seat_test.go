@@ -9,8 +9,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport/mocks"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/usecase"
 )
 
@@ -53,8 +51,8 @@ func failureWith(reason string, bookingID uuid.UUID) gomock.Matcher {
 
 func TestFreeSeatsAreHeldAndTheOutcomeIsPublishedInTheSameTransaction(t *testing.T) {
 	r := newReservation(2)
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	ctx := gomock.Any()
 	gomock.InOrder(
 		repo.EXPECT().MarkEventProcessed(ctx, inTx(db), r.request.ID).Return(false, nil),
@@ -97,8 +95,8 @@ func TestAReservationThatCannotBeHonouredIsAnsweredWithAFailureAndLeavesEverySea
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newReservation(2)
-			repo := mocks.NewMockRepository(gomock.NewController(t))
-			db := &testsupport.FakeDB{}
+			repo := NewMockRepository(gomock.NewController(t))
+			db := &FakeDB{}
 			repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), r.request.ID).Return(false, nil)
 			seats, lockErr := tc.lock(r)
 			repo.EXPECT().LockSeatsForReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(seats, lockErr)
@@ -120,8 +118,8 @@ func TestAReservationThatCannotBeHonouredIsAnsweredWithAFailureAndLeavesEverySea
 
 func TestAnEventAlreadyProcessedIsAcknowledgedWithoutTouchingSeatsOrPublishing(t *testing.T) {
 	r := newReservation(1)
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), r.request.ID).Return(true, nil)
 
 	already, err := usecase.NewReserveSeatUseCase(db, repo).Execute(context.Background(), r.request)
@@ -136,28 +134,28 @@ func TestAnEventAlreadyProcessedIsAcknowledgedWithoutTouchingSeatsOrPublishing(t
 
 func TestAnyFailureWhileHoldingSeatsRollsBackAndPublishesNothing(t *testing.T) {
 	boom := &domain.RepositoryError{Err: errors.New("serialization failure")}
-	steps := map[string]func(r reservation, repo *mocks.MockRepository){
-		"marking the event processed": func(r reservation, repo *mocks.MockRepository) {
+	steps := map[string]func(r reservation, repo *MockRepository){
+		"marking the event processed": func(r reservation, repo *MockRepository) {
 			repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, boom)
 		},
-		"locking the seats": func(r reservation, repo *mocks.MockRepository) {
+		"locking the seats": func(r reservation, repo *MockRepository) {
 			repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, nil)
 			repo.EXPECT().LockSeatsForReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, boom)
 		},
-		"updating the seats": func(r reservation, repo *mocks.MockRepository) {
+		"updating the seats": func(r reservation, repo *MockRepository) {
 			repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, nil)
 			repo.EXPECT().LockSeatsForReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(r.seats(domain.SeatAvailable), nil)
 			repo.EXPECT().UpdateSeatsStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(boom)
 		},
-		"recording the reservation": func(r reservation, repo *mocks.MockRepository) {
+		"recording the reservation": func(r reservation, repo *MockRepository) {
 			repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, nil)
 			repo.EXPECT().LockSeatsForReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(r.seats(domain.SeatAvailable), nil)
 			repo.EXPECT().UpdateSeatsStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 			repo.EXPECT().CreateSeatReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(boom)
 		},
-		"writing the outbox": func(r reservation, repo *mocks.MockRepository) {
+		"writing the outbox": func(r reservation, repo *MockRepository) {
 			repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, nil)
 			repo.EXPECT().LockSeatsForReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(r.seats(domain.SeatAvailable), nil)
@@ -169,8 +167,8 @@ func TestAnyFailureWhileHoldingSeatsRollsBackAndPublishesNothing(t *testing.T) {
 	for name, arrange := range steps {
 		t.Run(name, func(t *testing.T) {
 			r := newReservation(1)
-			repo := mocks.NewMockRepository(gomock.NewController(t))
-			db := &testsupport.FakeDB{}
+			repo := NewMockRepository(gomock.NewController(t))
+			db := &FakeDB{}
 			arrange(r, repo)
 
 			_, err := usecase.NewReserveSeatUseCase(db, repo).Execute(context.Background(), r.request)
@@ -189,8 +187,8 @@ func TestReservingFailsWithARepositoryErrorWhenNoTransactionCanBeOpenedOrCommitt
 	r := newReservation(1)
 
 	t.Run("begin", func(t *testing.T) {
-		repo := mocks.NewMockRepository(gomock.NewController(t))
-		_, err := usecase.NewReserveSeatUseCase(&testsupport.FakeDB{BeginErr: errors.New("pool exhausted")}, repo).
+		repo := NewMockRepository(gomock.NewController(t))
+		_, err := usecase.NewReserveSeatUseCase(&FakeDB{BeginErr: errors.New("pool exhausted")}, repo).
 			Execute(context.Background(), r.request)
 
 		var repoErr *domain.RepositoryError
@@ -199,12 +197,12 @@ func TestReservingFailsWithARepositoryErrorWhenNoTransactionCanBeOpenedOrCommitt
 		}
 	})
 	t.Run("commit", func(t *testing.T) {
-		repo := mocks.NewMockRepository(gomock.NewController(t))
+		repo := NewMockRepository(gomock.NewController(t))
 		repo.EXPECT().MarkEventProcessed(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, nil)
 		repo.EXPECT().LockSeatsForReservation(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, domain.ErrNotFound)
 		repo.EXPECT().WriteOutbox(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 
-		_, err := usecase.NewReserveSeatUseCase(&testsupport.FakeDB{CommitErr: errors.New("connection reset")}, repo).
+		_, err := usecase.NewReserveSeatUseCase(&FakeDB{CommitErr: errors.New("connection reset")}, repo).
 			Execute(context.Background(), r.request)
 
 		var repoErr *domain.RepositoryError

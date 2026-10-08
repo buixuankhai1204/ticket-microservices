@@ -1,4 +1,3 @@
 /event-service
 /out/
-internal/testsupport/mocks/*.go
-!internal/testsupport/mocks/generate.go
+internal/usecase/mock_*_test.go

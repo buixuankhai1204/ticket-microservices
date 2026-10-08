@@ -1,11 +1,10 @@
 //go:build integration
 
-package postgres_test
+package tests
 
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -16,12 +15,8 @@ import (
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/repository/postgres"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/tests/common"
 )
-
-func TestMain(m *testing.M) {
-	os.Exit(testsupport.Run(m))
-}
 
 var (
 	repo = postgres.New()
@@ -89,7 +84,7 @@ func pgCode(err error) string {
 
 func TestAnEventAndItsSeatMapAreStoredTogetherAndReadBackInPositionOrder(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	start, end := upcoming()
 	event, seats := seedEvent(t, pool, "Gala", start, end, 2, 3)
 
@@ -119,7 +114,7 @@ func TestAnEventAndItsSeatMapAreStoredTogetherAndReadBackInPositionOrder(t *test
 
 func TestAnUnknownEventIsNotFoundForEveryRead(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	unknown := uuid.New()
 
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -140,7 +135,7 @@ func TestAnUnknownEventIsNotFoundForEveryRead(t *testing.T) {
 
 func TestSeatsThatCannotBeStoredTakeTheEventDownWithThem(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	start, end := upcoming()
 	event, seats, err := domain.NewEventWithSeats("Gala", "", "Hall", start, end, domain.LayoutSpec{
 		Sections: []domain.SectionSpec{{Name: "A", Rows: 1, SeatsPerRow: 2, PriceMinor: 1}},
@@ -169,7 +164,7 @@ func TestSeatsThatCannotBeStoredTakeTheEventDownWithThem(t *testing.T) {
 
 func TestEventsAreListedNewestFirstAndTheUpcomingFilterDropsFinishedOnes(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	past := time.Now().UTC().Add(-48 * time.Hour)
 	start, end := upcoming()
 	seedEvent(t, pool, "Finished", past, past.Add(time.Hour), 1, 1)
@@ -203,7 +198,7 @@ func names(events []domain.Event) []string {
 
 func TestLockingSeatsReturnsOnlyThoseOfThatEventAndMakesRivalsWait(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	start, end := upcoming()
 	event, seats := seedEvent(t, pool, "Gala", start, end, 1, 3)
 	_, otherSeats := seedEvent(t, pool, "Other", start, end, 1, 1)
@@ -235,7 +230,7 @@ func TestLockingSeatsReturnsOnlyThoseOfThatEventAndMakesRivalsWait(t *testing.T)
 
 func TestOnlyReservedSeatsAreReleasedAndBookedOnesStayBooked(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	start, end := upcoming()
 	_, seats := seedEvent(t, pool, "Gala", start, end, 1, 3)
 	reserved, booked, free := seats[0].ID, seats[1].ID, seats[2].ID
@@ -259,7 +254,7 @@ func TestOnlyReservedSeatsAreReleasedAndBookedOnesStayBooked(t *testing.T) {
 
 func TestAReservationRoundTripsItsSeatsAndIsUniquePerBooking(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	bookingID, eventID, seatIDs := uuid.New(), uuid.New(), []uuid.UUID{uuid.New(), uuid.New()}
 
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -285,7 +280,7 @@ func TestAReservationRoundTripsItsSeatsAndIsUniquePerBooking(t *testing.T) {
 
 func TestOnlyHeldReservationsOlderThanTheTimeoutAreStaleAndLockedOnesAreSkipped(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	oldHeld, freshHeld, oldFinalized, oldLocked := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	inTx(t, pool, func(tx pgx.Tx) {
 		for _, id := range []uuid.UUID{oldHeld, freshHeld, oldFinalized, oldLocked} {
@@ -321,7 +316,7 @@ func TestOnlyHeldReservationsOlderThanTheTimeoutAreStaleAndLockedOnesAreSkipped(
 
 func TestBatchUpdateMovesEveryNamedReservationAndAnEmptyBatchIsANoOp(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	a, b, untouched := uuid.New(), uuid.New(), uuid.New()
 	inTx(t, pool, func(tx pgx.Tx) {
 		for _, id := range []uuid.UUID{a, b, untouched} {
@@ -349,7 +344,7 @@ func TestBatchUpdateMovesEveryNamedReservationAndAnEmptyBatchIsANoOp(t *testing.
 
 func TestAnEventIsMarkedProcessedOnceAndARollbackForgetsIt(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
+	pool := common.NewDatabase(t)
 	eventID := uuid.New()
 
 	tx, err := pool.Begin(bg)
@@ -375,8 +370,8 @@ func TestAnEventIsMarkedProcessedOnceAndARollbackForgetsIt(t *testing.T) {
 
 func TestThePublishedEventLeavesTheOutboxEmptyYetReachesTheLogWithItsPayload(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
-	tap := testsupport.TapOutbox(t, pool)
+	pool := common.NewDatabase(t)
+	tap := common.TapOutbox(t, pool)
 	bookingID, eventID, seatID := uuid.New(), uuid.New(), uuid.New()
 	reserved := domain.NewSeatReservedEvent(bookingID, eventID, []uuid.UUID{seatID}, time.Now().UTC())
 
@@ -405,8 +400,8 @@ func TestThePublishedEventLeavesTheOutboxEmptyYetReachesTheLogWithItsPayload(t *
 
 func TestAnEventWrittenInARolledBackTransactionIsNeverPublished(t *testing.T) {
 	t.Parallel()
-	pool := testsupport.NewDatabase(t)
-	tap := testsupport.TapOutbox(t, pool)
+	pool := common.NewDatabase(t)
+	tap := common.TapOutbox(t, pool)
 
 	tx, err := pool.Begin(bg)
 	if err != nil {

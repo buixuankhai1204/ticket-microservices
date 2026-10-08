@@ -10,8 +10,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport/mocks"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/usecase"
 )
 
@@ -21,8 +19,8 @@ func TestTheReaperReleasesEveryStaleHoldWithTwoBatchedStatements(t *testing.T) {
 		{BookingID: uuid.New(), SeatIDs: seatsA, Status: domain.ReservationHeld},
 		{BookingID: uuid.New(), SeatIDs: seatsB, Status: domain.ReservationHeld},
 	}
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	allSeats := append(append([]uuid.UUID{}, seatsA...), seatsB...)
 	gomock.InOrder(
 		repo.EXPECT().ListStaleHeldReservations(gomock.Any(), inTx(db), 1800).Return(stale, nil),
@@ -39,8 +37,8 @@ func TestTheReaperReleasesEveryStaleHoldWithTwoBatchedStatements(t *testing.T) {
 }
 
 func TestTheReaperDoesNothingWhenNothingIsStale(t *testing.T) {
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	repo.EXPECT().ListStaleHeldReservations(gomock.Any(), gomock.Any(), 60).Return(nil, nil)
 	repo.EXPECT().ReleaseReservedSeats(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 	repo.EXPECT().UpdateSeatReservationStatusBatch(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
@@ -54,8 +52,8 @@ func TestTheReaperDoesNothingWhenNothingIsStale(t *testing.T) {
 
 func TestTheReaperCommitsNothingWhenReleasingSeatsFails(t *testing.T) {
 	boom := &domain.RepositoryError{Err: errors.New("deadlock detected")}
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	repo.EXPECT().ListStaleHeldReservations(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return([]domain.SeatReservation{{BookingID: uuid.New(), SeatIDs: []uuid.UUID{uuid.New()}, Status: domain.ReservationHeld}}, nil)
 	repo.EXPECT().ReleaseReservedSeats(gomock.Any(), gomock.Any(), gomock.Any()).Return(boom)
@@ -74,8 +72,8 @@ func TestCreatingAnEventStoresItWithItsSeatsInOneTransaction(t *testing.T) {
 		Name: "Gala", Venue: "Hall", StartsAt: start, EndsAt: start.Add(time.Hour),
 		Layout: domain.LayoutSpec{Sections: []domain.SectionSpec{{Name: "A", Rows: 2, SeatsPerRow: 3, PriceMinor: 100}}},
 	}
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	repo.EXPECT().
 		CreateEventWithSeats(gomock.Any(), inTx(db), gomock.Cond(func(e domain.Event) bool { return e.Name == "Gala" }),
 			gomock.Cond(func(seats []domain.Seat) bool { return len(seats) == 6 })).
@@ -89,8 +87,8 @@ func TestCreatingAnEventStoresItWithItsSeatsInOneTransaction(t *testing.T) {
 }
 
 func TestAnInvalidEventNeverOpensATransaction(t *testing.T) {
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 
 	_, _, err := usecase.NewCreateNewEventUseCase(db, repo).Execute(context.Background(), usecase.CreateNewEventInput{Name: ""})
 
@@ -102,8 +100,8 @@ func TestAnInvalidEventNeverOpensATransaction(t *testing.T) {
 func TestStoringAnEventRollsBackWhenTheRepositoryFails(t *testing.T) {
 	start := time.Date(2030, 6, 1, 19, 0, 0, 0, time.UTC)
 	boom := &domain.RepositoryError{Err: errors.New("bulk insert failed")}
-	repo := mocks.NewMockRepository(gomock.NewController(t))
-	db := &testsupport.FakeDB{}
+	repo := NewMockRepository(gomock.NewController(t))
+	db := &FakeDB{}
 	repo.EXPECT().CreateEventWithSeats(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(boom)
 
 	_, _, err := usecase.NewCreateNewEventUseCase(db, repo).Execute(context.Background(), usecase.CreateNewEventInput{
@@ -121,8 +119,8 @@ func TestReadsRunInAReadOnlyTransactionAndPassThroughWhatTheRepositoryReturns(t 
 	p := domain.Pagination{Limit: 20}
 
 	t.Run("get event", func(t *testing.T) {
-		repo := mocks.NewMockRepository(gomock.NewController(t))
-		db := &testsupport.FakeDB{}
+		repo := NewMockRepository(gomock.NewController(t))
+		db := &FakeDB{}
 		repo.EXPECT().GetEvent(gomock.Any(), inTx(db), eventID).Return(domain.Event{ID: eventID, Name: "Gala"}, nil)
 
 		event, err := usecase.NewGetEventUseCase(db, repo).Execute(context.Background(), eventID)
@@ -132,8 +130,8 @@ func TestReadsRunInAReadOnlyTransactionAndPassThroughWhatTheRepositoryReturns(t 
 		}
 	})
 	t.Run("list events", func(t *testing.T) {
-		repo := mocks.NewMockRepository(gomock.NewController(t))
-		db := &testsupport.FakeDB{}
+		repo := NewMockRepository(gomock.NewController(t))
+		db := &FakeDB{}
 		filter := domain.EventFilter{UpcomingOnly: true}
 		repo.EXPECT().ListEvents(gomock.Any(), inTx(db), filter, p).Return([]domain.Event{{ID: eventID}}, 41, nil)
 
@@ -144,8 +142,8 @@ func TestReadsRunInAReadOnlyTransactionAndPassThroughWhatTheRepositoryReturns(t 
 		}
 	})
 	t.Run("list seats of an unknown event", func(t *testing.T) {
-		repo := mocks.NewMockRepository(gomock.NewController(t))
-		db := &testsupport.FakeDB{}
+		repo := NewMockRepository(gomock.NewController(t))
+		db := &FakeDB{}
 		repo.EXPECT().ListSeatsForEvent(gomock.Any(), inTx(db), eventID, p).Return(nil, 0, domain.ErrNotFound)
 
 		_, _, err := usecase.NewListEventSeatsUseCase(db, repo).Execute(context.Background(), eventID, p)

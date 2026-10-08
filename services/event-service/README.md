@@ -104,21 +104,22 @@ above 100 is clamped, not rejected.
 
 One example of each kind of test, from the cheapest to the most expensive. Most tests sit at
 the bottom; edge cases go in unit and component tests, e2e only covers the main journeys.
+Unit tests sit next to the code they test; every other kind lives in `tests/`, one file per type.
 
 | Type | Where | Real | Faked |
 |---|---|---|---|
-| Unit | `internal/**/*_test.go` | the code under test | its collaborators: `Repository` (gomock), the transaction (`testsupport.FakeDB`), the dead-letter writer |
-| Integration | `internal/adapter/repository/postgres`, `internal/adapter/messaging/kafka` (`-tags integration`) | our adapter plus a real Postgres / Kafka (Testcontainers) | nothing else |
-| Component, in-process | `internal/app/component_test.go` (`-tags component`) | the production wiring over real HTTP and a real Postgres | Kafka: messages go straight into the consumers' `Inbox`, the dead-letter topic is a stub; published events are read from the outbox through a test-only trigger |
+| Unit | `internal/**/*_test.go` | the code under test | its collaborators: `Repository` (gomock) and the transaction (`FakeDB`) |
+| Integration | `tests/integration_repository_test.go`, `tests/integration_kafka_test.go` (`-tags integration`) | our adapter plus a real Postgres / Kafka (Testcontainers) | nothing else |
+| Component, in-process | `tests/component_in_process_test.go` (`-tags component`) | the production wiring over real HTTP and a real Postgres | Kafka: events are parsed and handed straight to the use cases the consumers drive; published events are read from the outbox through a test-only trigger |
 | Component, out-of-process | `tests/component_out_of_process_test.go` (`-tags component`) | the compiled binary as its own process, real Postgres and Kafka, including the seat reaper | booking-service (the test produces its events) |
-| Contract | `tests/contract_consumer_test.go` (`-tags contract`) | our event handling | booking-service, as Pact messages (writes `pacts/`) |
+| Contract | `tests/contract_consumer_test.go` (`-tags contract`) | our event parsing | booking-service, as Pact messages (writes `pacts/`) |
 | End-to-end | `tests/e2e_test.go` (`-tags e2e`) | a running stack, through Kong | nothing |
 
 ```bash
-go generate ./internal/testsupport/mocks/   # once, and after changing a port: mocks are not committed
+go generate ./internal/usecase/             # once, and after changing the Repository port: mocks are not committed
 go test ./...                               # unit tests, no Docker
-go test -tags integration ./internal/...    # needs Docker (Postgres + Kafka containers)
-go test -tags component ./internal/app/ ./tests/
+go test -tags integration ./tests/          # needs Docker (Postgres + Kafka containers)
+go test -tags component ./tests/
 E2E_BASE_URL=http://localhost:8000 go test -tags e2e ./tests/
 
 pact-go install -d ~/.pact/lib              # once, for the contract tests
@@ -131,14 +132,14 @@ so tests run in parallel against one container. The dead-letter tests need a bro
 auto-creation off, which the Testcontainers broker is.
 
 The use cases take a `port.Transactor` instead of the concrete pool, so unit tests hand them a
-fake transaction and a mocked `Repository`. The gomock files are generated, git-ignored and
-must exist before the unit tests compile: run `go generate ./internal/testsupport/mocks/`
-after cloning and whenever a port interface changes.
+fake transaction and a mocked `Repository`. The gomock file is generated, git-ignored and must
+exist before the unit tests compile: run `go generate ./internal/usecase/` after cloning and
+whenever the `Repository` port changes.
 
 `WriteOutbox` inserts the event and deletes it again in the same transaction, so tests cannot
-read it back. `testsupport.TapOutbox` installs a trigger in the throwaway database that copies
-every inserted outbox row into `outbox_tap`, which is how the component tests assert what the
-service published.
+read it back. `common.TapOutbox` installs a trigger in the throwaway database that copies every
+inserted outbox row into `outbox_tap`, which is how the component tests assert what the service
+published.
 
 ## API docs
 

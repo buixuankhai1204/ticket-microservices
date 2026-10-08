@@ -1,4 +1,4 @@
-package testsupport
+package common
 
 import (
 	"context"
@@ -35,7 +35,7 @@ var (
 	cleanups  []func(context.Context)
 )
 
-func onShutdown(fn func(context.Context)) {
+func OnShutdown(fn func(context.Context)) {
 	cleanupMu.Lock()
 	defer cleanupMu.Unlock()
 	cleanups = append(cleanups, fn)

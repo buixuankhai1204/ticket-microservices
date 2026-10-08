@@ -19,33 +19,15 @@ type Consumer interface {
 	Close() error
 }
 
-type route struct {
-	topic    string
-	consumer func(cfg kafkaconsumer.Config, log logger.Logger) Consumer
-	handler  func(dlq kafkaconsumer.DeadLetters, policy kafkaconsumer.RetryPolicy, log logger.Logger) kafkaconsumer.Handler
-}
-
-func bind[E any](topic, groupSuffix string, spec kafkaconsumer.EventSpec[E]) route {
-	spec.Group += groupSuffix
-	return route{
-		topic: topic,
-		consumer: func(cfg kafkaconsumer.Config, log logger.Logger) Consumer {
-			cfg.Topic = topic
-			return kafkaconsumer.NewConsumer(cfg, spec, log)
-		},
-		handler: func(dlq kafkaconsumer.DeadLetters, policy kafkaconsumer.RetryPolicy, log logger.Logger) kafkaconsumer.Handler {
-			return kafkaconsumer.NewProcessor(spec, dlq, policy, log)
-		},
-	}
-}
-
 type App struct {
 	Router               http.Handler
 	ReapHeldReservations *usecase.ReapHeldReservationsUseCase
 
-	cfg    config.Config
-	log    logger.Logger
-	routes []route
+	cfg          config.Config
+	log          logger.Logger
+	reserveSeat  *usecase.ReserveSeatUseCase
+	finalizeSeat *usecase.FinalizeSeatUseCase
+	releaseSeat  *usecase.ReleaseSeatUseCase
 }
 
 func New(pool *pgxpool.Pool, cfg config.Config, log logger.Logger) *App {
@@ -67,35 +49,32 @@ func New(pool *pgxpool.Pool, cfg config.Config, log logger.Logger) *App {
 		httpadapter.Metrics(),
 	)
 
-	topic, suffix := cfg.KafkaBookingEventsTopic, cfg.KafkaGroupSuffix
 	return &App{
 		Router:               router,
 		ReapHeldReservations: reapHeldReservations,
 		cfg:                  cfg,
 		log:                  log,
-		routes: []route{
-			bind(topic, suffix, kafkaconsumer.BookingRequestedSpec(reserveSeat)),
-			bind(topic, suffix, kafkaconsumer.BookingConfirmedSpec(finalizeSeat)),
-			bind(topic, suffix, kafkaconsumer.BookingCancelledSpec(releaseSeat)),
-		},
+		reserveSeat:          reserveSeat,
+		finalizeSeat:         finalizeSeat,
+		releaseSeat:          releaseSeat,
 	}
 }
 
 func (a *App) NewConsumers() []Consumer {
-	consumers := make([]Consumer, 0, len(a.routes))
-	for _, r := range a.routes {
-		consumers = append(consumers, r.consumer(kafkaconsumer.Config{
-			Brokers:     a.cfg.KafkaBrokers,
-			MaxAttempts: a.cfg.KafkaConsumerMaxAttempts,
-		}, a.log))
+	kafkaCfg := kafkaconsumer.Config{
+		Brokers:     a.cfg.KafkaBrokers,
+		Topic:       a.cfg.KafkaBookingEventsTopic,
+		MaxAttempts: a.cfg.KafkaConsumerMaxAttempts,
 	}
-	return consumers
+	suffix := a.cfg.KafkaGroupSuffix
+	return []Consumer{
+		kafkaconsumer.NewConsumer(kafkaCfg, grouped(kafkaconsumer.BookingRequestedSpec(a.reserveSeat), suffix), a.log),
+		kafkaconsumer.NewConsumer(kafkaCfg, grouped(kafkaconsumer.BookingConfirmedSpec(a.finalizeSeat), suffix), a.log),
+		kafkaconsumer.NewConsumer(kafkaCfg, grouped(kafkaconsumer.BookingCancelledSpec(a.releaseSeat), suffix), a.log),
+	}
 }
 
-func (a *App) NewInbox(dlq kafkaconsumer.DeadLetters, policy kafkaconsumer.RetryPolicy) kafkaconsumer.Inbox {
-	inbox := make(kafkaconsumer.Inbox, 0, len(a.routes))
-	for _, r := range a.routes {
-		inbox = append(inbox, kafkaconsumer.Route{Topic: r.topic, Handler: r.handler(dlq, policy, a.log)})
-	}
-	return inbox
+func grouped[E any](spec kafkaconsumer.EventSpec[E], suffix string) kafkaconsumer.EventSpec[E] {
+	spec.Group += suffix
+	return spec
 }

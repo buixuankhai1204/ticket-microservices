@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -21,27 +22,35 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/tests/common"
 )
 
-var binary string
+var (
+	binaryOnce sync.Once
+	binaryPath string
+	binaryErr  error
+)
 
-func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "event-service-bin")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+func binary(t *testing.T) string {
+	t.Helper()
+	binaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "event-service-bin")
+		if err != nil {
+			binaryErr = err
+			return
+		}
+		common.OnShutdown(func(context.Context) { _ = os.RemoveAll(dir) })
+		binaryPath = filepath.Join(dir, "event-service")
+		build := exec.Command("go", "build", "-o", binaryPath, "./cmd")
+		build.Dir = ".."
+		if out, err := build.CombinedOutput(); err != nil {
+			binaryErr = fmt.Errorf("go build ./cmd: %w\n%s", err, out)
+		}
+	})
+	if binaryErr != nil {
+		t.Fatalf("build event-service: %v", binaryErr)
 	}
-	binary = filepath.Join(dir, "event-service")
-	build := exec.Command("go", "build", "-o", binary, "./cmd")
-	build.Dir = ".."
-	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build event-service: %v\n%s", err, out)
-		os.Exit(1)
-	}
-	code := testsupport.Run(m)
-	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return binaryPath
 }
 
 type process struct {
@@ -70,19 +79,19 @@ func baseEnv() []string {
 func start(t *testing.T, extraEnv ...string) *process {
 	t.Helper()
 	port := freePort(t)
-	topic := testsupport.NewTopic(t, "oop-booking-events")
-	dbURL := testsupport.EmptyDatabaseURL(t)
+	topic := common.NewTopic(t, "oop-booking-events")
+	dbURL := common.EmptyDatabaseURL(t)
 	env := append(baseEnv(),
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL="+dbURL,
-		"KAFKA_BROKERS="+strings.Join(testsupport.Brokers(t), ","),
+		"KAFKA_BROKERS="+strings.Join(common.Brokers(t), ","),
 		"KAFKA_BOOKING_EVENTS_TOPIC="+topic,
 		"KAFKA_GROUP_SUFFIX=-"+uuid.NewString()[:8],
 		"KAFKA_CONSUMER_MAX_ATTEMPTS=3",
 	)
 	env = append(env, extraEnv...)
 	p := &process{base: fmt.Sprintf("http://127.0.0.1:%d", port), out: &bytes.Buffer{}, done: make(chan error, 1), dbURL: dbURL, topic: topic}
-	p.cmd = exec.Command(binary)
+	p.cmd = exec.Command(binary(t))
 	p.cmd.Env = env
 	p.cmd.Stdout = p.out
 	p.cmd.Stderr = p.out
@@ -148,12 +157,12 @@ func (p *process) do(method, path string, body any) (int, []byte) {
 	return res.StatusCode, out
 }
 
-type seat struct {
+type seatState struct {
 	ID     uuid.UUID `json:"id"`
 	Status string    `json:"status"`
 }
 
-func (p *process) createEvent(t *testing.T, seats int) (uuid.UUID, []seat) {
+func (p *process) createEvent(t *testing.T, seats int) (uuid.UUID, []seatState) {
 	t.Helper()
 	status, body := p.do(http.MethodPost, "/api/v1/events", map[string]any{
 		"name": "Fest", "venue": "Park", "starts_at": "2030-06-01T19:00:00Z", "ends_at": "2030-06-01T22:00:00Z",
@@ -173,14 +182,14 @@ func (p *process) createEvent(t *testing.T, seats int) (uuid.UUID, []seat) {
 	return created.Event.ID, p.seats(t, created.Event.ID)
 }
 
-func (p *process) seats(t *testing.T, eventID uuid.UUID) []seat {
+func (p *process) seats(t *testing.T, eventID uuid.UUID) []seatState {
 	t.Helper()
 	status, body := p.do(http.MethodGet, "/api/v1/events/"+eventID.String()+"/seats?limit=100", nil)
 	if status != http.StatusOK {
 		t.Fatalf("list seats = %d %s", status, body)
 	}
 	var page struct {
-		Data []seat `json:"data"`
+		Data []seatState `json:"data"`
 	}
 	if err := json.Unmarshal(body, &page); err != nil {
 		t.Fatal(err)
@@ -190,7 +199,7 @@ func (p *process) seats(t *testing.T, eventID uuid.UUID) []seat {
 
 func (p *process) waitSeat(t *testing.T, eventID, seatID uuid.UUID, want string) {
 	t.Helper()
-	testsupport.Eventually(t, 60*time.Second, "seat "+seatID.String()+" to be "+want, func() bool {
+	common.Eventually(t, 60*time.Second, "seat "+seatID.String()+" to be "+want, func() bool {
 		for _, s := range p.seats(t, eventID) {
 			if s.ID == seatID {
 				return s.Status == want
@@ -216,13 +225,13 @@ func bookingJSON(bookingID, eventID uuid.UUID, seatIDs ...uuid.UUID) []byte {
 func TestTheBinaryReservesAndBooksSeatsFromKafkaAndAnnouncesTheOutcome(t *testing.T) {
 	t.Parallel()
 	p := start(t)
-	tap := testsupport.TapOutbox(t, p.pool(t))
+	tap := common.TapOutbox(t, p.pool(t))
 	eventID, seats := p.createEvent(t, 2)
 	bookingID := uuid.New()
 
-	testsupport.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), testsupport.EventType("BookingRequested"))
+	common.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), common.EventType("BookingRequested"))
 	p.waitSeat(t, eventID, seats[0].ID, "reserved")
-	testsupport.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), testsupport.EventType("BookingConfirmed"))
+	common.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), common.EventType("BookingConfirmed"))
 	p.waitSeat(t, eventID, seats[0].ID, "booked")
 
 	if types := tap.Types(); len(types) != 1 || types[0] != "SeatReserved" {
@@ -233,15 +242,15 @@ func TestTheBinaryReservesAndBooksSeatsFromKafkaAndAnnouncesTheOutcome(t *testin
 func TestTheBinaryAnswersAConflictingRequestWithAFailureEvent(t *testing.T) {
 	t.Parallel()
 	p := start(t)
-	tap := testsupport.TapOutbox(t, p.pool(t))
+	tap := common.TapOutbox(t, p.pool(t))
 	eventID, seats := p.createEvent(t, 1)
 	first, second := uuid.New(), uuid.New()
 
-	testsupport.Produce(t, p.topic, first.String(), bookingJSON(first, eventID, seats[0].ID), testsupport.EventType("BookingRequested"))
+	common.Produce(t, p.topic, first.String(), bookingJSON(first, eventID, seats[0].ID), common.EventType("BookingRequested"))
 	p.waitSeat(t, eventID, seats[0].ID, "reserved")
-	testsupport.Produce(t, p.topic, second.String(), bookingJSON(second, eventID, seats[0].ID), testsupport.EventType("BookingRequested"))
+	common.Produce(t, p.topic, second.String(), bookingJSON(second, eventID, seats[0].ID), common.EventType("BookingRequested"))
 
-	testsupport.Eventually(t, 60*time.Second, "the conflicting request to be answered", func() bool {
+	common.Eventually(t, 60*time.Second, "the conflicting request to be answered", func() bool {
 		return len(tap.Events()) == 2
 	})
 	failed := tap.Events()[1]
@@ -256,12 +265,12 @@ func TestTheBinaryDeadLettersAPoisonMessageAndKeepsServing(t *testing.T) {
 	eventID, seats := p.createEvent(t, 1)
 	bookingID := uuid.New()
 
-	testsupport.Produce(t, p.topic, "poison", []byte("{{ nope"), testsupport.EventType("BookingRequested"))
-	testsupport.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), testsupport.EventType("BookingRequested"))
+	common.Produce(t, p.topic, "poison", []byte("{{ nope"), common.EventType("BookingRequested"))
+	common.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), common.EventType("BookingRequested"))
 
 	p.waitSeat(t, eventID, seats[0].ID, "reserved")
-	dead := testsupport.ReadAll(t, p.topic+".dlq")
-	if len(dead) != 1 || string(dead[0].Key) != "poison" || !strings.HasPrefix(testsupport.Header(dead[0], "x-dlq-reason"), "parse:") {
+	dead := common.ReadAll(t, p.topic+".dlq")
+	if len(dead) != 1 || string(dead[0].Key) != "poison" || !strings.HasPrefix(common.Header(dead[0], "x-dlq-reason"), "parse:") {
 		t.Fatalf("dlq = %v, want exactly the poison message with a parse: reason", dead)
 	}
 }
@@ -271,7 +280,7 @@ func TestTheBinaryRunsTheReaperAndReleasesAHoldThatOutlivedTheTimeout(t *testing
 	p := start(t, "SEAT_REAPER_INTERVAL=1", "SEAT_HOLD_TIMEOUT=60")
 	eventID, seats := p.createEvent(t, 1)
 	bookingID := uuid.New()
-	testsupport.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), testsupport.EventType("BookingRequested"))
+	common.Produce(t, p.topic, bookingID.String(), bookingJSON(bookingID, eventID, seats[0].ID), common.EventType("BookingRequested"))
 	p.waitSeat(t, eventID, seats[0].ID, "reserved")
 
 	if _, err := p.pool(t).Exec(context.Background(),
@@ -328,7 +337,7 @@ func TestTheBinaryRefusesToStartWithoutItsRequiredConfiguration(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(binary)
+			cmd := exec.Command(binary(t))
 			cmd.Env = append(baseEnv(), tc.env...)
 			done := make(chan struct{})
 			var out []byte

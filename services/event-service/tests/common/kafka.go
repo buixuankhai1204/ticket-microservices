@@ -1,4 +1,4 @@
-package testsupport
+package common
 
 import (
 	"context"
@@ -35,7 +35,7 @@ func Brokers(t testing.TB) []string {
 			kafkaErr = err
 			return
 		}
-		onShutdown(func(ctx context.Context) { _ = container.Terminate(ctx) })
+		OnShutdown(func(ctx context.Context) { _ = container.Terminate(ctx) })
 		kafkaBrokers, kafkaErr = container.Brokers(ctx)
 	})
 	if kafkaErr != nil {

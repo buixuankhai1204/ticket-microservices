@@ -1,75 +1,56 @@
 //go:build component
 
-package app_test
+package tests
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	segkafka "github.com/segmentio/kafka-go"
 
 	kafka "github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/messaging/kafka"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/adapter/repository/postgres"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/app"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/config"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/testsupport"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/usecase"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/tests/common"
 )
 
-func TestMain(m *testing.M) {
-	os.Exit(testsupport.Run(m))
-}
-
-const bookingTopic = "booking.events"
-
-type stubDeadLetters struct {
-	mu     sync.Mutex
-	parked []string
-}
-
-func (s *stubDeadLetters) Park(_ context.Context, _ segkafka.Message, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.parked = append(s.parked, reason)
-	return nil
-}
-
-func (s *stubDeadLetters) reasons() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.parked...)
-}
-
 type service struct {
-	t    *testing.T
-	url  string
-	app  *app.App
-	pool *pgxpool.Pool
-	tap  *testsupport.OutboxTap
-	dead *stubDeadLetters
-}
-
-func quick(attempts int) kafka.RetryPolicy {
-	return kafka.RetryPolicy{MaxAttempts: attempts, FirstBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond}
+	t         *testing.T
+	url       string
+	app       *app.App
+	pool      *pgxpool.Pool
+	tap       *common.OutboxTap
+	requested *usecase.ReserveSeatUseCase
+	confirmed *usecase.FinalizeSeatUseCase
+	cancelled *usecase.ReleaseSeatUseCase
 }
 
 func newService(t *testing.T) *service {
 	t.Helper()
-	pool := testsupport.NewDatabase(t)
-	cfg := config.Config{KafkaBookingEventsTopic: bookingTopic, SeatHoldTimeoutSecs: 3600}
-	application := app.New(pool, cfg, testsupport.SilentLogger{})
+	pool := common.NewDatabase(t)
+	cfg := config.Config{KafkaBookingEventsTopic: "booking.events", SeatHoldTimeoutSecs: 3600}
+	application := app.New(pool, cfg, common.SilentLogger{})
 	server := httptest.NewServer(application.Router)
 	t.Cleanup(server.Close)
-	return &service{t: t, url: server.URL, app: application, pool: pool, tap: testsupport.TapOutbox(t, pool), dead: &stubDeadLetters{}}
+	repo := postgres.New()
+	return &service{
+		t: t, url: server.URL, app: application, pool: pool, tap: common.TapOutbox(t, pool),
+		requested: usecase.NewReserveSeatUseCase(pool, repo),
+		confirmed: usecase.NewFinalizeSeatUseCase(pool, repo),
+		cancelled: usecase.NewReleaseSeatUseCase(pool, repo),
+	}
 }
 
 func (s *service) call(method, path string, body any, headers ...string) (int, http.Header, []byte) {
@@ -171,32 +152,47 @@ func (s *service) statusOf(eventID, seatID uuid.UUID) string {
 	return ""
 }
 
-func (s *service) inbox(policy kafka.RetryPolicy) kafka.Inbox {
-	return s.app.NewInbox(s.dead, policy)
-}
-
-func (s *service) deliverWith(inbox kafka.Inbox, eventType string, payload any) kafka.Outcome {
+func (s *service) deliver(eventType string, payload any) (alreadyProcessed bool, err error) {
 	s.t.Helper()
 	raw, ok := payload.([]byte)
 	if !ok {
-		var err error
-		if raw, err = json.Marshal(payload); err != nil {
-			s.t.Fatal(err)
+		var marshalErr error
+		if raw, marshalErr = json.Marshal(payload); marshalErr != nil {
+			s.t.Fatal(marshalErr)
 		}
 	}
-	outcome, err := inbox.Deliver(context.Background(), segkafka.Message{
-		Topic: bookingTopic, Key: []byte(uuid.NewString()), Value: raw,
-		Headers: []segkafka.Header{testsupport.EventType(eventType)},
-	})
+	ctx := context.Background()
+	switch eventType {
+	case "BookingRequested":
+		ev, err := kafka.BookingRequestedSpec(nil).Parse(raw)
+		if err != nil {
+			return false, err
+		}
+		return s.requested.Execute(ctx, ev)
+	case "BookingConfirmed":
+		ev, err := kafka.BookingConfirmedSpec(nil).Parse(raw)
+		if err != nil {
+			return false, err
+		}
+		return s.confirmed.Execute(ctx, ev)
+	case "BookingCancelled":
+		ev, err := kafka.BookingCancelledSpec(nil).Parse(raw)
+		if err != nil {
+			return false, err
+		}
+		return s.cancelled.Execute(ctx, ev)
+	}
+	s.t.Fatalf("unknown event type %s", eventType)
+	return false, nil
+}
+
+func (s *service) mustDeliver(eventType string, payload any) bool {
+	s.t.Helper()
+	already, err := s.deliver(eventType, payload)
 	if err != nil {
 		s.t.Fatalf("deliver %s: %v", eventType, err)
 	}
-	return outcome
-}
-
-func (s *service) deliver(eventType string, payload any) kafka.Outcome {
-	s.t.Helper()
-	return s.deliverWith(s.inbox(quick(1)), eventType, payload)
+	return already
 }
 
 type booking struct {
@@ -351,11 +347,8 @@ func TestABookingRequestHoldsItsSeatsAndAnnouncesSeatReserved(t *testing.T) {
 	seats := s.seats(eventID)
 	req := newBooking(eventID, seats[0].ID, seats[1].ID)
 
-	outcome := s.deliver("BookingRequested", req.payload())
+	s.mustDeliver("BookingRequested", req.payload())
 
-	if outcome != kafka.Handled {
-		t.Fatalf("outcome = %v, want handled", outcome)
-	}
 	if s.statusOf(eventID, seats[0].ID) != "reserved" || s.statusOf(eventID, seats[1].ID) != "reserved" || s.statusOf(eventID, seats[2].ID) != "available" {
 		t.Fatalf("seat statuses are wrong after the reservation")
 	}
@@ -376,8 +369,8 @@ func TestASeatCannotBeBookedTwiceAndTheLoserIsToldWhyWithoutHoldingAnythingElse(
 	winner := newBooking(eventID, seats[0].ID)
 	loser := newBooking(eventID, seats[0].ID, seats[1].ID)
 
-	s.deliver("BookingRequested", winner.payload())
-	s.deliver("BookingRequested", loser.payload())
+	s.mustDeliver("BookingRequested", winner.payload())
+	s.mustDeliver("BookingRequested", loser.payload())
 
 	published := s.tap.Events()
 	if len(published) != 2 || published[1].EventType != "SeatReservationFailed" || published[1].AggregateID != loser.bookingID || published[1].Payload["reason"] != "seat_unavailable" {
@@ -387,7 +380,7 @@ func TestASeatCannotBeBookedTwiceAndTheLoserIsToldWhyWithoutHoldingAnythingElse(
 		t.Fatalf("seat %s = %s: a booking that conflicted on another seat must hold nothing", seats[1].ID, got)
 	}
 
-	s.deliver("BookingCancelled", loser.withNewEventID().payload())
+	s.mustDeliver("BookingCancelled", loser.withNewEventID().payload())
 	if got := s.statusOf(eventID, seats[0].ID); got != "reserved" {
 		t.Fatalf("seat = %s: cancelling a booking that never held the seat must not release it", got)
 	}
@@ -400,8 +393,8 @@ func TestRequestsThatCannotBeMatchedToRealSeatsAreAnsweredWithTheRightReason(t *
 	otherEvent := s.createEvent(1, 1)
 	foreignSeat := s.seats(otherEvent)[0].ID
 
-	s.deliver("BookingRequested", newBooking(uuid.New(), uuid.New()).payload())
-	s.deliver("BookingRequested", newBooking(eventID, foreignSeat).payload())
+	s.mustDeliver("BookingRequested", newBooking(uuid.New(), uuid.New()).payload())
+	s.mustDeliver("BookingRequested", newBooking(eventID, foreignSeat).payload())
 
 	var reasons []any
 	for _, p := range s.tap.Events() {
@@ -422,17 +415,17 @@ func TestACancellationReleasesTheSeatsAndAnOlderRequestRedeliveredAfterwardsIsIg
 	seats := s.seats(eventID)
 	req := newBooking(eventID, seats[0].ID, seats[1].ID)
 
-	s.deliver("BookingRequested", req.payload())
-	s.deliver("BookingCancelled", req.withNewEventID().payload())
+	s.mustDeliver("BookingRequested", req.payload())
+	s.mustDeliver("BookingCancelled", req.withNewEventID().payload())
 	if got := s.statusOf(eventID, seats[0].ID); got != "available" {
 		t.Fatalf("seat = %s after the cancellation, want available", got)
 	}
 	publishedBefore := len(s.tap.Events())
 
-	outcome := s.deliver("BookingRequested", req.payload())
+	already := s.mustDeliver("BookingRequested", req.payload())
 
-	if outcome != kafka.Handled {
-		t.Fatalf("outcome = %v, want handled", outcome)
+	if !already {
+		t.Fatalf("a redelivered request must be recognised as already processed")
 	}
 	if got := s.statusOf(eventID, seats[0].ID); got != "available" {
 		t.Fatalf("seat = %s: a redelivered request must not take the seat back", got)
@@ -442,105 +435,79 @@ func TestACancellationReleasesTheSeatsAndAnOlderRequestRedeliveredAfterwardsIsIg
 	}
 }
 
-func TestAPaidSeatIsFinalAndALateCancellationIsParkedInsteadOfReleasingIt(t *testing.T) {
+func TestAPaidSeatIsFinalAndALateCancellationIsRefusedInsteadOfReleasingIt(t *testing.T) {
 	t.Parallel()
 	s := newService(t)
 	eventID := s.createEvent(1, 1)
 	seatID := s.seats(eventID)[0].ID
 	paid := newBooking(eventID, seatID)
 
-	s.deliver("BookingRequested", paid.payload())
-	s.deliver("BookingConfirmed", paid.withNewEventID().payload())
+	s.mustDeliver("BookingRequested", paid.payload())
+	s.mustDeliver("BookingConfirmed", paid.withNewEventID().payload())
 	if got := s.statusOf(eventID, seatID); got != "booked" {
 		t.Fatalf("seat = %s after confirmation, want booked", got)
 	}
 
-	outcome := s.deliver("BookingCancelled", paid.withNewEventID().payload())
+	_, err := s.deliver("BookingCancelled", paid.withNewEventID().payload())
 
-	if outcome != kafka.Parked {
-		t.Fatalf("outcome = %v, want parked", outcome)
-	}
-	if reasons := s.dead.reasons(); len(reasons) != 1 || !strings.HasPrefix(reasons[0], "permanent:") {
-		t.Fatalf("reasons = %v, want one permanent rejection", reasons)
+	if !errors.Is(err, domain.ErrReservationNotHeld) {
+		t.Fatalf("err = %v, want ErrReservationNotHeld: a permanent rejection the consumer dead-letters", err)
 	}
 	if got := s.statusOf(eventID, seatID); got != "booked" {
 		t.Fatalf("seat = %s: a paid seat must survive a late cancellation", got)
 	}
 }
 
-func TestAConfirmationThatArrivesBeforeItsReservationIsRetriedUntilItFits(t *testing.T) {
+func TestAConfirmationThatArrivesBeforeItsReservationFailsCleanlyAndSucceedsWhenRedelivered(t *testing.T) {
 	t.Parallel()
 	s := newService(t)
 	eventID := s.createEvent(1, 1)
 	seatID := s.seats(eventID)[0].ID
 	req := newBooking(eventID, seatID)
+	confirmation := req.withNewEventID()
 
-	patient := s.inbox(kafka.RetryPolicy{MaxAttempts: 400, FirstBackoff: 5 * time.Millisecond, MaxBackoff: 10 * time.Millisecond})
-	early := make(chan kafka.Outcome, 1)
-	go func() { early <- s.deliverWith(patient, "BookingConfirmed", req.withNewEventID().payload()) }()
-	time.Sleep(50 * time.Millisecond)
+	_, err := s.deliver("BookingConfirmed", confirmation.payload())
+
+	var repoErr *domain.RepositoryError
+	if !errors.As(err, &repoErr) {
+		t.Fatalf("err = %v, want a RepositoryError so the consumer retries", err)
+	}
 	if got := s.statusOf(eventID, seatID); got != "available" {
-		t.Fatalf("seat = %s before any reservation, want available", got)
+		t.Fatalf("seat = %s after an early confirmation, want untouched", got)
 	}
 
-	s.deliver("BookingRequested", req.payload())
+	s.mustDeliver("BookingRequested", req.payload())
+	already := s.mustDeliver("BookingConfirmed", confirmation.payload())
 
-	select {
-	case outcome := <-early:
-		if outcome != kafka.Handled {
-			t.Fatalf("outcome = %v, want handled once the reservation landed", outcome)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the early confirmation never completed")
+	if already {
+		t.Fatalf("the failed attempt must not have been remembered as processed")
 	}
 	if got := s.statusOf(eventID, seatID); got != "booked" {
-		t.Fatalf("seat = %s, want booked", got)
-	}
-	if reasons := s.dead.reasons(); len(reasons) != 0 {
-		t.Fatalf("nothing should be dead-lettered: %v", reasons)
+		t.Fatalf("seat = %s, want booked once the confirmation is redelivered", got)
 	}
 }
 
-func TestAConfirmationForABookingNobodyReservedIsParkedOnceRetriesRunOut(t *testing.T) {
-	t.Parallel()
-	s := newService(t)
-	eventID := s.createEvent(1, 1)
-
-	outcome := s.deliverWith(s.inbox(quick(3)), "BookingConfirmed", newBooking(eventID, uuid.New()).payload())
-
-	if outcome != kafka.Parked {
-		t.Fatalf("outcome = %v, want parked", outcome)
-	}
-	if reasons := s.dead.reasons(); len(reasons) != 1 || !strings.HasPrefix(reasons[0], "max-retries after 3 attempts") {
-		t.Fatalf("reasons = %v", reasons)
-	}
-}
-
-func TestMessagesTheServiceCannotUseNeverTouchSeats(t *testing.T) {
+func TestMessagesTheServiceCannotParseNeverTouchSeats(t *testing.T) {
 	t.Parallel()
 	s := newService(t)
 	eventID := s.createEvent(1, 1)
 	seatID := s.seats(eventID)[0].ID
-	noSeats := newBooking(eventID)
 
 	tests := []struct {
-		name        string
-		eventType   string
-		payload     any
-		wantOutcome kafka.Outcome
+		name    string
+		payload any
 	}{
-		{"event type nobody here handles", "BookingExpired", newBooking(eventID, seatID).payload(), kafka.Ignored},
-		{"payload that is not json", "BookingRequested", []byte("{{ nope"), kafka.Parked},
-		{"request without any seat", "BookingRequested", noSeats.payload(), kafka.Parked},
-		{"seat id that is not a uuid", "BookingRequested", map[string]any{
+		{"payload that is not json", []byte("{{ nope")},
+		{"request without any seat", newBooking(eventID).payload()},
+		{"seat id that is not a uuid", map[string]any{
 			"event_id": uuid.NewString(), "booking_id": uuid.NewString(), "user_id": uuid.NewString(),
 			"ticketed_event_id": eventID.String(), "seat_ids": []string{"seat-1"}, "requested_at": time.Now().Format(time.RFC3339),
-		}, kafka.Parked},
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if outcome := s.deliver(tc.eventType, tc.payload); outcome != tc.wantOutcome {
-				t.Fatalf("outcome = %v, want %v", outcome, tc.wantOutcome)
+			if _, err := s.deliver("BookingRequested", tc.payload); err == nil {
+				t.Fatalf("the message was accepted")
 			}
 		})
 	}
@@ -557,8 +524,8 @@ func TestTheReaperReleasesHoldsThatOutlivedTheTimeoutAndLeavesFreshOnesAlone(t *
 	seats := s.seats(eventID)
 	stale := newBooking(eventID, seats[0].ID)
 	fresh := newBooking(eventID, seats[1].ID)
-	s.deliver("BookingRequested", stale.payload())
-	s.deliver("BookingRequested", fresh.payload())
+	s.mustDeliver("BookingRequested", stale.payload())
+	s.mustDeliver("BookingRequested", fresh.payload())
 	if _, err := s.pool.Exec(context.Background(),
 		`UPDATE seat_reservations SET created_at = now() - interval '2 hours' WHERE booking_id = $1`, stale.bookingID); err != nil {
 		t.Fatal(err)
@@ -599,20 +566,18 @@ func TestEveryResponseCarriesARequestIdAndTheServiceReportsItselfHealthy(t *test
 	}
 }
 
-func TestWhenTheDatabaseIsGoneRequestsFailWithA500EventsAreRetriedThenParkedAndReadinessFails(t *testing.T) {
+func TestWhenTheDatabaseIsGoneRequestsFailWithA500EventsFailRetryablyAndReadinessFails(t *testing.T) {
 	t.Parallel()
 	s := newService(t)
 	eventID := s.createEvent(1, 1)
 	seatID := s.seats(eventID)[0].ID
 	s.pool.Close()
 
-	outcome := s.deliverWith(s.inbox(quick(3)), "BookingRequested", newBooking(eventID, seatID).payload())
+	_, err := s.deliver("BookingRequested", newBooking(eventID, seatID).payload())
 
-	if outcome != kafka.Parked {
-		t.Fatalf("outcome = %v, want parked after the retries ran out", outcome)
-	}
-	if reasons := s.dead.reasons(); len(reasons) != 1 || !strings.HasPrefix(reasons[0], "max-retries after 3 attempts") {
-		t.Fatalf("reasons = %v", reasons)
+	var repoErr *domain.RepositoryError
+	if !errors.As(err, &repoErr) {
+		t.Fatalf("err = %v, want a RepositoryError so the consumer retries", err)
 	}
 	if status, _, _ := s.call(http.MethodGet, "/readyz", nil); status != http.StatusServiceUnavailable {
 		t.Fatalf("/readyz = %d, want 503", status)

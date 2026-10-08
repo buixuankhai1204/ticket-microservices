@@ -1,4 +1,4 @@
-package testsupport
+package common
 
 import (
 	"context"
@@ -39,7 +39,7 @@ func adminURL(t testing.TB) string {
 			pgErr = err
 			return
 		}
-		onShutdown(func(ctx context.Context) { _ = container.Terminate(ctx) })
+		OnShutdown(func(ctx context.Context) { _ = container.Terminate(ctx) })
 		pgURL, pgErr = container.ConnectionString(ctx, "sslmode=disable")
 	})
 	if pgErr != nil {
