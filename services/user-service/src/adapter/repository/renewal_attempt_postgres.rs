@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::domain::{RenewalAttempt, RenewalAttemptStatus, UserError};
-use crate::platform::port::RenewalAttemptRepository;
+use crate::platform::port::{RenewalAttemptRepository, Tx};
 
 #[derive(Default)]
 pub struct PostgresRenewalAttemptRepository;
@@ -67,10 +66,11 @@ impl TryFrom<RenewalAttemptRow> for RenewalAttempt {
 impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
     async fn find_for_period_for_update(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         subscription_id: Uuid,
         period_end: NaiveDate,
     ) -> Result<Option<RenewalAttempt>, UserError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, RenewalAttemptRow>(&format!(
             "SELECT {RENEWAL_COLS} FROM renewal_attempts \
              WHERE subscription_id = $1 AND period_end = $2 FOR UPDATE"
@@ -84,11 +84,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         row.map(RenewalAttempt::try_from).transpose()
     }
 
-    async fn create(
-        &self,
-        conn: &mut PgConnection,
-        attempt: &RenewalAttempt,
-    ) -> Result<(), UserError> {
+    async fn create(&self, tx: &mut Tx, attempt: &RenewalAttempt) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "INSERT INTO renewal_attempts \
              (id, subscription_id, period_end, idempotency_key, status, attempt_count, \
@@ -117,9 +114,10 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
 
     async fn update_schedule(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         attempt: &RenewalAttempt,
     ) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "UPDATE renewal_attempts \
              SET status = $2, next_attempt_at = $3, updated_at = $4 \
@@ -136,10 +134,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         Ok(())
     }
 
-    async fn claim_one_due(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<Option<RenewalAttempt>, UserError> {
+    async fn claim_one_due(&self, tx: &mut Tx) -> Result<Option<RenewalAttempt>, UserError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, RenewalAttemptRow>(&format!(
             "SELECT {RENEWAL_COLS} FROM renewal_attempts r \
              WHERE r.status IN {CLAIMABLE_STATUSES} \
@@ -159,11 +155,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         row.map(RenewalAttempt::try_from).transpose()
     }
 
-    async fn mark_charging(
-        &self,
-        conn: &mut PgConnection,
-        attempt: &RenewalAttempt,
-    ) -> Result<(), UserError> {
+    async fn mark_charging(&self, tx: &mut Tx, attempt: &RenewalAttempt) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "UPDATE renewal_attempts \
              SET status = $2, attempt_count = $3, updated_at = $4 \
@@ -182,9 +175,10 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
 
     async fn find_by_id_for_update(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         id: Uuid,
     ) -> Result<Option<RenewalAttempt>, UserError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, RenewalAttemptRow>(&format!(
             "SELECT {RENEWAL_COLS} FROM renewal_attempts WHERE id = $1 FOR UPDATE"
         ))
@@ -196,11 +190,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         row.map(RenewalAttempt::try_from).transpose()
     }
 
-    async fn settle(
-        &self,
-        conn: &mut PgConnection,
-        attempt: &RenewalAttempt,
-    ) -> Result<(), UserError> {
+    async fn settle(&self, tx: &mut Tx, attempt: &RenewalAttempt) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "UPDATE renewal_attempts SET \
                status = $2, attempt_count = $3, dunning_attempt_count = $4, \
@@ -224,9 +215,10 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
 
     async fn reap_stale_charging(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         stale_after: Duration,
     ) -> Result<u64, UserError> {
+        let conn = tx.conn();
         let result = sqlx::query(
             "UPDATE renewal_attempts \
              SET status = 'failed_retryable', next_attempt_at = now(), \
@@ -242,11 +234,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         Ok(result.rows_affected())
     }
 
-    async fn dunning_email_recorded(
-        &self,
-        conn: &mut PgConnection,
-        event_id: Uuid,
-    ) -> Result<bool, UserError> {
+    async fn dunning_email_recorded(&self, tx: &mut Tx, event_id: Uuid) -> Result<bool, UserError> {
+        let conn = tx.conn();
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sent_emails WHERE event_id = $1)")
                 .bind(event_id)
@@ -259,11 +248,12 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
 
     async fn record_dunning_email(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         event_id: Uuid,
         user_id: Uuid,
         template: &str,
     ) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "INSERT INTO sent_emails (id, event_id, user_id, template) \
              VALUES ($1, $2, $3, $4) ON CONFLICT (event_id) DO NOTHING",
@@ -279,11 +269,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         Ok(())
     }
 
-    async fn try_advisory_lock(
-        &self,
-        conn: &mut PgConnection,
-        key: &str,
-    ) -> Result<bool, UserError> {
+    async fn try_advisory_lock(&self, tx: &mut Tx, key: &str) -> Result<bool, UserError> {
+        let conn = tx.conn();
         sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1))")
             .bind(key)
             .fetch_one(&mut *conn)
@@ -291,11 +278,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
             .map_err(repo_err)
     }
 
-    async fn release_advisory_lock(
-        &self,
-        conn: &mut PgConnection,
-        key: &str,
-    ) -> Result<(), UserError> {
+    async fn release_advisory_lock(&self, tx: &mut Tx, key: &str) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
             .bind(key)
             .execute(&mut *conn)
@@ -305,7 +289,8 @@ impl RenewalAttemptRepository for PostgresRenewalAttemptRepository {
         Ok(())
     }
 
-    async fn enqueue_due(&self, conn: &mut PgConnection) -> Result<u64, UserError> {
+    async fn enqueue_due(&self, tx: &mut Tx) -> Result<u64, UserError> {
+        let conn = tx.conn();
         let result = sqlx::query(
             "INSERT INTO renewal_attempts (subscription_id, period_end, idempotency_key) \
              SELECT id, current_period_end, \

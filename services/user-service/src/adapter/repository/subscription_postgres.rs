@@ -1,12 +1,11 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
-use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::domain::{
     BillingInterval, DomainEvent, Pagination, Subscription, SubscriptionStatus, UserError,
 };
-use crate::platform::port::SubscriptionRepository;
+use crate::platform::port::{SubscriptionRepository, Tx};
 
 #[derive(Default)]
 pub struct PostgresSubscriptionRepository;
@@ -61,11 +60,8 @@ impl TryFrom<SubscriptionRow> for Subscription {
 
 #[async_trait]
 impl SubscriptionRepository for PostgresSubscriptionRepository {
-    async fn create(
-        &self,
-        conn: &mut PgConnection,
-        subscription: &Subscription,
-    ) -> Result<(), UserError> {
+    async fn create(&self, tx: &mut Tx, subscription: &Subscription) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "INSERT INTO subscriptions \
              (id, user_id, plan_id, status, current_period_end, billing_interval, \
@@ -92,10 +88,11 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
 
     async fn find_by_id_for_user(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         id: Uuid,
         user_id: Uuid,
     ) -> Result<Subscription, UserError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, SubscriptionRow>(&format!(
             "SELECT {SUBSCRIPTION_COLS} FROM subscriptions WHERE id = $1 AND user_id = $2"
         ))
@@ -110,10 +107,11 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
 
     async fn list_for_user(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         user_id: Uuid,
         pagination: Pagination,
     ) -> Result<(Vec<Subscription>, i64), UserError> {
+        let conn = tx.conn();
         let total: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM subscriptions WHERE user_id = $1")
                 .bind(user_id)
@@ -140,11 +138,8 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
         Ok((subscriptions, total))
     }
 
-    async fn find_by_id(
-        &self,
-        conn: &mut PgConnection,
-        id: Uuid,
-    ) -> Result<Subscription, UserError> {
+    async fn find_by_id(&self, tx: &mut Tx, id: Uuid) -> Result<Subscription, UserError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, SubscriptionRow>(&format!(
             "SELECT {SUBSCRIPTION_COLS} FROM subscriptions WHERE id = $1"
         ))
@@ -158,10 +153,11 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
 
     async fn renew_period(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         id: Uuid,
         new_period_end: NaiveDate,
     ) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "UPDATE subscriptions \
              SET current_period_end = $2, status = 'active', updated_at = now() \
@@ -178,10 +174,11 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
 
     async fn set_status(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         id: Uuid,
         status: SubscriptionStatus,
     ) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query("UPDATE subscriptions SET status = $2, updated_at = now() WHERE id = $1")
             .bind(id)
             .bind(status.as_str())
@@ -192,11 +189,8 @@ impl SubscriptionRepository for PostgresSubscriptionRepository {
         Ok(())
     }
 
-    async fn write_outbox(
-        &self,
-        conn: &mut PgConnection,
-        event: &DomainEvent,
-    ) -> Result<(), UserError> {
+    async fn write_outbox(&self, tx: &mut Tx, event: &DomainEvent) -> Result<(), UserError> {
+        let conn = tx.conn();
         sqlx::query(
             "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
              VALUES ($1, $2, $3, $4, $5)",
