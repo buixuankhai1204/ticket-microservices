@@ -220,4 +220,74 @@ mod tests {
             assert_eq!(event.payload()["booking_id"], booking_id.to_string());
         }
     }
+
+    #[test]
+    fn published_payloads_keep_the_snake_case_field_names_other_services_consume() {
+        let (booking_id, user_id, ticketed_event_id) =
+            (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let seats = uuids(2);
+        let confirmed =
+            BookingConfirmed::new(booking_id, user_id, ticketed_event_id, seats.clone(), ts());
+        let cancelled = BookingCancelled::new(
+            booking_id,
+            user_id,
+            ticketed_event_id,
+            seats.clone(),
+            REASON_RESERVATION_TIMEOUT.to_string(),
+            ts(),
+        );
+        let requested = BookingRequested::new(booking_id, user_id, ticketed_event_id, seats, ts());
+
+        let keys = |event: DomainEvent| {
+            let mut keys: Vec<String> = event
+                .payload()
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            keys
+        };
+
+        assert_eq!(
+            keys(DomainEvent::BookingConfirmed(confirmed.clone())),
+            [
+                "booking_id",
+                "event_id",
+                "occurred_at",
+                "seat_ids",
+                "ticketed_event_id",
+                "user_id"
+            ]
+        );
+        assert_eq!(
+            keys(DomainEvent::BookingCancelled(cancelled)),
+            [
+                "booking_id",
+                "event_id",
+                "occurred_at",
+                "reason",
+                "seat_ids",
+                "ticketed_event_id",
+                "user_id"
+            ]
+        );
+        assert_eq!(
+            keys(DomainEvent::BookingRequested(requested)),
+            [
+                "booking_id",
+                "event_id",
+                "requested_at",
+                "seat_ids",
+                "ticketed_event_id",
+                "user_id"
+            ]
+        );
+        let again = BookingConfirmed::new(booking_id, user_id, ticketed_event_id, uuids(2), ts());
+        assert_ne!(
+            confirmed.event_id, again.event_id,
+            "every event needs its own id: it is the consumers' dedupe key"
+        );
+    }
 }

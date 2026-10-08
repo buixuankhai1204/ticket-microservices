@@ -4,7 +4,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::domain::{Booking, BookingError, BookingStatus, DomainEvent, Pagination};
-use crate::platform::port::BookingRepository;
+use crate::platform::port::{database_error, BookingRepository, Tx};
 
 #[derive(Default)]
 pub struct PostgresBookingRepository;
@@ -44,17 +44,6 @@ impl TryFrom<BookingRow> for Booking {
     }
 }
 
-fn repo_err(e: sqlx::Error) -> BookingError {
-    let sqlstate = e
-        .as_database_error()
-        .and_then(|d| d.code())
-        .map(|c| c.into_owned());
-    BookingError::Repository {
-        message: e.to_string(),
-        sqlstate,
-    }
-}
-
 impl PostgresBookingRepository {
     async fn fetch_booking(
         &self,
@@ -66,7 +55,7 @@ impl PostgresBookingRepository {
             .bind(id)
             .fetch_optional(&mut *conn)
             .await
-            .map_err(repo_err)?;
+            .map_err(database_error)?;
 
         row.map(Booking::try_from)
             .transpose()?
@@ -78,10 +67,11 @@ impl PostgresBookingRepository {
 impl BookingRepository for PostgresBookingRepository {
     async fn find_by_id_for_user(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         id: Uuid,
         user_id: Uuid,
     ) -> Result<Booking, BookingError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, BookingRow>(
             "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
              FROM bookings WHERE id = $1 AND user_id = $2",
@@ -90,18 +80,15 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(user_id)
         .fetch_optional(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         row.map(Booking::try_from)
             .transpose()?
             .ok_or(BookingError::NotFound)
     }
 
-    async fn find_for_update(
-        &self,
-        conn: &mut PgConnection,
-        id: Uuid,
-    ) -> Result<Booking, BookingError> {
+    async fn find_for_update(&self, tx: &mut Tx, id: Uuid) -> Result<Booking, BookingError> {
+        let conn = tx.conn();
         self.fetch_booking(
             conn,
             "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
@@ -113,9 +100,10 @@ impl BookingRepository for PostgresBookingRepository {
 
     async fn claim_oldest_stale_pending(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         older_than_secs: i64,
     ) -> Result<Option<Booking>, BookingError> {
+        let conn = tx.conn();
         let row = sqlx::query_as::<_, BookingRow>(
             "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
              FROM bookings \
@@ -127,12 +115,13 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(older_than_secs as f64)
         .fetch_optional(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         row.map(Booking::try_from).transpose()
     }
 
-    async fn count_oversold_seats(&self, conn: &mut PgConnection) -> Result<i64, BookingError> {
+    async fn count_oversold_seats(&self, tx: &mut Tx) -> Result<i64, BookingError> {
+        let conn = tx.conn();
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM ( \
                  SELECT 1 FROM bookings, unnest(seat_ids) AS seat_id \
@@ -143,14 +132,15 @@ impl BookingRepository for PostgresBookingRepository {
         )
         .fetch_one(&mut *conn)
         .await
-        .map_err(repo_err)
+        .map_err(database_error)
     }
 
     async fn count_stuck_pending(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         older_than_secs: i64,
     ) -> Result<i64, BookingError> {
+        let conn = tx.conn();
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM bookings \
              WHERE status = 'pending' AND created_at < now() - make_interval(secs => $1)",
@@ -158,20 +148,21 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(older_than_secs as f64)
         .fetch_one(&mut *conn)
         .await
-        .map_err(repo_err)
+        .map_err(database_error)
     }
 
     async fn list_for_user(
         &self,
-        conn: &mut PgConnection,
+        tx: &mut Tx,
         user_id: Uuid,
         pagination: Pagination,
     ) -> Result<(Vec<Booking>, i64), BookingError> {
+        let conn = tx.conn();
         let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bookings WHERE user_id = $1")
             .bind(user_id)
             .fetch_one(&mut *conn)
             .await
-            .map_err(repo_err)?;
+            .map_err(database_error)?;
 
         let rows = sqlx::query_as::<_, BookingRow>(
             "SELECT id, user_id, event_id, seat_ids, status, failure_reason, created_at, updated_at \
@@ -182,7 +173,7 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(pagination.offset)
         .fetch_all(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         let bookings = rows
             .into_iter()
@@ -192,7 +183,8 @@ impl BookingRepository for PostgresBookingRepository {
         Ok((bookings, total))
     }
 
-    async fn create(&self, conn: &mut PgConnection, booking: &Booking) -> Result<(), BookingError> {
+    async fn create(&self, tx: &mut Tx, booking: &Booking) -> Result<(), BookingError> {
+        let conn = tx.conn();
         sqlx::query(
             "INSERT INTO bookings (id, user_id, event_id, seat_ids, status, created_at, updated_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -206,16 +198,13 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(booking.updated_at)
         .execute(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         Ok(())
     }
 
-    async fn update_status(
-        &self,
-        conn: &mut PgConnection,
-        booking: &Booking,
-    ) -> Result<(), BookingError> {
+    async fn update_status(&self, tx: &mut Tx, booking: &Booking) -> Result<(), BookingError> {
+        let conn = tx.conn();
         sqlx::query(
             "UPDATE bookings SET status = $1, failure_reason = $2, updated_at = $3 WHERE id = $4",
         )
@@ -225,32 +214,26 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(booking.id)
         .execute(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         Ok(())
     }
 
-    async fn mark_processed(
-        &self,
-        conn: &mut PgConnection,
-        event_id: Uuid,
-    ) -> Result<bool, BookingError> {
+    async fn mark_processed(&self, tx: &mut Tx, event_id: Uuid) -> Result<bool, BookingError> {
+        let conn = tx.conn();
         let result = sqlx::query(
             "INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING",
         )
         .bind(event_id)
         .execute(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         Ok(result.rows_affected() == 0)
     }
 
-    async fn write_outbox(
-        &self,
-        conn: &mut PgConnection,
-        event: &DomainEvent,
-    ) -> Result<(), BookingError> {
+    async fn write_outbox(&self, tx: &mut Tx, event: &DomainEvent) -> Result<(), BookingError> {
+        let conn = tx.conn();
         sqlx::query(
             "INSERT INTO outbox_events (id, aggregate_id, aggregate_type, event_type, payload) \
              VALUES ($1, $2, $3, $4, $5)",
@@ -262,13 +245,13 @@ impl BookingRepository for PostgresBookingRepository {
         .bind(event.payload())
         .execute(&mut *conn)
         .await
-        .map_err(repo_err)?;
+        .map_err(database_error)?;
 
         sqlx::query("DELETE FROM outbox_events WHERE id = $1")
             .bind(event.event_id())
             .execute(&mut *conn)
             .await
-            .map_err(repo_err)?;
+            .map_err(database_error)?;
 
         Ok(())
     }

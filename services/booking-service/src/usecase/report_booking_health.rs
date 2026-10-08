@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
-
-use super::tx_err;
 use crate::domain::BookingError;
-use crate::platform::port::BookingRepository;
+use crate::platform::port::{BookingRepository, Transactor};
 
 pub struct BookingHealth {
     pub oversold_seats: i64,
@@ -12,30 +9,26 @@ pub struct BookingHealth {
 }
 
 pub struct ReportBookingHealthUseCase {
-    db_pool: PgPool,
+    transactor: Arc<dyn Transactor>,
     booking_repository: Arc<dyn BookingRepository>,
     stuck_after_secs: i64,
 }
 
 impl ReportBookingHealthUseCase {
     pub fn new(
-        db_pool: PgPool,
+        transactor: Arc<dyn Transactor>,
         booking_repository: Arc<dyn BookingRepository>,
         stuck_after_secs: i64,
     ) -> Self {
         Self {
-            db_pool,
+            transactor,
             booking_repository,
             stuck_after_secs,
         }
     }
 
     pub async fn execute(&self) -> Result<BookingHealth, BookingError> {
-        let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
-        sqlx::query("SET TRANSACTION READ ONLY")
-            .execute(&mut *tx)
-            .await
-            .map_err(tx_err)?;
+        let mut tx = self.transactor.begin_read_only().await?;
         let oversold_seats = self
             .booking_repository
             .count_oversold_seats(&mut tx)
@@ -44,7 +37,7 @@ impl ReportBookingHealthUseCase {
             .booking_repository
             .count_stuck_pending(&mut tx, self.stuck_after_secs)
             .await?;
-        tx.commit().await.map_err(tx_err)?;
+        tx.commit().await?;
 
         Ok(BookingHealth {
             oversold_seats,
