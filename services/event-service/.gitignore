@@ -1,2 +1,3 @@
 /event-service
 /out/
+internal/usecase/mock_*_test.go

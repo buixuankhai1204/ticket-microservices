@@ -5,23 +5,21 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/event-service/internal/platform/port"
 )
 
 type FinalizeSeatUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewFinalizeSeatUseCase(pool *pgxpool.Pool, repo port.Repository) *FinalizeSeatUseCase {
-	return &FinalizeSeatUseCase{pool: pool, repo: repo}
+func NewFinalizeSeatUseCase(db port.Transactor, repo port.Repository) *FinalizeSeatUseCase {
+	return &FinalizeSeatUseCase{db: db, repo: repo}
 }
 
 func (uc *FinalizeSeatUseCase) Execute(ctx context.Context, ev domain.BookingConfirmed) (alreadyProcessed bool, err error) {
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return false, &domain.RepositoryError{Err: err}
 	}
