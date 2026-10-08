@@ -1,2 +1,4 @@
 /analytics-service
 /out/
+internal/testsupport/mocks/*.go
+!internal/testsupport/mocks/generate.go

@@ -18,6 +18,7 @@ type Config struct {
 	KafkaUserEventsTopic     string
 	KafkaBookingEventsTopic  string
 	KafkaConsumerMaxAttempts int
+	KafkaGroupSuffix         string
 }
 
 func Load() (Config, error) {
@@ -79,6 +80,8 @@ func Load() (Config, error) {
 		}
 		cfg.KafkaConsumerMaxAttempts = n
 	}
+
+	cfg.KafkaGroupSuffix = os.Getenv("KAFKA_GROUP_SUFFIX")
 
 	return cfg, nil
 }

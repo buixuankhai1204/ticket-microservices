@@ -3,19 +3,17 @@ package usecase
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/port"
 )
 
 type RecordUserLoginUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewRecordUserLoginUseCase(pool *pgxpool.Pool, repo port.Repository) *RecordUserLoginUseCase {
-	return &RecordUserLoginUseCase{pool: pool, repo: repo}
+func NewRecordUserLoginUseCase(db port.Transactor, repo port.Repository) *RecordUserLoginUseCase {
+	return &RecordUserLoginUseCase{db: db, repo: repo}
 }
 
 func (uc *RecordUserLoginUseCase) Execute(ctx context.Context, ev domain.UserLoggedIn) (alreadyProcessed bool, err error) {
@@ -24,7 +22,7 @@ func (uc *RecordUserLoginUseCase) Execute(ctx context.Context, ev domain.UserLog
 		return false, err
 	}
 
-	tx, err := uc.pool.Begin(ctx)
+	tx, err := uc.db.Begin(ctx)
 	if err != nil {
 		return false, &domain.RepositoryError{Err: err}
 	}

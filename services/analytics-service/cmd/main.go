@@ -11,13 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	httpadapter "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/http"
-	kafkaconsumer "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/messaging/kafka"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/repository/postgres"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/app"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/config"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/db"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/usecase"
 
 	_ "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/docs"
 )
@@ -58,52 +55,23 @@ func run(log logger.Logger) error {
 		return err
 	}
 
-	repo := postgres.New()
-	getEventStats := usecase.NewGetEventStatsUseCase(pool, repo)
-	getUserRegistration := usecase.NewGetUserRegistrationUseCase(pool, repo)
-	recordUserRegistration := usecase.NewRecordUserRegistrationUseCase(pool, repo)
-	recordUserLogin := usecase.NewRecordUserLoginUseCase(pool, repo)
-	recordBookingConfirmed := usecase.NewRecordBookingConfirmedUseCase(pool, repo)
-	recordBookingCancelled := usecase.NewRecordBookingCancelledUseCase(pool, repo)
-
-	handler := httpadapter.NewHandler(getEventStats, getUserRegistration)
-	health := httpadapter.NewHealthHandler(pool)
-	router := httpadapter.NewRouter(handler, health,
-		httpadapter.RequestID(),
-		httpadapter.AccessLog(log),
-		httpadapter.Metrics(),
-	)
+	application := app.New(pool, cfg, log)
 
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           router,
+		Handler:           application.Router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	userKafkaCfg := kafkaconsumer.Config{
-		Brokers:     cfg.KafkaBrokers,
-		Topic:       cfg.KafkaUserEventsTopic,
-		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
-	}
-	bookingKafkaCfg := kafkaconsumer.Config{
-		Brokers:     cfg.KafkaBrokers,
-		Topic:       cfg.KafkaBookingEventsTopic,
-		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
-	}
-	consumers := []consumerRunner{
-		kafkaconsumer.NewConsumer(userKafkaCfg, kafkaconsumer.UserCreatedSpec(recordUserRegistration), log),
-		kafkaconsumer.NewConsumer(userKafkaCfg, kafkaconsumer.UserLoggedInSpec(recordUserLogin), log),
-		kafkaconsumer.NewConsumer(bookingKafkaCfg, kafkaconsumer.BookingConfirmedSpec(recordBookingConfirmed), log),
-		kafkaconsumer.NewConsumer(bookingKafkaCfg, kafkaconsumer.BookingCancelledSpec(recordBookingCancelled), log),
-	}
+	consumers := application.NewConsumers()
 	for _, c := range consumers {
-		defer func(c consumerRunner) { _ = c.Close() }(c)
+		defer func(c app.Consumer) { _ = c.Close() }(c)
 	}
 
 	var consumersWG sync.WaitGroup
 	for _, c := range consumers {
 		consumersWG.Add(1)
-		go func(c consumerRunner) {
+		go func(c app.Consumer) {
 			defer consumersWG.Done()
 			if err := c.Run(ctx); err != nil {
 				log.Error("kafka consumer exited with error", "err", err.Error())
@@ -134,9 +102,4 @@ func run(log logger.Logger) error {
 
 	consumersWG.Wait()
 	return nil
-}
-
-type consumerRunner interface {
-	Run(context.Context) error
-	Close() error
 }

@@ -1,210 +1,47 @@
 //go:build integration
 
-package kafka
+package kafka_test
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"fmt"
 	"os"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	segkafka "github.com/segmentio/kafka-go"
+	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/logger"
+	kafka "github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/adapter/messaging/kafka"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
+	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/testsupport"
 )
 
-type probeEvent struct {
-	ID string `json:"id"`
+func TestMain(m *testing.M) {
+	os.Exit(testsupport.Run(m))
 }
 
-type outcome struct {
-	already bool
-	err     error
+type consumerUnderTest struct {
+	topic string
+	group string
+	rec   *scriptedRecorder
 }
 
-type scriptedRecorder struct {
-	mu     sync.Mutex
-	script []outcome
-	seen   []probeEvent
-}
-
-func (r *scriptedRecorder) Execute(_ context.Context, ev probeEvent) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	i := len(r.seen)
-	r.seen = append(r.seen, ev)
-	if len(r.script) == 0 {
-		return false, nil
-	}
-	if i >= len(r.script) {
-		i = len(r.script) - 1
-	}
-	return r.script[i].already, r.script[i].err
-}
-
-func (r *scriptedRecorder) events() []probeEvent {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]probeEvent(nil), r.seen...)
-}
-
-type silentLogger struct{}
-
-func (silentLogger) Info(string, ...any)         {}
-func (silentLogger) Warn(string, ...any)         {}
-func (silentLogger) Error(string, ...any)        {}
-func (l silentLogger) With(...any) logger.Logger { return l }
-
-func brokers() []string {
-	if v := os.Getenv("KAFKA_TEST_BROKERS"); v != "" {
-		return strings.Split(v, ",")
-	}
-	return []string{"localhost:9094"}
-}
-
-func adminClient() *segkafka.Client {
-	return &segkafka.Client{Addr: segkafka.TCP(brokers()...), Timeout: 10 * time.Second}
-}
-
-func eventually(t *testing.T, within time.Duration, what string, cond func() bool) {
+func startConsumer(t *testing.T, createDLQ bool, script ...result) *consumerUnderTest {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
+	topic := testsupport.UniqueName("it-user-events")
+	testsupport.CreateTopic(t, topic)
+	if createDLQ {
+		testsupport.CreateTopic(t, topic+".dlq")
 	}
-	t.Fatalf("timed out after %s waiting for %s", within, what)
-}
+	rec := &scriptedRecorder{script: append([]result(nil), script...)}
+	if len(rec.script) == 0 {
+		rec.script = []result{{}}
+	}
+	spec := kafka.UserCreatedSpec(rec)
+	spec.Group = testsupport.UniqueName("it-group")
 
-func createTopic(t *testing.T, name string) {
-	t.Helper()
-	resp, err := adminClient().CreateTopics(context.Background(), &segkafka.CreateTopicsRequest{
-		Topics: []segkafka.TopicConfig{{Topic: name, NumPartitions: 1, ReplicationFactor: 1}},
-	})
-	if err != nil {
-		t.Fatalf("create topic %s: %v", name, err)
-	}
-	if e := resp.Errors[name]; e != nil {
-		t.Fatalf("create topic %s: %v", name, e)
-	}
-	eventually(t, 15*time.Second, "topic "+name+" to have a leader", func() bool {
-		md, err := adminClient().Metadata(context.Background(), &segkafka.MetadataRequest{Topics: []string{name}})
-		if err != nil || len(md.Topics) != 1 || md.Topics[0].Error != nil || len(md.Topics[0].Partitions) != 1 {
-			return false
-		}
-		return md.Topics[0].Partitions[0].Error == nil
-	})
-}
-
-func newTopics(t *testing.T, withDLQ bool) (topic, group string) {
-	t.Helper()
-	id := uuid.NewString()[:8]
-	topic, group = "it-"+id, "it-group-"+id
-	createTopic(t, topic)
-	if withDLQ {
-		createTopic(t, topic+".dlq")
-	}
-	return topic, group
-}
-
-func produce(t *testing.T, topic, key, value string, headers ...segkafka.Header) {
-	t.Helper()
-	w := &segkafka.Writer{
-		Addr:         segkafka.TCP(brokers()...),
-		Topic:        topic,
-		Balancer:     &segkafka.Hash{},
-		RequiredAcks: segkafka.RequireAll,
-		BatchTimeout: 10 * time.Millisecond,
-	}
-	defer w.Close()
-	err := w.WriteMessages(context.Background(), segkafka.Message{Key: []byte(key), Value: []byte(value), Headers: headers})
-	if err != nil {
-		t.Fatalf("produce to %s: %v", topic, err)
-	}
-}
-
-func committedOffset(t *testing.T, group, topic string) int64 {
-	t.Helper()
-	resp, err := adminClient().OffsetFetch(context.Background(), &segkafka.OffsetFetchRequest{
-		GroupID: group,
-		Topics:  map[string][]int{topic: {0}},
-	})
-	if err != nil || len(resp.Topics[topic]) != 1 {
-		return -1
-	}
-	return resp.Topics[topic][0].CommittedOffset
-}
-
-func endOffset(t *testing.T, topic string) int64 {
-	t.Helper()
-	resp, err := adminClient().ListOffsets(context.Background(), &segkafka.ListOffsetsRequest{
-		Topics: map[string][]segkafka.OffsetRequest{topic: {segkafka.LastOffsetOf(0)}},
-	})
-	if err != nil || len(resp.Topics[topic]) != 1 {
-		t.Fatalf("list offsets for %s: %v", topic, err)
-	}
-	return resp.Topics[topic][0].LastOffset
-}
-
-func readAll(t *testing.T, topic string) []segkafka.Message {
-	t.Helper()
-	n := endOffset(t, topic)
-	r := segkafka.NewReader(segkafka.ReaderConfig{Brokers: brokers(), Topic: topic, Partition: 0, MinBytes: 1, MaxBytes: 1 << 20})
-	defer r.Close()
-	if err := r.SetOffset(segkafka.FirstOffset); err != nil {
-		t.Fatalf("set offset: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	var out []segkafka.Message
-	for int64(len(out)) < n {
-		m, err := r.ReadMessage(ctx)
-		if err != nil {
-			t.Fatalf("read %s: %v", topic, err)
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
-func header(m segkafka.Message, key string) string {
-	for _, h := range m.Headers {
-		if h.Key == key {
-			return string(h.Value)
-		}
-	}
-	return ""
-}
-
-func startConsumer(t *testing.T, topic, group string, maxAttempts int, rec Recorder[probeEvent]) {
-	t.Helper()
-	spec := EventSpec[probeEvent]{
-		Group:      group,
-		EventType:  "Probe",
-		Component:  "probe_consumer",
-		SuccessMsg: "probe processed",
-		Parse: func(b []byte) (probeEvent, error) {
-			var ev probeEvent
-			if err := json.Unmarshal(b, &ev); err != nil {
-				return probeEvent{}, err
-			}
-			if ev.ID == "" {
-				return probeEvent{}, errors.New("missing id")
-			}
-			return ev, nil
-		},
-		LogFields: func(ev probeEvent) []any { return []any{"id", ev.ID} },
-		Record:    rec,
-	}
-	c := NewConsumer(Config{Brokers: brokers(), Topic: topic, MaxAttempts: maxAttempts}, spec, silentLogger{})
+	c := kafka.NewConsumer(kafka.Config{Brokers: testsupport.Brokers(t), Topic: topic, MaxAttempts: 3}, spec, testsupport.SilentLogger{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -216,66 +53,130 @@ func startConsumer(t *testing.T, topic, group string, maxAttempts int, rec Recor
 		<-done
 		_ = c.Close()
 	})
+	return &consumerUnderTest{topic: topic, group: spec.Group, rec: rec}
 }
 
-func probeType(v string) segkafka.Header {
-	return segkafka.Header{Key: "event_type", Value: []byte(v)}
+func (c *consumerUnderTest) waitForCommit(t *testing.T, offset int64) {
+	t.Helper()
+	testsupport.Eventually(t, 60*time.Second, fmt.Sprintf("offset %d to be committed", offset), func() bool {
+		return testsupport.CommittedOffset(t, c.group, c.topic) == offset
+	})
 }
 
-func TestConsumerDeadLettersAPoisonMessageWithItsOriginAndCommits(t *testing.T) {
+func TestTheOffsetIsCommittedOnlyAfterTheUseCaseHasRun(t *testing.T) {
 	t.Parallel()
-	topic, group := newTopics(t, true)
-	rec := &scriptedRecorder{}
-	produce(t, topic, "k3", "not-json", probeType("Probe"))
+	c := startConsumer(t, true)
 
-	startConsumer(t, topic, group, 3, rec)
+	testsupport.Produce(t, c.topic, "u1", userCreated().Value, testsupport.EventType("UserCreated"))
 
-	eventually(t, 45*time.Second, "offset 1 to be committed", func() bool { return committedOffset(t, group, topic) == 1 })
-	dead := readAll(t, topic+".dlq")
+	c.waitForCommit(t, 1)
+	if c.rec.calls() != 1 {
+		t.Fatalf("use case ran %d times before the commit, want 1", c.rec.calls())
+	}
+	if dead := testsupport.ReadAll(t, c.topic+".dlq"); len(dead) != 0 {
+		t.Fatalf("dlq has %d records, want none for a good message", len(dead))
+	}
+}
+
+func TestAnEventTypeForAnotherConsumerGroupIsSkippedButStillCommitted(t *testing.T) {
+	t.Parallel()
+	c := startConsumer(t, true)
+
+	testsupport.Produce(t, c.topic, "u1", userCreated().Value, testsupport.EventType("UserLoggedIn"))
+
+	c.waitForCommit(t, 1)
+	if c.rec.calls() != 0 {
+		t.Fatalf("use case ran for an event type this group does not own")
+	}
+}
+
+func TestAPoisonMessageIsDeadLetteredWithItsOriginAndTheNextMessageStillGetsThrough(t *testing.T) {
+	t.Parallel()
+	c := startConsumer(t, true)
+
+	testsupport.Produce(t, c.topic, "poison", []byte("not-json"), testsupport.EventType("UserCreated"))
+	testsupport.Produce(t, c.topic, "good", userCreated().Value, testsupport.EventType("UserCreated"))
+
+	c.waitForCommit(t, 2)
+	dead := testsupport.ReadAll(t, c.topic+".dlq")
 	if len(dead) != 1 {
 		t.Fatalf("dlq has %d records, want 1", len(dead))
 	}
 	m := dead[0]
-	if string(m.Key) != "k3" || string(m.Value) != "not-json" {
-		t.Fatalf("dlq key/value = %q/%q, want the original k3/not-json", m.Key, m.Value)
+	if string(m.Key) != "poison" || string(m.Value) != "not-json" {
+		t.Fatalf("dlq key/value = %q/%q, want the original", m.Key, m.Value)
 	}
-	if !strings.HasPrefix(header(m, "x-dlq-reason"), "parse:") {
-		t.Fatalf("x-dlq-reason = %q, want a parse: reason", header(m, "x-dlq-reason"))
+	if !strings.HasPrefix(testsupport.Header(m, "x-dlq-reason"), "parse:") {
+		t.Fatalf("x-dlq-reason = %q, want a parse: reason", testsupport.Header(m, "x-dlq-reason"))
 	}
-	if header(m, "x-dlq-source-topic") != topic || header(m, "x-dlq-source-partition") != "0" || header(m, "x-dlq-source-offset") != "0" {
-		t.Fatalf("dlq origin headers = %q/%q/%q, want %s/0/0",
-			header(m, "x-dlq-source-topic"), header(m, "x-dlq-source-partition"), header(m, "x-dlq-source-offset"), topic)
+	if testsupport.Header(m, "x-dlq-source-topic") != c.topic ||
+		testsupport.Header(m, "x-dlq-source-partition") != "0" ||
+		testsupport.Header(m, "x-dlq-source-offset") != "0" {
+		t.Fatalf("origin headers wrong: %v", m.Headers)
 	}
-	if len(rec.events()) != 0 {
-		t.Fatalf("handler must not see an undeserializable message")
+	if c.rec.calls() != 1 {
+		t.Fatalf("use case ran %d times, want only for the good message", c.rec.calls())
 	}
 }
 
-func TestConsumerNeverLosesAMessageWhileTheDLQIsUnavailable(t *testing.T) {
+func TestAPermanentFailureGoesToTheDeadLetterTopicAndIsNotRetried(t *testing.T) {
 	t.Parallel()
-	topic, group := newTopics(t, false)
-	rec := &scriptedRecorder{}
-	produce(t, topic, "poison", "not-json", probeType("Probe"))
-	produce(t, topic, "good", `{"id":"good"}`, probeType("Probe"))
+	c := startConsumer(t, true, result{err: &domain.RepositoryError{Err: &pgconn.PgError{Code: "23505", Message: "duplicate key"}}})
 
-	startConsumer(t, topic, group, 3, rec)
+	testsupport.Produce(t, c.topic, "u1", userCreated().Value, testsupport.EventType("UserCreated"))
 
-	window := time.Now().Add(25 * time.Second)
+	c.waitForCommit(t, 1)
+	dead := testsupport.ReadAll(t, c.topic+".dlq")
+	if len(dead) != 1 || !strings.HasPrefix(testsupport.Header(dead[0], "x-dlq-reason"), "permanent:") {
+		t.Fatalf("dlq = %v, want one permanent: record", dead)
+	}
+	if c.rec.calls() != 1 {
+		t.Fatalf("use case ran %d times, want 1 (no retries for a constraint violation)", c.rec.calls())
+	}
+}
+
+func TestATransientFailureIsRetriedAndTheMessageIsCommittedOnceItSucceeds(t *testing.T) {
+	t.Parallel()
+	c := startConsumer(t, true,
+		result{err: &domain.RepositoryError{Err: &pgconn.PgError{Code: "40001"}}},
+		result{err: &domain.RepositoryError{Err: &pgconn.PgError{Code: "40P01"}}},
+		result{},
+	)
+
+	testsupport.Produce(t, c.topic, "u1", userCreated().Value, testsupport.EventType("UserCreated"))
+
+	c.waitForCommit(t, 1)
+	if c.rec.calls() != 3 {
+		t.Fatalf("use case ran %d times, want 3", c.rec.calls())
+	}
+	if dead := testsupport.ReadAll(t, c.topic+".dlq"); len(dead) != 0 {
+		t.Fatalf("dlq has %d records, a recovered message must not be dead-lettered", len(dead))
+	}
+}
+
+func TestNoMessageIsLostWhileTheDeadLetterTopicIsUnavailable(t *testing.T) {
+	t.Parallel()
+	c := startConsumer(t, false)
+
+	testsupport.Produce(t, c.topic, "poison", []byte("not-json"), testsupport.EventType("UserCreated"))
+	testsupport.Produce(t, c.topic, "good", userCreated().Value, testsupport.EventType("UserCreated"))
+
+	window := time.Now().Add(12 * time.Second)
 	for time.Now().Before(window) {
-		if got := committedOffset(t, group, topic); got > 0 {
-			t.Fatalf("offset %s was committed while the poison message at offset 0 could not be dead-lettered: it is lost", strconv.FormatInt(got, 10))
+		if got := testsupport.CommittedOffset(t, c.group, c.topic); got > 0 {
+			t.Fatalf("offset %d was committed while the poison message at offset 0 could not be dead-lettered: it is lost", got)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	createTopic(t, topic+".dlq")
+	testsupport.CreateTopic(t, c.topic+".dlq")
 
-	eventually(t, 90*time.Second, "both messages to be committed once the dlq exists", func() bool { return committedOffset(t, group, topic) == 2 })
-	dead := readAll(t, topic+".dlq")
+	c.waitForCommit(t, 2)
+	dead := testsupport.ReadAll(t, c.topic+".dlq")
 	if len(dead) != 1 || string(dead[0].Key) != "poison" {
 		t.Fatalf("dlq = %d records, want exactly the poison message", len(dead))
 	}
-	if got := rec.events(); len(got) != 1 || got[0].ID != "good" {
-		t.Fatalf("handled events = %+v, want exactly the good message", got)
+	if c.rec.calls() != 1 {
+		t.Fatalf("use case ran %d times, want only for the good message", c.rec.calls())
 	}
 }

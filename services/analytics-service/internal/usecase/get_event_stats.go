@@ -5,23 +5,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/domain"
 	"github.com/buixuankhai1204/ticket-microservice-golang/services/analytics-service/internal/platform/port"
 )
 
 type GetEventStatsUseCase struct {
-	pool *pgxpool.Pool
+	db   port.Transactor
 	repo port.Repository
 }
 
-func NewGetEventStatsUseCase(pool *pgxpool.Pool, repo port.Repository) *GetEventStatsUseCase {
-	return &GetEventStatsUseCase{pool: pool, repo: repo}
+func NewGetEventStatsUseCase(db port.Transactor, repo port.Repository) *GetEventStatsUseCase {
+	return &GetEventStatsUseCase{db: db, repo: repo}
 }
 
 func (uc *GetEventStatsUseCase) Execute(ctx context.Context, eventID uuid.UUID) (domain.EventBookingStats, error) {
-	tx, err := uc.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := uc.db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return domain.EventBookingStats{}, &domain.RepositoryError{Err: err}
 	}
