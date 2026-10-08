@@ -1,21 +1,22 @@
 use std::sync::Arc;
 
-use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::tx_err;
 use crate::domain::{Booking, BookingError, Pagination};
-use crate::platform::port::BookingRepository;
+use crate::platform::port::{BookingRepository, Transactor};
 
 pub struct ListBookingsUseCase {
-    db_pool: PgPool,
+    transactor: Arc<dyn Transactor>,
     booking_repository: Arc<dyn BookingRepository>,
 }
 
 impl ListBookingsUseCase {
-    pub fn new(db_pool: PgPool, booking_repository: Arc<dyn BookingRepository>) -> Self {
+    pub fn new(
+        transactor: Arc<dyn Transactor>,
+        booking_repository: Arc<dyn BookingRepository>,
+    ) -> Self {
         Self {
-            db_pool,
+            transactor,
             booking_repository,
         }
     }
@@ -25,16 +26,12 @@ impl ListBookingsUseCase {
         user_id: Uuid,
         pagination: Pagination,
     ) -> Result<(Vec<Booking>, i64), BookingError> {
-        let mut tx = self.db_pool.begin().await.map_err(tx_err)?;
-        sqlx::query("SET TRANSACTION READ ONLY")
-            .execute(&mut *tx)
-            .await
-            .map_err(tx_err)?;
+        let mut tx = self.transactor.begin_read_only().await?;
         let page = self
             .booking_repository
             .list_for_user(&mut tx, user_id, pagination)
             .await?;
-        tx.commit().await.map_err(tx_err)?;
+        tx.commit().await?;
         Ok(page)
     }
 }

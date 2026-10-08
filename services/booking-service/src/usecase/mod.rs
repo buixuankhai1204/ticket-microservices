@@ -13,16 +13,3 @@ pub use get_booking::GetBookingUseCase;
 pub use list_bookings::ListBookingsUseCase;
 pub use reap_pending_bookings::ReapPendingBookingsUseCase;
 pub use report_booking_health::ReportBookingHealthUseCase;
-
-use crate::domain::BookingError;
-
-pub(crate) fn tx_err(e: sqlx::Error) -> BookingError {
-    let sqlstate = e
-        .as_database_error()
-        .and_then(|d| d.code())
-        .map(|c| c.into_owned());
-    BookingError::Repository {
-        message: e.to_string(),
-        sqlstate,
-    }
-}

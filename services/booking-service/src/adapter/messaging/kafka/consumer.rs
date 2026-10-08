@@ -315,3 +315,58 @@ impl SagaHandler for CancelBookingHandler {
         self.use_case.execute(ev).await.map_err(classify)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repository(sqlstate: Option<&str>) -> BookingError {
+        BookingError::Repository {
+            message: "boom".to_string(),
+            sqlstate: sqlstate.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn only_sqlstates_where_the_same_input_could_succeed_later_are_retryable() {
+        let transient = [
+            "40001", "40P01", "55P03", "55006", "53300", "08000", "08001", "08003", "08004",
+            "08006", "08007", "08P01", "57P01", "57P02", "57P03",
+        ];
+        let deterministic = [
+            "23505", "23503", "23502", "23514", "22P02", "22001", "42P01", "42703", "42601",
+            "0A000", "",
+        ];
+
+        for code in transient {
+            assert!(is_retryable_sqlstate(code), "{code} should be retried");
+        }
+        for code in deterministic {
+            assert!(!is_retryable_sqlstate(code), "{code:?} should be permanent");
+        }
+    }
+
+    #[test]
+    fn repository_errors_are_classified_by_sqlstate_and_domain_rejections_are_permanent() {
+        assert!(matches!(
+            classify(repository(Some("40001"))),
+            HandlerError::Transient(m) if m == "boom"
+        ));
+        assert!(matches!(
+            classify(repository(None)),
+            HandlerError::Transient(m) if m == "boom"
+        ));
+        assert!(matches!(
+            classify(repository(Some("23505"))),
+            HandlerError::Permanent(m) if m == "boom (SQLSTATE 23505)"
+        ));
+        assert!(matches!(
+            classify(BookingError::NotFound),
+            HandlerError::Permanent(m) if m == "booking not found"
+        ));
+        assert!(matches!(
+            classify(BookingError::AlreadyTerminal),
+            HandlerError::Permanent(_)
+        ));
+    }
+}

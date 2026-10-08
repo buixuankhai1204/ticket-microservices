@@ -6,7 +6,7 @@ use crate::adapter::http::AppState;
 use crate::adapter::messaging::kafka::{CancelBookingHandler, ConfirmBookingHandler, SagaConsumer};
 use crate::adapter::repository::postgres::PostgresBookingRepository;
 use crate::platform::db::DbPool;
-use crate::platform::port::BookingRepository;
+use crate::platform::port::{BookingRepository, PgTransactor, Transactor};
 use crate::usecase::{
     CancelBookingUseCase, ConfirmBookingUseCase, CreateBookingUseCase, GetBookingUseCase,
     ListBookingsUseCase, ReapPendingBookingsUseCase, ReportBookingHealthUseCase,
@@ -40,32 +40,39 @@ impl App {
     pub fn new(pool: DbPool, config: AppConfig) -> Self {
         let booking_repository: Arc<dyn BookingRepository> =
             Arc::new(PostgresBookingRepository::new());
+        let transactor: Arc<dyn Transactor> = Arc::new(PgTransactor::new(pool.clone()));
 
         let confirm_booking = Arc::new(ConfirmBookingUseCase::new(
-            pool.clone(),
+            Arc::clone(&transactor),
             Arc::clone(&booking_repository),
         ));
         let cancel_booking = Arc::new(CancelBookingUseCase::new(
-            pool.clone(),
+            Arc::clone(&transactor),
             Arc::clone(&booking_repository),
         ));
         let reaper = ReapPendingBookingsUseCase::new(
-            pool.clone(),
+            Arc::clone(&transactor),
             Arc::clone(&booking_repository),
             config.pending_timeout_secs,
             100,
         );
         let health_reporter = ReportBookingHealthUseCase::new(
-            pool.clone(),
+            Arc::clone(&transactor),
             Arc::clone(&booking_repository),
             config.pending_timeout_secs + 2 * config.reaper_interval_secs as i64,
         );
 
         let state = Arc::new(AppState {
-            get_booking: GetBookingUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
-            list_bookings: ListBookingsUseCase::new(pool.clone(), Arc::clone(&booking_repository)),
+            get_booking: GetBookingUseCase::new(
+                Arc::clone(&transactor),
+                Arc::clone(&booking_repository),
+            ),
+            list_bookings: ListBookingsUseCase::new(
+                Arc::clone(&transactor),
+                Arc::clone(&booking_repository),
+            ),
             create_booking: CreateBookingUseCase::new(
-                pool.clone(),
+                Arc::clone(&transactor),
                 Arc::clone(&booking_repository),
             ),
             db_pool: pool,
