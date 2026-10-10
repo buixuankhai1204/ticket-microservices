@@ -19,6 +19,10 @@ scrape_configs:
     static_configs:
       - targets: ["analytics-service:8084"]
 
+  - job_name: product-service
+    static_configs:
+      - targets: ["product-service:8086"]
+
   - job_name: kafka-exporter
     static_configs:
       - targets: ["kafka-exporter:9308"]
