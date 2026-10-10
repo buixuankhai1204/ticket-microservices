@@ -13,6 +13,14 @@ whole stack runs via `docker-compose.yml` (Kong, a Postgres per service, single-
 Kafka Connect + Debezium). `booking-service` — the core seat-reservation saga — is **not yet
 built**.
 
+`product-service` (NestJS 12 / TypeORM 1.1 / Postgres, `services/product-service`) is the first
+Node service: food/drink/add-on catalog, per-event menu and stock over REST (Phase 1). Orders against a
+confirmed booking, the `BookingConfirmed`/`BookingCancelled` consumers and the
+`ProductOrderPlaced`/`ProductOrderCancelled` outbox events are Phase 2 (design with
+`/design-saga product-order` first). Build/lint per service with `npm run build`,
+`npm run lint` (oxlint), `npm run format:check` (prettier) and `npm run typecheck`; unit specs
+`npm test`; component tests `npm run test:component` (both via `scripts/run-tests.sh [unit|component] product`).
+
 ## Architecture (as defined by the gateway)
 
 This is a ticket booking platform split into independent microservices, fronted by a single
@@ -29,6 +37,7 @@ Planned services, each expected to be its own deployable unit reachable at
 | `event-service` | 8082 | `/api/v1/events` (1000 req/min) | none |
 | `booking-service` | 8083 | `/api/v1/bookings` (300 req/min) | JWT (`exp` claim verified) |
 | `analytics-service` | 8084 | `/api/v1/analytics` (60 req/min) | JWT (`exp` claim verified) |
+| `product-service` | 8086 | `/api/v1/products` — `GET` public (600 req/min), `POST`/`PUT` JWT (60 req/min); admin writes also gated in-service by `PRODUCT_ADMIN_USER_IDS` | JWT (`exp` claim verified) on writes |
 
 All routes use `strip_path: false`, so each service must handle the full `/api/v1/...` prefix
 itself rather than expecting it stripped.
@@ -80,6 +89,34 @@ Use `/new-go-service` or `/new-rust-service` to scaffold a service in this shape
 (run `/design-saga` first for anything cross-service); `/new-migration` for a schema change;
 `/add-caching`, `/add-resilience`, `/add-observability` to layer in those concerns; and
 `/scalability-review` / `/review-concurrency` to audit one.
+
+### Node/TypeScript variant (`product-service`)
+
+Same layers and the same dependency rule, expressed for NestJS + TypeORM (ESM, so relative
+imports end in `.js`):
+
+- Ports in `src/platform/port/` are **abstract classes**, which double as Nest DI tokens
+  (`{ provide: ProductRepository, useClass: PostgresProductRepository }` in a module). The
+  transaction handle is `TxContext = EntityManager` (type-only import from `typeorm`), and the
+  usecase opens the transaction through the `Transactor` port (`run(fn, { readOnly })`) rather than
+  holding a pool; repositories take `(tx, …)` and never begin their own.
+- `usecase/` may use `@Injectable()` from `@nestjs/common` for DI metadata and nothing else
+  framework-, driver- or HTTP-shaped. `domain/` imports no `@nestjs/*`, `typeorm`, `pg`,
+  `class-validator`, etc. Modules under `src/modules/` plus `main.ts`/`app.module.ts` are the
+  composition root and are exempt from the layer check.
+- TypeORM entity classes live in `adapter/repository/postgres/entities/` and are mapped
+  explicitly to domain entities; specialised statements (atomic stock `UPDATE`, upserts) are raw
+  SQL on the transaction's `EntityManager`.
+- Migrations are TypeORM migration classes (`src/migrations/<timestamp>-<name>.ts`, SQL inside
+  `up()`/`down()`), registered explicitly in the `DataSource`, applied at startup under a
+  `pg_advisory_lock`, recorded in `schema_migrations`; the expand/contract rules above apply
+  unchanged and `migration-safety-check.sh` scans these files (ignoring `down()`).
+- Driver errors are translated once, in the `Transactor` adapter, into domain errors
+  (`23505` ⇒ conflict, `23503` ⇒ not found, …); a consumer classifies transient vs permanent from
+  `QueryFailedError.driverError.code` exactly as the SQLSTATE rule above says.
+- Cross-cutting providers are registered through `APP_PIPE` / `APP_FILTER`; one global exception
+  filter returns `{ "error": "<string>" }`, request metrics are a middleware (so guard/pipe
+  rejections are counted), and access logs come from `nestjs-pino`.
 
 ### Endpoint conventions: entity IDs, response mapping, transactions, pagination
 
@@ -362,19 +399,22 @@ of the reference project's — merge same-shape tests into one scenario.
 ### Hooks (`.claude/settings.json` + `.claude/hooks/`)
 
 - `pre-commit-check.sh` (`PreToolUse` on `Bash`) — only acts on a `git commit`. Lints/formats
-  the Go and Rust services with staged changes (`gofmt`/`go vet`,
-  `cargo fmt --check`/`cargo clippy -- -D warnings`), scoped to each service's own
-  `go.mod`/`Cargo.toml`; blocks the commit (exit 2) on failure. Missing toolchains are
-  skipped, not failed.
+  the Go, Rust and TypeScript services with staged changes (`gofmt`/`go vet`,
+  `cargo fmt --check`/`cargo clippy -- -D warnings`, and for a staged `.ts`/`package.json`
+  `npm run lint` + `format:check` + `typecheck`), scoped to each service's own
+  `go.mod`/`Cargo.toml`/`package.json`; blocks the commit (exit 2) on failure. Missing toolchains
+  (or an uninstalled `node_modules`) are skipped, not failed.
 - `clean-architecture-check.sh` (`PostToolUse` on `Write`/`Edit`) — for a file under a
   service's `domain/`, `platform/port/`, `usecase/`, `adapter/http/`, `adapter/repository/`,
   `adapter/cache/`, or `adapter/messaging/`, greps for imports that break the dependency rule
   (`domain/` importing a driver/framework or `platform/port`; `platform/port/` importing
   `usecase/`/`adapter/`; `usecase/` importing `adapter/`; `adapter/http/` or
-  `adapter/cache/` reaching into `adapter/repository/`). `cmd/main.go` / `main.rs` (the
-  composition root) is exempt.
+  `adapter/cache/` reaching into `adapter/repository/`); for TypeScript it also forbids
+  `@nestjs/*`/`typeorm`/`pg` in `domain/`, a value-import of `typeorm`/`pg` in `platform/port/`,
+  and anything but `@nestjs/common` in `usecase/`. `cmd/main.go` / `main.rs` / the Nest modules
+  (the composition root) are exempt.
 - `migration-safety-check.sh` (`PostToolUse` on `Write`/`Edit`) — for a just-written
-  `services/*/migrations/*.sql`, flags the grep-obvious rolling-deploy hazards (`ADD COLUMN
+  `services/*/migrations/*.sql` (or a TypeORM `services/*/src/migrations/*.ts`, `down()` ignored), flags the grep-obvious rolling-deploy hazards (`ADD COLUMN
   … NOT NULL` with no `DEFAULT`, `DROP COLUMN`, `ALTER COLUMN … TYPE`, `RENAME`,
   `ADD CONSTRAINT` without `NOT VALID`, `CONCURRENTLY` without the `-- +migrate
   NoTransaction` marker) with the expand/contract fix. `migration-reviewer` covers the rest.

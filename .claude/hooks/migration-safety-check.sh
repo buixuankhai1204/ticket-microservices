@@ -27,12 +27,18 @@ if data.get("tool_name") not in ("Write", "Edit"):
 path = (data.get("tool_input") or {}).get("file_path", "")
 if not path or not os.path.isfile(path):
     sys.exit(0)
-if not re.search(r"/services/[^/]+/migrations/[^/]+\.sql$", path):
+is_sql = re.search(r"/services/[^/]+/migrations/[^/]+\.sql$", path)
+is_ts = re.search(r"/services/[^/]+/src/migrations/[^/]+\.ts$", path)
+if not (is_sql or is_ts):
     sys.exit(0)
 
 src = open(path, "r", encoding="utf-8", errors="replace").read()
-first_line = src.splitlines()[0] if src else ""
-no_txn = "+migrate NoTransaction" in first_line
+if is_ts:
+    no_txn = re.search(r"\btransaction\s*=\s*false\b", src) is not None
+    src = re.split(r"\basync\s+down\s*\(", src)[0]
+else:
+    first_line = src.splitlines()[0] if src else ""
+    no_txn = "+migrate NoTransaction" in first_line
 
 # Drop -- line comments, collapse whitespace, split into statements.
 code = re.sub(r"--[^\n]*", " ", src)
@@ -77,7 +83,8 @@ for s in stmts:
     if "CONCURRENTLY" in u and not no_txn:
         add("CONCURRENTLY inside a transaction-wrapped migration errors with 'cannot run "
             "inside a transaction block'. Put '-- +migrate NoTransaction' as the FIRST "
-            "line and make the service's migrate runner run marked files outside a tx "
+            "line (SQL migrations) or set 'transaction = false' on the class (TypeORM "
+            "migrations), and make the service's migrate runner run it outside a tx "
             "(see /new-migration step 5).")
 
 # de-dupe, preserve order
