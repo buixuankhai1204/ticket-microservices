@@ -1,8 +1,8 @@
 #!/bin/bash
 # PreToolUse hook: runs before Claude executes a Bash tool call. Only acts when the
 # command is a `git commit`; every other Bash call passes straight through (exit 0).
-# On a real commit attempt, lints/formats only the Go and Rust services whose files are
-# actually staged, using each service's own toolchain if it's installed. Missing
+# On a real commit attempt, lints/formats only the Go, Rust and TypeScript services whose files are
+# actually staged (Go, Rust, and Node/TypeScript), using each service's own toolchain if it's installed. Missing
 # toolchains are skipped, not treated as failures — this hook enforces code quality on
 # commits Claude makes in this session, it doesn't set up the machine.
 set -euo pipefail
@@ -69,6 +69,28 @@ if [ -n "$RUST_FILES" ]; then
     done
   else
     echo "note: 'cargo' not installed, skipping fmt/clippy for staged Rust files" >&2
+  fi
+fi
+
+TS_FILES=$(echo "$STAGED" | grep -E '\.ts$|package\.json$' || true)
+if [ -n "$TS_FILES" ]; then
+  if command -v npm >/dev/null 2>&1; then
+    NODE_DIRS=$(echo "$TS_FILES" | while read -r f; do
+      dir=$(dirname "$f")
+      while [ "$dir" != "." ] && [ ! -f "$dir/package.json" ]; do dir=$(dirname "$dir"); done
+      [ -f "$dir/package.json" ] && echo "$dir"
+    done | sort -u)
+    for node_dir in $NODE_DIRS; do
+      if [ ! -d "$node_dir/node_modules" ]; then
+        echo "note: $node_dir/node_modules missing, skipping lint/format/typecheck (run: npm install --prefix $node_dir)" >&2
+        continue
+      fi
+      LINT_OUT=$(cd "$node_dir" && npm run --silent lint 2>&1) || fail "lint failed in $node_dir:\n$LINT_OUT"
+      FMT_OUT=$(cd "$node_dir" && npm run --silent format:check 2>&1) || fail "prettier --check failed in $node_dir:\n$FMT_OUT\nRun: npm run format --prefix $node_dir"
+      TSC_OUT=$(cd "$node_dir" && npm run --silent typecheck 2>&1) || fail "tsc --noEmit failed in $node_dir:\n$TSC_OUT"
+    done
+  else
+    echo "note: 'npm' not installed, skipping lint/format/typecheck for staged TypeScript files" >&2
   fi
 fi
 

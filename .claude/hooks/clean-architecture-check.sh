@@ -1,8 +1,8 @@
 #!/bin/bash
 # PostToolUse hook: after Claude writes/edits a file, checks the Clean Architecture
 # dependency rule (see CLAUDE.md) for files under domain/, platform/port/, usecase/,
-# adapter/http/, adapter/repository/, adapter/cache/, or adapter/messaging/ in any Go or
-# Rust service. Runs after the write already happened
+# adapter/http/, adapter/repository/, adapter/cache/, or adapter/messaging/ in any Go,
+# Rust or TypeScript service. Runs after the write already happened
 # (PostToolUse can't block it like PreToolUse can), so it can't undo the edit — but exit
 # 2 surfaces the violation to Claude immediately, so it gets fixed in the same turn
 # instead of surviving until a later /scalability-review or PR review.
@@ -34,16 +34,45 @@ case "$REL_PATH" in
 esac
 
 case "$FILE_PATH" in
+  *.spec.ts|*.test.ts) exit 0 ;;
   *.go) LANG=go ;;
   *.rs) LANG=rust ;;
+  *.ts) LANG=ts ;;
   *) exit 0 ;;
 esac
 
 VIOLATIONS=""
 add_violation() { VIOLATIONS="${VIOLATIONS}- ${1}\n"; }
 hit() { grep -qE "$1" "$FILE_PATH" 2>/dev/null; }
+hit_value_import() { perl -0777 -ne "exit(/import\\s+(?!type\\b)[^;]*?\\bfrom\\s+['\"]($1)['\"]/ ? 0 : 1)" "$FILE_PATH" 2>/dev/null; }
 
-if [ "$LANG" = "go" ]; then
+if [ "$LANG" = "ts" ]; then
+  TS_FRAMEWORK_OR_DRIVER="@nestjs/[a-z-]+|typeorm|pg|express|jose|kafkajs|class-validator|class-transformer|helmet|nestjs-pino"
+  case "$LAYER" in
+    domain)
+      hit "from[[:space:]]+['\"]($TS_FRAMEWORK_OR_DRIVER)['\"]" && add_violation "domain/ imports a framework or driver directly — domain must stay free of @nestjs/*, typeorm, pg, express, jose, kafkajs and class-validator. Move it behind a port instead."
+      hit "from[[:space:]]+['\"](\\.\\./)+(adapter|usecase|platform|modules|migrations)/" && add_violation "domain/ imports from adapter/, usecase/, platform/, modules/ or migrations/ — dependencies must point inward only; domain cannot import outer layers."
+      ;;
+    port)
+      hit "from[[:space:]]+['\"]@nestjs/" && add_violation "platform/port/ imports @nestjs/* — ports are plain abstract classes; DI wiring belongs in modules/."
+      hit_value_import "typeorm|pg" && add_violation "platform/port/ value-imports typeorm or pg — only the transaction handle type may come from the driver, via 'import type'."
+      hit "from[[:space:]]+['\"](\\.\\./)+(adapter|usecase|modules)/" && add_violation "platform/port/ imports from adapter/, usecase/ or modules/ — a port may only depend on domain (plus the driver type for the tx handle)."
+      ;;
+    usecase)
+      hit "from[[:space:]]+['\"](@nestjs/(core|config|typeorm|platform-express|swagger|terminus|microservices|testing)|typeorm|pg|express|jose|kafkajs|class-validator|class-transformer|nestjs-pino)['\"]" && add_violation "usecase/ imports a framework, HTTP, Kafka or database driver package — only @nestjs/common (for @Injectable) is allowed; the tx handle arrives through the Transactor port."
+      hit "from[[:space:]]+['\"](\\.\\./)+(adapter|modules)/" && add_violation "usecase/ imports from adapter/ or modules/ — usecase must receive dependencies through platform/port abstract classes provided by the module, not import adapters directly."
+      ;;
+    http)
+      hit "from[[:space:]]+['\"](\\.\\./)+(adapter/repository|repository)/" && add_violation "adapter/http/ imports adapter/repository/ directly — controllers must call through usecase, not bypass it to reach the repository."
+      ;;
+    repository)
+      hit "from[[:space:]]+['\"](\\.\\./)+(usecase|adapter/http)/" && add_violation "adapter/repository/ imports usecase/ or adapter/http/ — repository adapters must only depend on domain and platform/port, never on outer layers."
+      ;;
+    messaging)
+      hit "from[[:space:]]+['\"](\\.\\./)+(adapter/repository|repository)/" && add_violation "adapter/messaging/ imports adapter/repository/ directly — a consumer must drive its use case (which owns the transaction and the processed_events check), not call the repository itself."
+      ;;
+  esac
+elif [ "$LANG" = "go" ]; then
   DRIVER_OR_FRAMEWORK='"net/http"|jackc/pgx|pgxpool|gin-gonic/gin|labstack/echo|gofiber/fiber|segmentio/kafka-go'
   # usecase/ owns the transaction boundary, so it is allowed to hold the pool and
   # name the tx handle (pgx/pgxpool) — but still no HTTP server / framework / Kafka client.

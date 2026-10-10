@@ -10,6 +10,14 @@ services/**/go.sum
 # Rust
 services/**/target/
 services/user-service/Cargo.lock
+services/product-service/node_modules
+
+# Node
+services/**/node_modules/
+services/**/dist/
+services/**/coverage/
+services/**/*.tsbuildinfo
+services/product-service/package-lock.json
 
 # Env
 .env
