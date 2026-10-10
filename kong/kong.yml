@@ -105,6 +105,41 @@ services:
               claims_to_verify:
                 - exp
 
+  # ----------------------------------------------------------------------------
+  # 5. PRODUCT SERVICE
+  # ----------------------------------------------------------------------------
+  - name: product-service
+    url: http://product-service:8086
+    routes:
+      - name: product-catalog-routes
+        paths:
+          - /api/v1/products
+        methods:
+          - GET
+          - OPTIONS
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 600
+              policy: local
+      - name: product-admin-routes
+        paths:
+          - /api/v1/products
+        methods:
+          - POST
+          - PUT
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 60
+              policy: local
+          - name: jwt
+            config:
+              claims_to_verify:
+                - exp
+
 # ==============================================================================
 # CONSUMERS (JWT verification identities)
 # ==============================================================================
