@@ -93,6 +93,231 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "product-service",
+      "item": [
+        {
+          "name": "List products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products?category=snack&limit=20&offset=0",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "snack"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Public. 600 req/min. Paginated envelope; limit defaults to 20 and is clamped to 100."
+          },
+          "response": []
+        },
+        {
+          "name": "Get product",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products/00000000-0000-0000-0000-000000000001",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            },
+            "description": "Public. 200, 400 (not a UUID), 404."
+          },
+          "response": []
+        },
+        {
+          "name": "Event menu",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products/events/00000000-0000-0000-0000-000000000000/menu",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "events",
+                "00000000-0000-0000-0000-000000000000",
+                "menu"
+              ]
+            },
+            "description": "Public. Products with the event price override and availability."
+          },
+          "response": []
+        },
+        {
+          "name": "Create product (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "JWT + admin (PRODUCT_ADMIN_USER_IDS). 201, 400, 401, 403, 409 duplicate sku.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sku\": \"POPCORN-L\",\n  \"name\": \"Large Popcorn\",\n  \"category\": \"snack\",\n  \"price_minor\": 650\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update product (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products/00000000-0000-0000-0000-000000000001",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            },
+            "description": "JWT + admin. Any subset of name, description, category, price_minor, status.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price_minor\": 700\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Set event inventory (admin)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products/events/00000000-0000-0000-0000-000000000000/inventory/00000000-0000-0000-0000-000000000001",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "events",
+                "00000000-0000-0000-0000-000000000000",
+                "inventory",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            },
+            "description": "JWT + admin. Upsert stock_total and optional price_minor override; 409 if stock_total is below units already sold.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stock_total\": 100,\n  \"price_minor\": 600\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Adjust stock (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/products/events/00000000-0000-0000-0000-000000000000/inventory/00000000-0000-0000-0000-000000000001/stock-adjustments",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "events",
+                "00000000-0000-0000-0000-000000000000",
+                "inventory",
+                "00000000-0000-0000-0000-000000000001",
+                "stock-adjustments"
+              ]
+            },
+            "description": "JWT + admin. Atomic; 409 if the removal exceeds available stock, 404 if there is no inventory.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"delta\": -4,\n  \"reason\": \"damaged\"\n}"
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

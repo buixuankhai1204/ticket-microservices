@@ -331,6 +331,51 @@ services:
     networks:
       - ticket-network
 
+  postgres-product:
+    image: postgres:16-alpine
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+    environment:
+      POSTGRES_USER: ${PRODUCT_DB_USER:-product_service}
+      POSTGRES_PASSWORD: ${PRODUCT_DB_PASSWORD:-product_service}
+      POSTGRES_DB: ${PRODUCT_DB_NAME:-product_service}
+    ports:
+      - "${PRODUCT_DB_HOST_PORT:-5437}:5432"
+    volumes:
+      - postgres_product_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PRODUCT_DB_USER:-product_service}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ticket-network
+
+  product-service:
+    build:
+      context: ./services/product-service
+    environment:
+      DATABASE_URL: postgres://${PRODUCT_DB_USER:-product_service}:${PRODUCT_DB_PASSWORD:-product_service}@postgres-product:5432/${PRODUCT_DB_NAME:-product_service}
+      PORT: "8086"
+      DB_MAX_CONNS: ${PRODUCT_DB_MAX_CONNS:-20}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_ISSUER: ${JWT_ISSUER:-user-service}
+      PRODUCT_ADMIN_USER_IDS: ${PRODUCT_ADMIN_USER_IDS:-}
+      DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+    ports:
+      - "${PRODUCT_SERVICE_HOST_PORT:-8086}:8086"
+    depends_on:
+      postgres-product:
+        condition: service_healthy
+    networks:
+      - ticket-network
+
   kong:
     image: kong:3.6
     environment:
@@ -352,6 +397,7 @@ services:
       - analytics-service
       - event-service
       - booking-service
+      - product-service
     networks:
       - ticket-network
 
@@ -399,6 +445,7 @@ services:
       - event-service
       - booking-service
       - analytics-service
+      - product-service
     networks:
       - ticket-network
 
@@ -425,6 +472,7 @@ volumes:
   postgres_analytics_data:
   postgres_event_data:
   postgres_booking_data:
+  postgres_product_data:
   grafana_data:
 
 networks:
