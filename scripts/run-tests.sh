@@ -7,7 +7,8 @@ target="${2:-all}"
 
 go_services=(analytics-service event-service)
 rust_services=(booking-service user-service)
-usage="usage: $0 [unit|integration|component|contract|e2e] [analytics|event|booking|user|all]"
+node_services=(product-service)
+usage="usage: $0 [unit|integration|component|contract|e2e] [analytics|event|booking|user|product|all]"
 
 run_go() {
   cd "$root/services/$1"
@@ -38,6 +39,16 @@ run_rust() {
   esac
 }
 
+run_node() {
+  cd "$root/services/$1"
+  [[ -d node_modules ]] || npm install --no-audit --no-fund
+  case "$tier" in
+    unit) npm test ;;
+    component) npm run test:component ;;
+    *) echo "$1 has no $tier tier yet, skipping" >&2 ;;
+  esac
+}
+
 case "$tier" in
   unit | integration | component | contract | e2e) ;;
   *)
@@ -56,9 +67,11 @@ case "$target" in
   event) run_go event-service ;;
   booking) run_rust booking-service ;;
   user) run_rust user-service ;;
+  product) run_node product-service ;;
   all)
     for svc in "${go_services[@]}"; do (run_go "$svc"); done
     for svc in "${rust_services[@]}"; do (run_rust "$svc"); done
+    for svc in "${node_services[@]}"; do (run_node "$svc"); done
     ;;
   *)
     echo "$usage" >&2
