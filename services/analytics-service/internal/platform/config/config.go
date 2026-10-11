@@ -14,20 +14,22 @@ type Config struct {
 	DBMaxConns    int32
 	ShutdownGrace time.Duration
 
-	KafkaBrokers             []string
-	KafkaUserEventsTopic     string
-	KafkaBookingEventsTopic  string
-	KafkaConsumerMaxAttempts int
+	KafkaBrokers                 []string
+	KafkaUserEventsTopic         string
+	KafkaBookingEventsTopic      string
+	KafkaProductOrderEventsTopic string
+	KafkaConsumerMaxAttempts     int
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:                     8084,
-		DBMaxConns:               20,
-		ShutdownGrace:            15 * time.Second,
-		KafkaUserEventsTopic:     "user.events",
-		KafkaBookingEventsTopic:  "booking.events",
-		KafkaConsumerMaxAttempts: 5,
+		Port:                         8084,
+		DBMaxConns:                   20,
+		ShutdownGrace:                15 * time.Second,
+		KafkaUserEventsTopic:         "user.events",
+		KafkaBookingEventsTopic:      "booking.events",
+		KafkaProductOrderEventsTopic: "product_order.events",
+		KafkaConsumerMaxAttempts:     5,
 	}
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -70,6 +72,10 @@ func Load() (Config, error) {
 
 	if v := os.Getenv("KAFKA_BOOKING_EVENTS_TOPIC"); v != "" {
 		cfg.KafkaBookingEventsTopic = v
+	}
+
+	if v := os.Getenv("KAFKA_PRODUCT_ORDER_EVENTS_TOPIC"); v != "" {
+		cfg.KafkaProductOrderEventsTopic = v
 	}
 
 	if v := os.Getenv("KAFKA_CONSUMER_MAX_ATTEMPTS"); v != "" {

@@ -45,12 +45,40 @@ func TestBookingOutcomesAreReadWithTheTicketedEventAndOccurrenceTime(t *testing.
 	}
 }
 
+func TestProductOrderEventsAreReadWithTheOrderIdentityAndTotals(t *testing.T) {
+	eventID, orderID, bookingID, userID, ticketedEventID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	identity := `"event_id":"` + eventID.String() + `","order_id":"` + orderID.String() + `","booking_id":"` + bookingID.String() +
+		`","user_id":"` + userID.String() + `","ticketed_event_id":"` + ticketedEventID.String() +
+		`","currency":"USD","total_minor":1200,"item_count":3`
+
+	placed, err := kafka.ProductOrderPlacedSpec(nil).Parse([]byte(`{` + identity + `,"items":[],"placed_at":"2026-03-04T08:30:00Z"}`))
+	if err != nil {
+		t.Fatalf("ProductOrderPlaced Parse: %v", err)
+	}
+	cancelled, err := kafka.ProductOrderCancelledSpec(nil).Parse([]byte(`{` + identity + `,"reason":"booking_cancelled","cancelled_at":"2026-03-05T09:00:00Z"}`))
+	if err != nil {
+		t.Fatalf("ProductOrderCancelled Parse: %v", err)
+	}
+
+	if placed.OrderID != orderID || placed.BookingID != bookingID || placed.TotalMinor != 1200 || placed.ItemCount != 3 || placed.Currency != "USD" || placed.PlacedAt.Day() != 4 {
+		t.Fatalf("placed = %+v", placed)
+	}
+	if cancelled.OrderID != orderID || cancelled.Reason != "booking_cancelled" || cancelled.TotalMinor != 1200 || cancelled.CancelledAt.Day() != 5 {
+		t.Fatalf("cancelled = %+v", cancelled)
+	}
+}
+
 func TestEverySpecRejectsPayloadsItCannotTrust(t *testing.T) {
 	parsers := map[string]func([]byte) error{
-		"UserCreated":      func(b []byte) error { _, err := kafka.UserCreatedSpec(nil).Parse(b); return err },
-		"UserLoggedIn":     func(b []byte) error { _, err := kafka.UserLoggedInSpec(nil).Parse(b); return err },
-		"BookingConfirmed": func(b []byte) error { _, err := kafka.BookingConfirmedSpec(nil).Parse(b); return err },
-		"BookingCancelled": func(b []byte) error { _, err := kafka.BookingCancelledSpec(nil).Parse(b); return err },
+		"UserCreated":        func(b []byte) error { _, err := kafka.UserCreatedSpec(nil).Parse(b); return err },
+		"UserLoggedIn":       func(b []byte) error { _, err := kafka.UserLoggedInSpec(nil).Parse(b); return err },
+		"BookingConfirmed":   func(b []byte) error { _, err := kafka.BookingConfirmedSpec(nil).Parse(b); return err },
+		"BookingCancelled":   func(b []byte) error { _, err := kafka.BookingCancelledSpec(nil).Parse(b); return err },
+		"ProductOrderPlaced": func(b []byte) error { _, err := kafka.ProductOrderPlacedSpec(nil).Parse(b); return err },
+		"ProductOrderCancelled": func(b []byte) error {
+			_, err := kafka.ProductOrderCancelledSpec(nil).Parse(b)
+			return err
+		},
 	}
 	payloads := map[string]string{
 		"not json":              `{{ nope`,

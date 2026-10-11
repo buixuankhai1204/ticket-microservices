@@ -66,6 +66,34 @@ func BookingCancelledSpec(record Recorder[domain.BookingCancelled]) EventSpec[do
 	}
 }
 
+func ProductOrderPlacedSpec(record Recorder[domain.ProductOrderPlaced]) EventSpec[domain.ProductOrderPlaced] {
+	return EventSpec[domain.ProductOrderPlaced]{
+		Group:      "analytics-service-ProductOrderPlaced",
+		EventType:  "ProductOrderPlaced",
+		Component:  "product_order_placed_consumer",
+		SuccessMsg: "product order outcome recorded",
+		Parse:      parseProductOrderPlaced,
+		LogFields: func(ev domain.ProductOrderPlaced) []any {
+			return []any{"event_id", ev.EventID.String(), "order_id", ev.OrderID.String()}
+		},
+		Record: record,
+	}
+}
+
+func ProductOrderCancelledSpec(record Recorder[domain.ProductOrderCancelled]) EventSpec[domain.ProductOrderCancelled] {
+	return EventSpec[domain.ProductOrderCancelled]{
+		Group:      "analytics-service-ProductOrderCancelled",
+		EventType:  "ProductOrderCancelled",
+		Component:  "product_order_cancelled_consumer",
+		SuccessMsg: "product order outcome recorded",
+		Parse:      parseProductOrderCancelled,
+		LogFields: func(ev domain.ProductOrderCancelled) []any {
+			return []any{"event_id", ev.EventID.String(), "order_id", ev.OrderID.String()}
+		},
+		Record: record,
+	}
+}
+
 type userCreatedWire struct {
 	EventID   string `json:"event_id"`
 	UserID    string `json:"user_id"`
@@ -197,4 +225,101 @@ func parseRFC3339(field, s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("bad %s %q: %w", field, s, err)
 	}
 	return t, nil
+}
+
+type productOrderWire struct {
+	EventID         string `json:"event_id"`
+	OrderID         string `json:"order_id"`
+	BookingID       string `json:"booking_id"`
+	UserID          string `json:"user_id"`
+	TicketedEventID string `json:"ticketed_event_id"`
+	Currency        string `json:"currency"`
+	TotalMinor      *int64 `json:"total_minor"`
+	ItemCount       *int   `json:"item_count"`
+	Reason          string `json:"reason"`
+	PlacedAt        string `json:"placed_at"`
+	CancelledAt     string `json:"cancelled_at"`
+}
+
+type productOrderIdentity struct {
+	eventID, orderID, bookingID, userID, ticketedEventID uuid.UUID
+	currency                                             string
+	totalMinor                                           int64
+	itemCount                                            int
+}
+
+func decodeProductOrder(eventName string, b []byte) (productOrderIdentity, productOrderWire, error) {
+	var w productOrderWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return productOrderIdentity{}, w, fmt.Errorf("unmarshal %s: %w", eventName, err)
+	}
+	var id productOrderIdentity
+	var err error
+	if id.eventID, err = parseUUID("event_id", w.EventID); err != nil {
+		return id, w, err
+	}
+	if id.orderID, err = parseUUID("order_id", w.OrderID); err != nil {
+		return id, w, err
+	}
+	if id.bookingID, err = parseUUID("booking_id", w.BookingID); err != nil {
+		return id, w, err
+	}
+	if id.userID, err = parseUUID("user_id", w.UserID); err != nil {
+		return id, w, err
+	}
+	if id.ticketedEventID, err = parseUUID("ticketed_event_id", w.TicketedEventID); err != nil {
+		return id, w, err
+	}
+	if w.TotalMinor == nil || w.ItemCount == nil {
+		return id, w, fmt.Errorf("%s is missing total_minor or item_count", eventName)
+	}
+	id.currency = w.Currency
+	id.totalMinor = *w.TotalMinor
+	id.itemCount = *w.ItemCount
+	return id, w, nil
+}
+
+func parseProductOrderPlaced(b []byte) (domain.ProductOrderPlaced, error) {
+	id, w, err := decodeProductOrder("ProductOrderPlaced", b)
+	if err != nil {
+		return domain.ProductOrderPlaced{}, err
+	}
+	placedAt, err := parseRFC3339("placed_at", w.PlacedAt)
+	if err != nil {
+		return domain.ProductOrderPlaced{}, err
+	}
+	return domain.ProductOrderPlaced{
+		EventID:         id.eventID,
+		OrderID:         id.orderID,
+		BookingID:       id.bookingID,
+		UserID:          id.userID,
+		TicketedEventID: id.ticketedEventID,
+		Currency:        id.currency,
+		TotalMinor:      id.totalMinor,
+		ItemCount:       id.itemCount,
+		PlacedAt:        placedAt,
+	}, nil
+}
+
+func parseProductOrderCancelled(b []byte) (domain.ProductOrderCancelled, error) {
+	id, w, err := decodeProductOrder("ProductOrderCancelled", b)
+	if err != nil {
+		return domain.ProductOrderCancelled{}, err
+	}
+	cancelledAt, err := parseRFC3339("cancelled_at", w.CancelledAt)
+	if err != nil {
+		return domain.ProductOrderCancelled{}, err
+	}
+	return domain.ProductOrderCancelled{
+		EventID:         id.eventID,
+		OrderID:         id.orderID,
+		BookingID:       id.bookingID,
+		UserID:          id.userID,
+		TicketedEventID: id.ticketedEventID,
+		Currency:        id.currency,
+		TotalMinor:      id.totalMinor,
+		ItemCount:       id.itemCount,
+		Reason:          w.Reason,
+		CancelledAt:     cancelledAt,
+	}, nil
 }

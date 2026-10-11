@@ -68,6 +68,30 @@ func recordCases() []recordCase {
 				})
 			},
 		},
+		{
+			name: "product order placed",
+			expect: func(repo *MockRepository) *gomock.Call {
+				return repo.EXPECT().RecordProductOrderPlaced(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any())
+			},
+			execute: func(db port.Transactor, repo port.Repository) (bool, error) {
+				return usecase.NewRecordProductOrderPlacedUseCase(db, repo).Execute(context.Background(), domain.ProductOrderPlaced{
+					EventID: uuid.New(), OrderID: uuid.New(), BookingID: uuid.New(), UserID: uuid.New(), TicketedEventID: uuid.New(),
+					Currency: "USD", TotalMinor: 1200, ItemCount: 3, PlacedAt: now,
+				})
+			},
+		},
+		{
+			name: "product order cancelled",
+			expect: func(repo *MockRepository) *gomock.Call {
+				return repo.EXPECT().RecordProductOrderCancelled(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any())
+			},
+			execute: func(db port.Transactor, repo port.Repository) (bool, error) {
+				return usecase.NewRecordProductOrderCancelledUseCase(db, repo).Execute(context.Background(), domain.ProductOrderCancelled{
+					EventID: uuid.New(), OrderID: uuid.New(), BookingID: uuid.New(), UserID: uuid.New(), TicketedEventID: uuid.New(),
+					Currency: "USD", TotalMinor: 1200, ItemCount: 3, Reason: "customer_cancelled", CancelledAt: now,
+				})
+			},
+		},
 	}
 }
 

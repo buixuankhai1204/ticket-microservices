@@ -65,6 +65,8 @@ func run(log logger.Logger) error {
 	recordUserLogin := usecase.NewRecordUserLoginUseCase(pool, repo)
 	recordBookingConfirmed := usecase.NewRecordBookingConfirmedUseCase(pool, repo)
 	recordBookingCancelled := usecase.NewRecordBookingCancelledUseCase(pool, repo)
+	recordProductOrderPlaced := usecase.NewRecordProductOrderPlacedUseCase(pool, repo)
+	recordProductOrderCancelled := usecase.NewRecordProductOrderCancelledUseCase(pool, repo)
 
 	handler := httpadapter.NewHandler(getEventStats, getUserRegistration)
 	health := httpadapter.NewHealthHandler(pool)
@@ -90,11 +92,18 @@ func run(log logger.Logger) error {
 		Topic:       cfg.KafkaBookingEventsTopic,
 		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
 	}
+	productOrderKafkaCfg := kafkaconsumer.Config{
+		Brokers:     cfg.KafkaBrokers,
+		Topic:       cfg.KafkaProductOrderEventsTopic,
+		MaxAttempts: cfg.KafkaConsumerMaxAttempts,
+	}
 	consumers := []consumerRunner{
 		kafkaconsumer.NewConsumer(userKafkaCfg, kafkaconsumer.UserCreatedSpec(recordUserRegistration), log),
 		kafkaconsumer.NewConsumer(userKafkaCfg, kafkaconsumer.UserLoggedInSpec(recordUserLogin), log),
 		kafkaconsumer.NewConsumer(bookingKafkaCfg, kafkaconsumer.BookingConfirmedSpec(recordBookingConfirmed), log),
 		kafkaconsumer.NewConsumer(bookingKafkaCfg, kafkaconsumer.BookingCancelledSpec(recordBookingCancelled), log),
+		kafkaconsumer.NewConsumer(productOrderKafkaCfg, kafkaconsumer.ProductOrderPlacedSpec(recordProductOrderPlaced), log),
+		kafkaconsumer.NewConsumer(productOrderKafkaCfg, kafkaconsumer.ProductOrderCancelledSpec(recordProductOrderCancelled), log),
 	}
 	for _, c := range consumers {
 		defer func(c consumerRunner) { _ = c.Close() }(c)

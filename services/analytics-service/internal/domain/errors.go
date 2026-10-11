@@ -10,6 +10,8 @@ var (
 	ErrInvalidUserRegistration = errors.New("invalid user registration")
 
 	ErrInvalidUserLogin = errors.New("invalid user login")
+
+	ErrInvalidProductOrder = errors.New("invalid product order")
 )
 
 type RepositoryError struct{ Err error }

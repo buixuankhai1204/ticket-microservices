@@ -38,3 +38,28 @@ type BookingCancelled struct {
 	Reason          string
 	OccurredAt      time.Time
 }
+
+type ProductOrderPlaced struct {
+	EventID         uuid.UUID
+	OrderID         uuid.UUID
+	BookingID       uuid.UUID
+	UserID          uuid.UUID
+	TicketedEventID uuid.UUID
+	Currency        string
+	TotalMinor      int64
+	ItemCount       int
+	PlacedAt        time.Time
+}
+
+type ProductOrderCancelled struct {
+	EventID         uuid.UUID
+	OrderID         uuid.UUID
+	BookingID       uuid.UUID
+	UserID          uuid.UUID
+	TicketedEventID uuid.UUID
+	Currency        string
+	TotalMinor      int64
+	ItemCount       int
+	Reason          string
+	CancelledAt     time.Time
+}
