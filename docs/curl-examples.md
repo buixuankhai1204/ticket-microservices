@@ -132,3 +132,47 @@ curl -i -X POST "$GATEWAY_URL/api/v1/products/events/00000000-0000-0000-0000-000
   -H "Content-Type: application/json" \
   -d '{"delta": -4, "reason": "damaged"}'
 ```
+
+### Place a product order (requires a confirmed booking)
+
+`product-order-routes`: 300 req/min, JWT required. `booking_id` must be one of the caller's
+bookings that booking-service has confirmed (`GET /api/v1/bookings/{id}` shows `confirmed`);
+product-service learns about confirmed bookings from `BookingConfirmed`, so ordering a split second
+after confirmation can answer `409 booking not confirmed`; retry. Prices and names come from the event
+menu, never from the request. At most 20 distinct items, quantity 1 to 10 each (configurable).
+Expected status: `201`, `400` on invalid input (duplicate product, bad quantity, mixed currencies),
+`401`, `404` for someone else's booking, `409` for `booking not confirmed`, `booking cancelled`,
+`product not available`, `insufficient stock` or `order already exists for booking`.
+
+```bash
+curl -i -X POST "$GATEWAY_URL/api/v1/product-orders" \
+  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "booking_id": "00000000-0000-0000-0000-000000000000",
+    "items": [
+      {"product_id": "00000000-0000-0000-0000-000000000001", "quantity": 2},
+      {"product_id": "00000000-0000-0000-0000-000000000002", "quantity": 1}
+    ]
+  }'
+```
+
+### List and read your product orders
+
+Owner-scoped and paginated (`limit` default 20, clamped to 100). Another user's order answers `404`.
+
+```bash
+curl -i "$GATEWAY_URL/api/v1/product-orders?limit=20&offset=0" -H "Authorization: Bearer $JWT_TOKEN"
+curl -i "$GATEWAY_URL/api/v1/product-orders/00000000-0000-0000-0000-000000000000" -H "Authorization: Bearer $JWT_TOKEN"
+```
+
+### Cancel a product order
+
+Idempotent: cancelling an already cancelled order answers `200` again and changes nothing. Restores the
+stock and publishes `ProductOrderCancelled`. Expected status: `200` with the cancelled order, `401`,
+`404` if the order is not the caller's.
+
+```bash
+curl -i -X DELETE "$GATEWAY_URL/api/v1/product-orders/00000000-0000-0000-0000-000000000000" \
+  -H "Authorization: Bearer $JWT_TOKEN"
+```

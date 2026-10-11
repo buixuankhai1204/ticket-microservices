@@ -85,6 +85,10 @@ services:
           --topic ${KAFKA_SUBSCRIPTION_EVENTS_TOPIC:-subscription.events} --partitions 3 --replication-factor 1
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
           --topic ${KAFKA_SUBSCRIPTION_EVENTS_TOPIC:-subscription.events}.dlq --partitions 1 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_PRODUCT_ORDER_EVENTS_TOPIC:-product_order.events} --partitions 3 --replication-factor 1
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic ${KAFKA_PRODUCT_ORDER_EVENTS_TOPIC:-product_order.events}.dlq --partitions 1 --replication-factor 1
         echo "saga topics ready:"
         kafka-topics.sh --bootstrap-server kafka:9092 --list
     networks:
@@ -104,6 +108,8 @@ services:
       postgres-booking:
         condition: service_healthy
       postgres-event:
+        condition: service_healthy
+      postgres-product:
         condition: service_healthy
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
@@ -145,7 +151,7 @@ services:
       - -c
       - |
         set -e
-        for f in /debezium/user-service-outbox.json /debezium/booking-service-outbox.json /debezium/event-service-outbox.json; do
+        for f in /debezium/user-service-outbox.json /debezium/booking-service-outbox.json /debezium/event-service-outbox.json /debezium/product-service-outbox.json; do
           code=$$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
             -H 'Content-Type: application/json' \
             --data @$$f \
@@ -203,6 +209,7 @@ services:
       KAFKA_USER_EVENTS_TOPIC: ${KAFKA_USER_EVENTS_TOPIC:-user.events}
       KAFKA_BOOKING_EVENTS_TOPIC: ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events}
       KAFKA_SUBSCRIPTION_EVENTS_TOPIC: ${KAFKA_SUBSCRIPTION_EVENTS_TOPIC:-subscription.events}
+      KAFKA_PRODUCT_ORDER_EVENTS_TOPIC: ${KAFKA_PRODUCT_ORDER_EVENTS_TOPIC:-product_order.events}
       KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "${ANALYTICS_SERVICE_HOST_PORT:-8084}:8084"
@@ -368,11 +375,22 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-user-service}
       PRODUCT_ADMIN_USER_IDS: ${PRODUCT_ADMIN_USER_IDS:-}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+      ORDER_MAX_LINES: ${ORDER_MAX_LINES:-20}
+      ORDER_MAX_QUANTITY_PER_LINE: ${ORDER_MAX_QUANTITY_PER_LINE:-10}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_BOOKING_EVENTS_TOPIC: ${KAFKA_BOOKING_EVENTS_TOPIC:-booking.events}
+      KAFKA_CONSUMER_MAX_ATTEMPTS: ${KAFKA_CONSUMER_MAX_ATTEMPTS:-5}
     ports:
       - "${PRODUCT_SERVICE_HOST_PORT:-8086}:8086"
     depends_on:
       postgres-product:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      connect-init:
+        condition: service_completed_successfully
     networks:
       - ticket-network
 

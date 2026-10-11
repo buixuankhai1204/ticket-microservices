@@ -1,8 +1,8 @@
 # Saga: product-order
 
-> Status: **design only** — no Kafka code wired yet. This file is the contract that
-> `saga-consistency-reviewer` checks the implementation against. Wire it in the
-> reviewable steps listed in [§11](#11-implementation-order).
+> Status: **implemented** in product-service (persistence, Kafka consumer, orders API) and
+> analytics-service (read model). This file is the contract that `saga-consistency-reviewer`
+> checks the implementation against; the delivery order is in [§11](#11-implementation-order).
 
 ## 1. Summary
 

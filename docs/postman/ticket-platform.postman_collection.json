@@ -316,7 +316,127 @@
             }
           },
           "response": []
-        }
+        },
+      {
+        "name": "Place product order",
+        "request": {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "Authorization",
+              "value": "Bearer {{jwt_token}}"
+            }
+          ],
+          "url": {
+            "raw": "{{gateway_url}}/api/v1/product-orders",
+            "host": [
+              "{{gateway_url}}"
+            ],
+            "path": [
+              "api",
+              "v1",
+              "product-orders"
+            ]
+          },
+          "description": "JWT. 300 req/min. Needs a confirmed booking. 201, 400, 401, 404 (someone else's booking), 409 (booking not confirmed / cancelled, product not available, insufficient stock, order already exists).",
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"booking_id\": \"00000000-0000-0000-0000-000000000000\",\n  \"items\": [\n    {\n      \"product_id\": \"00000000-0000-0000-0000-000000000001\",\n      \"quantity\": 2\n    },\n    {\n      \"product_id\": \"00000000-0000-0000-0000-000000000002\",\n      \"quantity\": 1\n    }\n  ]\n}"
+          }
+        },
+        "response": []
+      },
+      {
+        "name": "List my product orders",
+        "request": {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Authorization",
+              "value": "Bearer {{jwt_token}}"
+            }
+          ],
+          "url": {
+            "raw": "{{gateway_url}}/api/v1/product-orders?limit=20&offset=0",
+            "host": [
+              "{{gateway_url}}"
+            ],
+            "path": [
+              "api",
+              "v1",
+              "product-orders"
+            ],
+            "query": [
+              {
+                "key": "limit",
+                "value": "20"
+              },
+              {
+                "key": "offset",
+                "value": "0"
+              }
+            ]
+          },
+          "description": "JWT. Owner-scoped, paginated."
+        },
+        "response": []
+      },
+      {
+        "name": "Get product order",
+        "request": {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Authorization",
+              "value": "Bearer {{jwt_token}}"
+            }
+          ],
+          "url": {
+            "raw": "{{gateway_url}}/api/v1/product-orders/00000000-0000-0000-0000-000000000000",
+            "host": [
+              "{{gateway_url}}"
+            ],
+            "path": [
+              "api",
+              "v1",
+              "product-orders",
+              "00000000-0000-0000-0000-000000000000"
+            ]
+          },
+          "description": "JWT. 200, 400 (not a UUID), 404 (not yours)."
+        },
+        "response": []
+      },
+      {
+        "name": "Cancel product order",
+        "request": {
+          "method": "DELETE",
+          "header": [
+            {
+              "key": "Authorization",
+              "value": "Bearer {{jwt_token}}"
+            }
+          ],
+          "url": {
+            "raw": "{{gateway_url}}/api/v1/product-orders/00000000-0000-0000-0000-000000000000",
+            "host": [
+              "{{gateway_url}}"
+            ],
+            "path": [
+              "api",
+              "v1",
+              "product-orders",
+              "00000000-0000-0000-0000-000000000000"
+            ]
+          },
+          "description": "JWT. Idempotent. Restores stock and publishes ProductOrderCancelled. 200, 404."
+        },
+        "response": []
+      }
       ]
     }
   ]
