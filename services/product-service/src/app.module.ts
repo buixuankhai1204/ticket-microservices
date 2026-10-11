@@ -11,6 +11,7 @@ import { AllExceptionsFilter } from './adapter/http/filters/all-exceptions.filte
 import { MetricsMiddleware } from './adapter/http/middleware/metrics.middleware.js';
 import { CatalogModule } from './modules/catalog.module.js';
 import { DatabaseModule } from './modules/database.module.js';
+import { MessagingModule } from './modules/messaging.module.js';
 import { ObservabilityModule } from './modules/observability.module.js';
 import { OrdersModule } from './modules/orders.module.js';
 import { appConfig } from './platform/config/app.config.js';
@@ -28,6 +29,7 @@ import { buildLoggerParams } from './platform/logger/logger.options.js';
     ObservabilityModule,
     CatalogModule,
     OrdersModule,
+    MessagingModule.forRoot(),
   ],
   providers: [
     {
