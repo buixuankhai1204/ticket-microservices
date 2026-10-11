@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [swc.vite()],
   test: {
-    include: ['tests/**/*.spec.ts'],
+    include: ['tests/*.component.spec.ts'],
     environment: 'node',
     fileParallelism: false,
     testTimeout: 30000,

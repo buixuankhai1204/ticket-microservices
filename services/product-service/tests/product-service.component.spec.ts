@@ -1,109 +1,31 @@
 import { randomUUID } from 'node:crypto';
-import {
-  PostgreSqlContainer,
-  type StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { Test } from '@nestjs/testing';
-import { SignJWT } from 'jose';
-import { Client } from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startTestApp, type TestApp } from './common/app.js';
+import { ADMIN_ID, USER_ID, signToken as token } from './common/auth.js';
+import * as seed from './common/seed.js';
 
-const JWT_SECRET = 'component-test-secret-0123456789';
-const ADMIN_ID = randomUUID();
-const USER_ID = randomUUID();
-const dbName = `product_test_${randomUUID().replaceAll('-', '')}`;
-
+let ctx: TestApp;
 let app: NestExpressApplication;
-let admin: Client;
-let container: StartedPostgreSqlContainer | undefined;
 
-async function adminUrl(): Promise<string> {
-  const configured = process.env.TEST_DATABASE_URL;
-  if (configured) {
-    return configured;
-  }
-  container = await new PostgreSqlContainer('postgres:16-alpine')
-    .withDatabase('postgres')
-    .withUsername('postgres')
-    .withPassword('postgres')
-    .start();
-  return container.getConnectionUri();
-}
-
-async function token(sub: string): Promise<string> {
-  return new SignJWT({})
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuer('user-service')
-    .setSubject(sub)
-    .setExpirationTime('1h')
-    .sign(new TextEncoder().encode(JWT_SECRET));
-}
-
-async function createProduct(sku: string, priceMinor = 500): Promise<string> {
-  const response = await request(app.getHttpServer())
-    .post('/api/v1/products')
-    .set('Authorization', `Bearer ${await token(ADMIN_ID)}`)
-    .send({
-      sku,
-      name: `Product ${sku}`,
-      category: 'snack',
-      price_minor: priceMinor,
-    })
-    .expect(201);
-  return response.body.id;
-}
-
-async function putInventory(
+const createProduct = (sku: string, priceMinor = 500) =>
+  seed.createProduct(app, sku, priceMinor);
+const putInventory = (
   eventId: string,
   productId: string,
   body: Record<string, unknown>,
-) {
-  return request(app.getHttpServer())
-    .put(`/api/v1/products/events/${eventId}/inventory/${productId}`)
-    .set('Authorization', `Bearer ${await token(ADMIN_ID)}`)
-    .send(body);
-}
-
-async function adjust(eventId: string, productId: string, delta: number) {
-  return request(app.getHttpServer())
-    .post(
-      `/api/v1/products/events/${eventId}/inventory/${productId}/stock-adjustments`,
-    )
-    .set('Authorization', `Bearer ${await token(ADMIN_ID)}`)
-    .send({ delta, reason: 'component test' });
-}
+) => seed.putInventory(app, eventId, productId, body);
+const adjust = (eventId: string, productId: string, delta: number) =>
+  seed.adjustStock(app, eventId, productId, delta);
 
 beforeAll(async () => {
-  const adminConnection = await adminUrl();
-  admin = new Client({ connectionString: adminConnection });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE "${dbName}"`);
-
-  const url = new URL(adminConnection);
-  url.pathname = `/${dbName}`;
-  process.env.DATABASE_URL = url.toString();
-  process.env.JWT_SECRET = JWT_SECRET;
-  process.env.JWT_ISSUER = 'user-service';
-  process.env.PRODUCT_ADMIN_USER_IDS = ADMIN_ID;
-  process.env.LOG_LEVEL = 'silent';
-
-  const { AppModule } = await import('../src/app.module.js');
-  const { configureApp } = await import('../src/app.setup.js');
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
-  app = moduleRef.createNestApplication<NestExpressApplication>();
-  configureApp(app);
-  await app.init();
+  ctx = await startTestApp();
+  app = ctx.app;
 });
 
 afterAll(async () => {
-  await app?.close();
-  await admin?.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-  await admin?.end();
-  await container?.stop();
+  await ctx?.stop();
 });
 
 describe('health', () => {

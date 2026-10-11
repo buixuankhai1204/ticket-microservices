@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:component": "vitest run --config vitest.config.component.ts"
+    "test:component": "vitest run --config vitest.config.component.ts",
+    "test:integration": "vitest run --config vitest.config.integration.ts"
   },
   "dependencies": {
     "@nestjs/common": "^12.1.2",
@@ -51,6 +52,7 @@
     "@nestjs/schematics": "^12.0.6",
     "@nestjs/testing": "^12.1.2",
     "@swc/core": "^1.16.13",
+    "@testcontainers/kafka": "^12.2.0",
     "@testcontainers/postgresql": "^12.2.0",
     "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",

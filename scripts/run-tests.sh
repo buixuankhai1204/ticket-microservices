@@ -44,6 +44,7 @@ run_node() {
   [[ -d node_modules ]] || npm install --no-audit --no-fund
   case "$tier" in
     unit) npm test ;;
+    integration) npm run test:integration ;;
     component) npm run test:component ;;
     *) echo "$1 has no $tier tier yet, skipping" >&2 ;;
   esac
