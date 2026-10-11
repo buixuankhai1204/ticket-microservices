@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
+import { ProductOrdersController } from '../adapter/http/controllers/product-orders.controller.js';
+import { JwtAuthGuard } from '../adapter/http/guards/jwt-auth.guard.js';
 import { PostgresBookingRefRepository } from '../adapter/repository/postgres/postgres-booking-ref.repository.js';
 import { PostgresOutboxRepository } from '../adapter/repository/postgres/postgres-outbox.repository.js';
 import { PostgresProcessedEventRepository } from '../adapter/repository/postgres/postgres-processed-event.repository.js';
@@ -21,6 +23,7 @@ import { CatalogModule } from './catalog.module.js';
 
 @Module({
   imports: [CatalogModule],
+  controllers: [ProductOrdersController],
   providers: [
     { provide: BookingRefRepository, useClass: PostgresBookingRefRepository },
     {
@@ -40,6 +43,7 @@ import { CatalogModule } from './catalog.module.js';
         maxQuantityPerLine: config.orderMaxQuantityPerLine,
       }),
     },
+    JwtAuthGuard,
     OrderCanceller,
     PlaceProductOrderUseCase,
     CancelProductOrderUseCase,
