@@ -4,6 +4,7 @@ import type {
 } from '../../domain/event-inventory.js';
 import type { MenuItem } from '../../domain/menu-item.js';
 import type { Page, Pagination } from '../../domain/pagination.js';
+import type { CatalogLine, RequestedLine } from '../../domain/product-order.js';
 import type { TxContext } from './transactor.js';
 
 export abstract class EventInventoryRepository {
@@ -23,4 +24,21 @@ export abstract class EventInventoryRepository {
     ticketedEventId: string,
     pagination: Pagination,
   ): Promise<Page<MenuItem>>;
+  abstract priceLines(
+    tx: TxContext,
+    ticketedEventId: string,
+    productIds: string[],
+  ): Promise<CatalogLine[]>;
+  abstract reserve(
+    tx: TxContext,
+    ticketedEventId: string,
+    lines: RequestedLine[],
+    now: Date,
+  ): Promise<void>;
+  abstract restock(
+    tx: TxContext,
+    ticketedEventId: string,
+    lines: RequestedLine[],
+    now: Date,
+  ): Promise<void>;
 }

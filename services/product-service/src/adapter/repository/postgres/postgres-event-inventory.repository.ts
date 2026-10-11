@@ -8,6 +8,10 @@ import {
   NotFoundError,
 } from '../../../domain/errors.js';
 import { MenuItem } from '../../../domain/menu-item.js';
+import type {
+  CatalogLine,
+  RequestedLine,
+} from '../../../domain/product-order.js';
 import type { Page, Pagination } from '../../../domain/pagination.js';
 import { Product } from '../../../domain/product.js';
 import { EventInventoryRepository } from '../../../platform/port/event-inventory.repository.js';
@@ -148,4 +152,97 @@ export class PostgresEventInventoryRepository extends EventInventoryRepository {
       total: Number(countRows[0].total),
     };
   }
+
+  async priceLines(
+    tx: TxContext,
+    ticketedEventId: string,
+    productIds: string[],
+  ): Promise<CatalogLine[]> {
+    const rows = await queryRows(
+      tx,
+      `SELECT p.id AS product_id, p.name, p.currency,
+              COALESCE(i.price_minor, p.price_minor) AS unit_price_minor
+       FROM event_inventory i JOIN products p ON p.id = i.product_id
+       WHERE i.ticketed_event_id = $1 AND i.product_id = ANY($2::uuid[])
+         AND i.status = 'active' AND p.status = 'active'`,
+      [ticketedEventId, productIds],
+    );
+    return rows.map((row) => ({
+      productId: row.product_id,
+      name: row.name,
+      currency: row.currency,
+      unitPriceMinor: Number(row.unit_price_minor),
+    }));
+  }
+
+  async reserve(
+    tx: TxContext,
+    ticketedEventId: string,
+    lines: RequestedLine[],
+    now: Date,
+  ): Promise<void> {
+    const sorted = sortLines(lines);
+    await this.lockRows(tx, ticketedEventId, sorted);
+    const rows = await queryRows(
+      tx,
+      `UPDATE event_inventory i
+       SET stock_available = i.stock_available - v.quantity, updated_at = $4
+       FROM unnest($2::uuid[], $3::int[]) AS v(product_id, quantity)
+       WHERE i.ticketed_event_id = $1 AND i.product_id = v.product_id
+         AND i.stock_available >= v.quantity
+       RETURNING i.product_id`,
+      [
+        ticketedEventId,
+        sorted.map((line) => line.productId),
+        sorted.map((line) => line.quantity),
+        now,
+      ],
+    );
+    if (rows.length !== sorted.length) {
+      throw new InsufficientStockError();
+    }
+  }
+
+  async restock(
+    tx: TxContext,
+    ticketedEventId: string,
+    lines: RequestedLine[],
+    now: Date,
+  ): Promise<void> {
+    const sorted = sortLines(lines);
+    await this.lockRows(tx, ticketedEventId, sorted);
+    await queryRows(
+      tx,
+      `UPDATE event_inventory i
+       SET stock_available = i.stock_available + v.quantity, updated_at = $4
+       FROM unnest($2::uuid[], $3::int[]) AS v(product_id, quantity)
+       WHERE i.ticketed_event_id = $1 AND i.product_id = v.product_id`,
+      [
+        ticketedEventId,
+        sorted.map((line) => line.productId),
+        sorted.map((line) => line.quantity),
+        now,
+      ],
+    );
+  }
+
+  private async lockRows(
+    tx: TxContext,
+    ticketedEventId: string,
+    sorted: RequestedLine[],
+  ): Promise<void> {
+    await queryRows(
+      tx,
+      `SELECT 1 FROM event_inventory
+       WHERE ticketed_event_id = $1 AND product_id = ANY($2::uuid[])
+       ORDER BY product_id FOR UPDATE`,
+      [ticketedEventId, sorted.map((line) => line.productId)],
+    );
+  }
+}
+
+function sortLines(lines: RequestedLine[]): RequestedLine[] {
+  return [...lines].sort((a, b) =>
+    a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0,
+  );
 }

@@ -35,5 +35,6 @@ import { UpsertEventInventoryUseCase } from '../usecase/upsert-event-inventory.u
     UpsertEventInventoryUseCase,
     AdjustStockUseCase,
   ],
+  exports: [Transactor, EventInventoryRepository],
 })
 export class CatalogModule {}
