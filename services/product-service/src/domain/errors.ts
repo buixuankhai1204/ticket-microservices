@@ -43,3 +43,21 @@ export class RepositoryError extends DomainError {
     super('repository', message);
   }
 }
+
+export class ProductNotAvailableError extends DomainError {
+  constructor(message = 'product not available') {
+    super('conflict', message);
+  }
+}
+
+export class BookingNotConfirmedError extends DomainError {
+  constructor(message = 'booking not confirmed') {
+    super('conflict', message);
+  }
+}
+
+export class BookingCancelledError extends DomainError {
+  constructor(message = 'booking cancelled') {
+    super('conflict', message);
+  }
+}

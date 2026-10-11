@@ -31,6 +31,13 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
+  ORDER_MAX_LINES: z.coerce.number().int().min(1).max(100).default(20),
+  ORDER_MAX_QUANTITY_PER_LINE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(1000)
+    .default(10),
 });
 
 export function loadConfig(env: NodeJS.ProcessEnv) {
@@ -54,6 +61,8 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     adminUserIds: new Set<string>(values.PRODUCT_ADMIN_USER_IDS),
     defaultCurrency: values.DEFAULT_CURRENCY,
     logLevel: values.LOG_LEVEL,
+    orderMaxLines: values.ORDER_MAX_LINES,
+    orderMaxQuantityPerLine: values.ORDER_MAX_QUANTITY_PER_LINE,
   };
 }
 

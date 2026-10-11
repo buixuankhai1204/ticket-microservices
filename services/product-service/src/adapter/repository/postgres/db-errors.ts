@@ -14,6 +14,7 @@ interface PgDriverError {
 
 const UNIQUE_MESSAGES: Record<string, string> = {
   products_sku_key: 'sku already exists',
+  product_orders_one_placed_per_booking: 'order already exists for booking',
 };
 
 export function sqlState(error: unknown): string | undefined {

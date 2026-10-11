@@ -12,6 +12,7 @@ import { MetricsMiddleware } from './adapter/http/middleware/metrics.middleware.
 import { CatalogModule } from './modules/catalog.module.js';
 import { DatabaseModule } from './modules/database.module.js';
 import { ObservabilityModule } from './modules/observability.module.js';
+import { OrdersModule } from './modules/orders.module.js';
 import { appConfig } from './platform/config/app.config.js';
 import { buildLoggerParams } from './platform/logger/logger.options.js';
 
@@ -26,6 +27,7 @@ import { buildLoggerParams } from './platform/logger/logger.options.js';
     DatabaseModule,
     ObservabilityModule,
     CatalogModule,
+    OrdersModule,
   ],
   providers: [
     {
