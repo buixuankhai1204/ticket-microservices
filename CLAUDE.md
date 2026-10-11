@@ -14,12 +14,14 @@ Kafka Connect + Debezium). `booking-service` — the core seat-reservation saga 
 built**.
 
 `product-service` (NestJS 12 / TypeORM 1.1 / Postgres, `services/product-service`) is the first
-Node service: food/drink/add-on catalog, per-event menu and stock over REST (Phase 1). Orders against a
-confirmed booking, the `BookingConfirmed`/`BookingCancelled` consumers and the
-`ProductOrderPlaced`/`ProductOrderCancelled` outbox events are Phase 2 (design with
-`/design-saga product-order` first). Build/lint per service with `npm run build`,
-`npm run lint` (oxlint), `npm run format:check` (prettier) and `npm run typecheck`; unit specs
-`npm test`; component tests `npm run test:component` (both via `scripts/run-tests.sh [unit|component] product`).
+Node service: the food/drink/add-on catalog, per-event menu and stock, and product orders placed against
+a confirmed booking (`docs/sagas/product-order.md`). It consumes `BookingConfirmed` / `BookingCancelled`
+into a local `booking_refs` projection (one Nest Kafka consumer group,
+`product-service-booking-events`, with manual commit, capped retry and a `booking.events.dlq`), and
+publishes `ProductOrderPlaced` / `ProductOrderCancelled` through the outbox to `product_order.events`,
+which analytics-service projects into `product_order_outcomes`. Build/lint per service with
+`npm run build`, `npm run lint` (oxlint), `npm run format:check` (prettier) and `npm run typecheck`;
+tests via `scripts/run-tests.sh [unit|integration|component] product`.
 
 ## Architecture (as defined by the gateway)
 
@@ -37,7 +39,7 @@ Planned services, each expected to be its own deployable unit reachable at
 | `event-service` | 8082 | `/api/v1/events` (1000 req/min) | none |
 | `booking-service` | 8083 | `/api/v1/bookings` (300 req/min) | JWT (`exp` claim verified) |
 | `analytics-service` | 8084 | `/api/v1/analytics` (60 req/min) | JWT (`exp` claim verified) |
-| `product-service` | 8086 | `/api/v1/products` — `GET` public (600 req/min), `POST`/`PUT` JWT (60 req/min); admin writes also gated in-service by `PRODUCT_ADMIN_USER_IDS` | JWT (`exp` claim verified) on writes |
+| `product-service` | 8086 | `/api/v1/products` — `GET` public (600 req/min), `POST`/`PUT` JWT (60 req/min); admin writes also gated in-service by `PRODUCT_ADMIN_USER_IDS`; `/api/v1/product-orders` (300 req/min) | JWT (`exp` claim verified) on writes and on all orders |
 
 All routes use `strip_path: false`, so each service must handle the full `/api/v1/...` prefix
 itself rather than expecting it stripped.
@@ -308,6 +310,12 @@ group's `event_type` (guard on the header) rather than dead-lettering it; only p
 *own* type, permanent failures, and retry-exhausted messages go to `user.events.dlq`. Both Go
 services (`event-service`, `analytics-service`) follow the usecase-owns-the-transaction shape
 with the `Repository` port in `internal/platform/port/`.
+
+`product-service` is the second publisher and the first Node consumer: it writes `ProductOrderPlaced` /
+`ProductOrderCancelled` (`aggregate_type = "product_order"`, key `booking_id`) in the same transaction as the
+order and stock change, and reacts to `BookingConfirmed` / `BookingCancelled` (monotonic `booking_refs`, so
+`cancelled` always wins). analytics-service consumes the two order events with one group per event type and
+a commutative upsert, so either arrival order converges.
 
 Sketched next (design it with `/design-saga seat-reservation` before wiring): `booking-service`
 publishes `BookingRequested` → `event-service` reserves the seat and publishes

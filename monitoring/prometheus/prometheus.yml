@@ -36,6 +36,7 @@ scrape_configs:
           - http://kafka-connect:8083/connectors/user-service-outbox/status
           - http://kafka-connect:8083/connectors/booking-service-outbox/status
           - http://kafka-connect:8083/connectors/event-service-outbox/status
+          - http://kafka-connect:8083/connectors/product-service-outbox/status
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
