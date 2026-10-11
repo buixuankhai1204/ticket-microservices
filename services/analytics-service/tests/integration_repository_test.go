@@ -205,3 +205,111 @@ func TestAnUnknownUserIsNotFound(t *testing.T) {
 		}
 	})
 }
+
+func productOrderPair(t *testing.T) (domain.ProductOrderPlaced, domain.ProductOrderCancelled) {
+	t.Helper()
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	orderID, bookingID, userID, ticketedEventID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	placed := domain.ProductOrderPlaced{
+		EventID: uuid.New(), OrderID: orderID, BookingID: bookingID, UserID: userID, TicketedEventID: ticketedEventID,
+		Currency: "USD", TotalMinor: 1200, ItemCount: 3, PlacedAt: base,
+	}
+	cancelled := domain.ProductOrderCancelled{
+		EventID: uuid.New(), OrderID: orderID, BookingID: bookingID, UserID: userID, TicketedEventID: ticketedEventID,
+		Currency: "USD", TotalMinor: 1200, ItemCount: 3, Reason: "customer_cancelled", CancelledAt: base.Add(time.Minute),
+	}
+	return placed, cancelled
+}
+
+func recordPlaced(t *testing.T, pool *pgxpool.Pool, ev domain.ProductOrderPlaced) bool {
+	t.Helper()
+	o, err := domain.NewProductOrderPlacedOutcome(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var already bool
+	inTx(t, pool, func(tx pgx.Tx) {
+		already, err = repo.RecordProductOrderPlaced(context.Background(), tx, ev.EventID, *o)
+		if err != nil {
+			t.Fatalf("record placed: %v", err)
+		}
+	})
+	return already
+}
+
+func recordCancelled(t *testing.T, pool *pgxpool.Pool, ev domain.ProductOrderCancelled) bool {
+	t.Helper()
+	o, err := domain.NewProductOrderCancelledOutcome(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var already bool
+	inTx(t, pool, func(tx pgx.Tx) {
+		already, err = repo.RecordProductOrderCancelled(context.Background(), tx, ev.EventID, *o)
+		if err != nil {
+			t.Fatalf("record cancelled: %v", err)
+		}
+	})
+	return already
+}
+
+type storedOrder struct {
+	status       string
+	itemCount    int
+	hasPlacedAt  bool
+	hasCancelled bool
+	reason       *string
+}
+
+func readOrder(t *testing.T, pool *pgxpool.Pool, orderID uuid.UUID) storedOrder {
+	t.Helper()
+	var o storedOrder
+	err := pool.QueryRow(context.Background(),
+		`SELECT status, item_count, placed_at IS NOT NULL, cancelled_at IS NOT NULL, cancel_reason
+		 FROM product_order_outcomes WHERE order_id = $1`, orderID,
+	).Scan(&o.status, &o.itemCount, &o.hasPlacedAt, &o.hasCancelled, &o.reason)
+	if err != nil {
+		t.Fatalf("read order outcome: %v", err)
+	}
+	return o
+}
+
+func TestAProductOrderEndsUpCancelledWhicheverEventArrivesFirst(t *testing.T) {
+	t.Parallel()
+	pool := common.NewDatabase(t)
+
+	placedA, cancelledA := productOrderPair(t)
+	placedB, cancelledB := productOrderPair(t)
+	recordPlaced(t, pool, placedA)
+	recordCancelled(t, pool, cancelledA)
+	recordCancelled(t, pool, cancelledB)
+	recordPlaced(t, pool, placedB)
+
+	for name, orderID := range map[string]uuid.UUID{"placed then cancelled": placedA.OrderID, "cancelled then placed": placedB.OrderID} {
+		got := readOrder(t, pool, orderID)
+		if got.status != domain.ProductOrderStatusCancelled || got.itemCount != 3 || !got.hasPlacedAt || !got.hasCancelled || got.reason == nil || *got.reason != "customer_cancelled" {
+			t.Fatalf("%s: stored = %+v, want a complete cancelled row", name, got)
+		}
+	}
+	if n := count(t, pool, "product_order_outcomes"); n != 2 {
+		t.Fatalf("outcomes = %d, want one row per order", n)
+	}
+}
+
+func TestReplayingAProductOrderEventIsReportedAndChangesNothing(t *testing.T) {
+	t.Parallel()
+	pool := common.NewDatabase(t)
+	placed, cancelled := productOrderPair(t)
+
+	if recordPlaced(t, pool, placed) {
+		t.Fatalf("the first delivery was reported as already processed")
+	}
+	recordCancelled(t, pool, cancelled)
+	if !recordPlaced(t, pool, placed) {
+		t.Fatalf("the redelivered placed event was not reported as already processed")
+	}
+
+	if got := readOrder(t, pool, placed.OrderID); got.status != domain.ProductOrderStatusCancelled {
+		t.Fatalf("stored = %+v, a replayed placed event must not revert a cancelled order", got)
+	}
+}

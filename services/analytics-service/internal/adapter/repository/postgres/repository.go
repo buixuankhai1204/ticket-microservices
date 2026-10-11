@@ -108,6 +108,57 @@ func (r *Repository) RecordBookingOutcome(ctx context.Context, tx pgx.Tx, eventI
 	return false, nil
 }
 
+func (r *Repository) markProcessed(ctx context.Context, tx pgx.Tx, eventID uuid.UUID) (alreadyProcessed bool, err error) {
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+		eventID,
+	)
+	if err != nil {
+		return false, &domain.RepositoryError{Err: fmt.Errorf("mark processed_events: %w", err)}
+	}
+	return tag.RowsAffected() == 0, nil
+}
+
+func (r *Repository) RecordProductOrderPlaced(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, outcome domain.ProductOrderOutcome) (bool, error) {
+	already, err := r.markProcessed(ctx, tx, eventID)
+	if err != nil || already {
+		return already, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO product_order_outcomes
+		   (order_id, booking_id, user_id, ticketed_event_id, currency, total_minor, item_count, status, placed_at, recorded_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 ON CONFLICT (order_id) DO UPDATE
+		   SET placed_at = EXCLUDED.placed_at, item_count = EXCLUDED.item_count`,
+		outcome.OrderID, outcome.BookingID, outcome.UserID, outcome.TicketedEventID, outcome.Currency,
+		outcome.TotalMinor, outcome.ItemCount, outcome.Status, outcome.PlacedAt, outcome.RecordedAt,
+	); err != nil {
+		return false, &domain.RepositoryError{Err: fmt.Errorf("upsert product_order_outcome (placed): %w", err)}
+	}
+	return false, nil
+}
+
+func (r *Repository) RecordProductOrderCancelled(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, outcome domain.ProductOrderOutcome) (bool, error) {
+	already, err := r.markProcessed(ctx, tx, eventID)
+	if err != nil || already {
+		return already, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO product_order_outcomes
+		   (order_id, booking_id, user_id, ticketed_event_id, currency, total_minor, item_count, status, cancelled_at, cancel_reason, recorded_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (order_id) DO UPDATE
+		   SET status = EXCLUDED.status, cancelled_at = EXCLUDED.cancelled_at, cancel_reason = EXCLUDED.cancel_reason`,
+		outcome.OrderID, outcome.BookingID, outcome.UserID, outcome.TicketedEventID, outcome.Currency,
+		outcome.TotalMinor, outcome.ItemCount, outcome.Status, outcome.CancelledAt, outcome.CancelReason, outcome.RecordedAt,
+	); err != nil {
+		return false, &domain.RepositoryError{Err: fmt.Errorf("upsert product_order_outcome (cancelled): %w", err)}
+	}
+	return false, nil
+}
+
 func (r *Repository) GetUserRegistration(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (domain.UserRegistration, error) {
 	const query = `
 		SELECT user_id, email, registered_at, recorded_at

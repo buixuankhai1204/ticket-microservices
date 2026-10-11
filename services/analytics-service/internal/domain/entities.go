@@ -81,3 +81,69 @@ func NewUserLogin(userID uuid.UUID, email string, loggedInAt time.Time) (*UserLo
 		RecordedAt: time.Now().UTC(),
 	}, nil
 }
+
+const (
+	ProductOrderStatusPlaced    = "placed"
+	ProductOrderStatusCancelled = "cancelled"
+)
+
+type ProductOrderOutcome struct {
+	OrderID         uuid.UUID
+	BookingID       uuid.UUID
+	UserID          uuid.UUID
+	TicketedEventID uuid.UUID
+	Currency        string
+	TotalMinor      int64
+	ItemCount       int
+	Status          string
+	PlacedAt        *time.Time
+	CancelledAt     *time.Time
+	CancelReason    string
+	RecordedAt      time.Time
+}
+
+func validProductOrderIdentity(currency string, totalMinor int64, itemCount int) bool {
+	if len(currency) != 3 || strings.ToUpper(currency) != currency {
+		return false
+	}
+	return totalMinor >= 0 && itemCount >= 0
+}
+
+func NewProductOrderPlacedOutcome(ev ProductOrderPlaced) (*ProductOrderOutcome, error) {
+	if !validProductOrderIdentity(ev.Currency, ev.TotalMinor, ev.ItemCount) || ev.PlacedAt.IsZero() {
+		return nil, ErrInvalidProductOrder
+	}
+	placedAt := ev.PlacedAt
+	return &ProductOrderOutcome{
+		OrderID:         ev.OrderID,
+		BookingID:       ev.BookingID,
+		UserID:          ev.UserID,
+		TicketedEventID: ev.TicketedEventID,
+		Currency:        ev.Currency,
+		TotalMinor:      ev.TotalMinor,
+		ItemCount:       ev.ItemCount,
+		Status:          ProductOrderStatusPlaced,
+		PlacedAt:        &placedAt,
+		RecordedAt:      time.Now().UTC(),
+	}, nil
+}
+
+func NewProductOrderCancelledOutcome(ev ProductOrderCancelled) (*ProductOrderOutcome, error) {
+	if !validProductOrderIdentity(ev.Currency, ev.TotalMinor, ev.ItemCount) || ev.CancelledAt.IsZero() || ev.Reason == "" {
+		return nil, ErrInvalidProductOrder
+	}
+	cancelledAt := ev.CancelledAt
+	return &ProductOrderOutcome{
+		OrderID:         ev.OrderID,
+		BookingID:       ev.BookingID,
+		UserID:          ev.UserID,
+		TicketedEventID: ev.TicketedEventID,
+		Currency:        ev.Currency,
+		TotalMinor:      ev.TotalMinor,
+		ItemCount:       ev.ItemCount,
+		Status:          ProductOrderStatusCancelled,
+		CancelledAt:     &cancelledAt,
+		CancelReason:    ev.Reason,
+		RecordedAt:      time.Now().UTC(),
+	}, nil
+}

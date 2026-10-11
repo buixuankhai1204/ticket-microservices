@@ -19,4 +19,8 @@ type Repository interface {
 	RecordUserLogin(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, login domain.UserLogin) (alreadyProcessed bool, err error)
 
 	RecordBookingOutcome(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, outcome domain.BookingOutcome) (alreadyProcessed bool, err error)
+
+	RecordProductOrderPlaced(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, outcome domain.ProductOrderOutcome) (alreadyProcessed bool, err error)
+
+	RecordProductOrderCancelled(ctx context.Context, tx pgx.Tx, eventID uuid.UUID, outcome domain.ProductOrderOutcome) (alreadyProcessed bool, err error)
 }
