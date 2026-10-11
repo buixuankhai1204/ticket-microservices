@@ -12,33 +12,58 @@ const uuidList = z
   )
   .pipe(z.array(z.uuid()));
 
-const envSchema = z.object({
-  NODE_ENV: z
-    .enum(['development', 'test', 'production'])
-    .default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(8086),
-  DATABASE_URL: z.string().min(1),
-  DB_MAX_CONNS: z.coerce.number().int().min(2).max(200).default(20),
-  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).default(10000),
-  DB_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).default(5000),
-  JWT_SECRET: z.string().min(16),
-  JWT_ISSUER: z.string().min(1).default('user-service'),
-  PRODUCT_ADMIN_USER_IDS: uuidList,
-  DEFAULT_CURRENCY: z
-    .string()
-    .regex(/^[A-Z]{3}$/)
-    .default('USD'),
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .default('info'),
-  ORDER_MAX_LINES: z.coerce.number().int().min(1).max(100).default(20),
-  ORDER_MAX_QUANTITY_PER_LINE: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(1000)
-    .default(10),
-});
+const envSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(['development', 'test', 'production'])
+      .default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(8086),
+    DATABASE_URL: z.string().min(1),
+    DB_MAX_CONNS: z.coerce.number().int().min(2).max(200).default(20),
+    DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).default(10000),
+    DB_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).default(5000),
+    JWT_SECRET: z.string().min(16),
+    JWT_ISSUER: z.string().min(1).default('user-service'),
+    PRODUCT_ADMIN_USER_IDS: uuidList,
+    DEFAULT_CURRENCY: z
+      .string()
+      .regex(/^[A-Z]{3}$/)
+      .default('USD'),
+    LOG_LEVEL: z
+      .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+      .default('info'),
+    ORDER_MAX_LINES: z.coerce.number().int().min(1).max(100).default(20),
+    ORDER_MAX_QUANTITY_PER_LINE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(10),
+    KAFKA_CONSUMER_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    KAFKA_BROKERS: z.string().default(''),
+    KAFKA_CONSUMER_MAX_ATTEMPTS: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .default(5),
+    KAFKA_GROUP_SUFFIX: z
+      .string()
+      .regex(/^[A-Za-z0-9._-]*$/)
+      .default(''),
+  })
+  .superRefine((values, context) => {
+    if (values.KAFKA_CONSUMER_ENABLED && values.KAFKA_BROKERS.trim() === '') {
+      context.addIssue({
+        code: 'custom',
+        path: ['KAFKA_BROKERS'],
+        message: 'is required when KAFKA_CONSUMER_ENABLED is true',
+      });
+    }
+  });
 
 export function loadConfig(env: NodeJS.ProcessEnv) {
   const parsed = envSchema.safeParse(env);
@@ -63,6 +88,14 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
     logLevel: values.LOG_LEVEL,
     orderMaxLines: values.ORDER_MAX_LINES,
     orderMaxQuantityPerLine: values.ORDER_MAX_QUANTITY_PER_LINE,
+    kafka: {
+      enabled: values.KAFKA_CONSUMER_ENABLED,
+      brokers: values.KAFKA_BROKERS.split(',')
+        .map((broker) => broker.trim())
+        .filter((broker) => broker.length > 0),
+      maxAttempts: values.KAFKA_CONSUMER_MAX_ATTEMPTS,
+      groupSuffix: values.KAFKA_GROUP_SUFFIX,
+    },
   };
 }
 
