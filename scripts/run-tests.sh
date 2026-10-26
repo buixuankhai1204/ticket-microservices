@@ -34,7 +34,12 @@ run_rust() {
       fi
       ;;
     component) cargo test --test component_in_process --test component_out_of_process -- --ignored ;;
-    contract) cargo test --test contract_consumer ;;
+    contract)
+      cargo test --test contract_consumer
+      if [[ -f tests/contract_provider.rs ]]; then
+        cargo test --test contract_provider -- --ignored
+      fi
+      ;;
     e2e) cargo test --test e2e -- --ignored ;;
   esac
 }
