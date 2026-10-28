@@ -112,10 +112,11 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-This brings up, in dependency order: four Postgres instances (each with its own
-volume), the Kafka broker, a one-shot job that creates the saga topics
-(`kafka-init`), Kafka Connect, a one-shot job that registers the two Debezium
-connectors (`connect-init`), the four services, and Kong.
+This brings up four Postgres instances (each with its own volume), the Kafka
+broker, a one-shot job that creates the saga topics (`kafka-init`), Kafka Connect,
+the services (each migrates its own schema, including `outbox_events`, on startup),
+a one-shot job that waits for those tables (`outbox-ready`), a one-shot job that
+then registers the four Debezium connectors (`connect-init`), and Kong.
 
 Check everything is healthy:
 

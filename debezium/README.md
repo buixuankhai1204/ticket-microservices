@@ -6,6 +6,27 @@ bundles the PostgreSQL connector and the Outbox Event Router SMT), and the
 `connect-init` one-shot `POST`s each file here to the Connect REST API on
 startup (an existing connector — HTTP 409 — is treated as success).
 
+## Startup order
+
+A connector needs `public.outbox_events` to exist when its task starts, and the
+table is created by each service's own migrations at startup. The `outbox-ready`
+one-shot (`wait-for-outbox.sh`) therefore polls every database listed in its
+`OUTBOX_DATABASES` until the table exists (`OUTBOX_READY_TIMEOUT`, default 300 s,
+then it fails and `connect-init` does not run); only then does `connect-init`
+register the connectors. Publishing services do not wait for `connect-init`,
+because they have to migrate before it can run.
+
+- On a fresh volume a replication slot only exists once its connector first
+  starts, so an outbox row written in the few seconds between the table appearing
+  and the connector registering is not captured. Nothing writes in that window on a
+  fresh stack. On an existing volume the slot already exists and keeps the WAL, so
+  nothing is lost.
+- Adding a publishing service: add its `debezium/<service>-outbox.json` to
+  `connect-init` and its database to `OUTBOX_DATABASES`.
+- A task that is already `FAILED` stays failed (a re-run of `connect-init` only
+  sees HTTP 409). Restart it with
+  `curl -X POST 'localhost:8083/connectors/<name>/restart?includeTasks=true&onlyFailed=true'`.
+
 ## `user-service-outbox.json`
 
 Tails `public.outbox_events` in the `user_service` database via a logical

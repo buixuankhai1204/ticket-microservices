@@ -381,15 +381,17 @@ Parameterize like the existing `user.events`: `KAFKA_BOOKING_EVENTS_TOPIC`
     replication slot), so the connector can be registered without a DB restart.
   - `booking-service` container — **already added** by the scaffold (`depends_on`
     `postgres-booking` healthy). When the first `consume:` step is wired, add
-    `depends_on` `kafka` (healthy), `kafka-init` + `connect-init` (completed) and
-    the `KAFKA_*` env vars.
+    `depends_on` `kafka` (healthy), `kafka-init` (completed) and the `KAFKA_*` env
+    vars. Not `connect-init`: the connector registers after the service has
+    migrated `outbox_events` (`outbox-ready`), so waiting on it would deadlock.
   - Add the `wal_level=logical` / `max_wal_senders` / `max_replication_slots`
     command block to the existing **`postgres-event`** service (it currently has
     no `command:` override) — needed for the `event-service-outbox` connector.
-  - `event-service` container: add `depends_on` `kafka` (healthy), `kafka-init` +
-    `connect-init` (completed), and the new `KAFKA_*` env vars — it becomes both a
-    consumer and a CDC publisher.
-  - `connect-init`: mount already covers `./debezium`; just add the two POSTs.
+  - `event-service` container: add `depends_on` `kafka` (healthy), `kafka-init`
+    (completed), and the new `KAFKA_*` env vars — it becomes both a consumer and a
+    CDC publisher.
+  - `connect-init`: mount already covers `./debezium`; just add the two POSTs, and
+    list both service databases in `outbox-ready`'s `OUTBOX_DATABASES`.
   - `kong` `depends_on`: `booking-service` — **already added** by the scaffold.
 
 ### Migrations — authored with `/new-migration`, one file per concern

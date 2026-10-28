@@ -136,13 +136,42 @@ services:
     networks:
       - ticket-network
 
+  outbox-ready:
+    image: postgres:16-alpine
+    depends_on:
+      postgres-user:
+        condition: service_healthy
+      postgres-event:
+        condition: service_healthy
+      postgres-booking:
+        condition: service_healthy
+      postgres-product:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      OUTBOX_READY_TIMEOUT: ${OUTBOX_READY_TIMEOUT:-300}
+      OUTBOX_DATABASES: >-
+        user-service=postgres://${USER_DB_USER:-user_service}:${USER_DB_PASSWORD:-user_service}@postgres-user:5432/${USER_DB_NAME:-user_service}
+        event-service=postgres://${EVENT_DB_USER:-event_service}:${EVENT_DB_PASSWORD:-event_service}@postgres-event:5432/${EVENT_DB_NAME:-event_service}
+        booking-service=postgres://${BOOKING_DB_USER:-booking_service}:${BOOKING_DB_PASSWORD:-booking_service}@postgres-booking:5432/${BOOKING_DB_NAME:-booking_service}
+        product-service=postgres://${PRODUCT_DB_USER:-product_service}:${PRODUCT_DB_PASSWORD:-product_service}@postgres-product:5432/${PRODUCT_DB_NAME:-product_service}
+    volumes:
+      - ./debezium:/debezium:ro
+    entrypoint: ["sh", "/debezium/wait-for-outbox.sh"]
+    networks:
+      - ticket-network
+
   # One-shot: register (or update) the Debezium connector, then exit. Treats an
   # existing connector (HTTP 409) as success so re-running compose is idempotent.
+  # Waits for outbox-ready: a connector started before its service has migrated
+  # outbox_events has no table to publish and its task fails for good.
   connect-init:
     image: curlimages/curl:8.8.0
     depends_on:
       kafka-connect:
         condition: service_healthy
+      outbox-ready:
+        condition: service_completed_successfully
     restart: "no"
     volumes:
       - ./debezium:/debezium:ro
@@ -275,8 +304,6 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-      connect-init:
-        condition: service_completed_successfully
     networks:
       - ticket-network
 
@@ -333,8 +360,6 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
-      connect-init:
-        condition: service_completed_successfully
     networks:
       - ticket-network
 
@@ -388,8 +413,6 @@ services:
       kafka:
         condition: service_healthy
       kafka-init:
-        condition: service_completed_successfully
-      connect-init:
         condition: service_completed_successfully
     networks:
       - ticket-network

@@ -275,7 +275,12 @@ Three supporting patterns are required, not optional, for any publish/consume co
   `tracecontext` → `traceparent`) → headers, `payload` → the message value (unwrapped). The connector is set `skipped.operations=u,d,t`
   (inserts only), so a service writes the row and **deletes it again in the same transaction**
   to keep the table empty — the WAL still carries the insert. Connector defs live in
-  `debezium/`, registered by the `connect-init` one-shot in `docker-compose`.
+  `debezium/`, registered by the `connect-init` one-shot in `docker-compose`. `connect-init`
+  waits for the `outbox-ready` one-shot, which polls each publishing service's Postgres
+  (`OUTBOX_DATABASES`) until that service's own startup migrations have created `outbox_events`:
+  a connector started earlier finds no table, fails with "No table filters found" and never
+  retries. So a publishing service must **not** `depends_on` `connect-init` (it would deadlock
+  on its own migration), and a new publisher's database goes into `OUTBOX_DATABASES`.
 - **Idempotent consumers** — Kafka delivers at-least-once. The consumer calls the use case
   (which owns the transaction); the use case checks a `processed_events` table (unique event
   ID) before applying an event, on the same transaction as the side effect.

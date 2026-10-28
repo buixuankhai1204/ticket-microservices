@@ -99,8 +99,9 @@ Which key to use: `.request_id` for Go and Node, `.fields.request_id` for a Rust
 ```bash
 docker compose ps
 ```
-Everything `Up` or `healthy`. `kafka-init` and `connect-init` are one-shots and should show
-`Exited (0)`.
+Everything `Up` or `healthy`. `kafka-init`, `outbox-ready` and `connect-init` are one-shots and
+should show `Exited (0)`. If `outbox-ready` shows `Exited (1)`, a service did not create
+`outbox_events` within five minutes (check that service's logs), and `connect-init` never ran.
 
 ```bash
 curl -s -u admin:admin localhost:3000/api/prometheus/grafana/api/v1/rules \

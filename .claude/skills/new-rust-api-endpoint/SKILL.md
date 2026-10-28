@@ -128,7 +128,10 @@ log-tailing CDC — you write the outbox row, no producer code.
 - **`debezium/<service-name>-outbox.json`** — if the service has no connector, add one (copy
   `debezium/user-service-outbox.json`): repoint `database.*`, unique `slot.name` /
   `publication.name`, `table.include.list=public.outbox_events`, `skipped.operations=u,d,t`,
-  the `EventRouter` transform. Register it in `connect-init`; the service's Postgres needs
+  the `EventRouter` transform. Register it in `connect-init` and add the service's database to
+  `outbox-ready`'s `OUTBOX_DATABASES` (the connector must register only after the service has
+  migrated `outbox_events`; the service itself must not `depends_on` `connect-init`, which
+  would deadlock); the service's Postgres needs
   `wal_level=logical`. If the connector exists, a new `aggregate_type` routes automatically.
 - Add `<aggregate_type>.events` and `<aggregate_type>.events.dlq` to the `kafka-init` step.
 - `rdkafka` stays in `Cargo.toml` for the *consume* side only. If `/add-observability` has
