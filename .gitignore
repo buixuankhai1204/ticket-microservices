@@ -19,6 +19,9 @@ services/**/coverage/
 services/**/*.tsbuildinfo
 services/product-service/package-lock.json
 
+# k6 stress runs
+tests/stress/.generated/
+
 # Env
 .env
 .env.local

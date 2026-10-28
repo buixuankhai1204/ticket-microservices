@@ -411,6 +411,13 @@ a test-only trigger that copies each outbox row into an `outbox_tap` table. Use
 a repository, a Kafka consumer adapter or an outbound HTTP gateway, and `component-test-writer`
 after changing a handler or consumer wiring.
 
+Stress tests are a separate, manual thing: `scripts/run-stress.sh [--direct] [--keep-rate-limits]
+<smoke|contention|soak>` runs the k6 scenarios in `tests/stress/` against the running compose
+stack (see `docs/stress-testing.md`). For the run it lifts Kong's per-route rate limits by mounting
+a sed-rewritten copy of `kong/kong.yml` (never edit the real one) and restores them on exit; the
+seat-contention and soak scenarios assert the saga invariants (no oversold or double-confirmed
+seat, nothing stuck `pending`, held seats released) rather than only latency.
+
 A consumer adapter must never commit past a message it has not fully resolved. A handler
 failure — in practice a failed dead-letter write — retries **the same message in place**; it
 does not move on to the next one (a later commit would silently commit past it and lose it).
