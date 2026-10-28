@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Three services exist: `user-service` (Rust/axum — register, login, profile, list; publishes
+Four services exist besides `product-service`: `user-service` (Rust/axum — register, login, profile, list; publishes
 `UserCreated` + `UserLoggedIn` through the outbox), `event-service` (Go — events + seat reads,
-paginated), and `analytics-service` (Go — consumes `user.events` into read models). Each has
+paginated; reserves seats for the saga), `booking-service` (Rust/axum — creates a pending
+booking, then confirms or cancels it from `SeatReserved` / `SeatReservationFailed` and reaps
+stale pending ones), and `analytics-service` (Go — consumes `user.events` into read models). Each has
 its own `go.mod` / `Cargo.toml` — build/lint per service (`go build ./...` + `go vet` +
 `gofmt` for Go; `cargo build` + `cargo clippy -- -D warnings` + `cargo fmt` for Rust). The
 whole stack runs via `docker-compose.yml` (Kong, a Postgres per service, single-node Kafka,
-Kafka Connect + Debezium). `booking-service` — the core seat-reservation saga — is **not yet
-built**.
+Kafka Connect + Debezium). `booking-service` and `event-service` together run the
+seat-reservation saga (`docs/sagas/seat-reservation.md`).
 
 `product-service` (NestJS 12 / TypeORM 1.1 / Postgres, `services/product-service`) is the first
 Node service: the food/drink/add-on catalog, per-event menu and stock, and product orders placed against
@@ -181,32 +183,52 @@ migration must be safe for the **currently running** code:
 Author with `/new-migration`; `migration-reviewer` and the `migration-safety-check.sh` hook
 enforce the above.
 
-### Observability: request IDs and trace context that survive the Kafka hop
+### Observability: request IDs, metrics and alerts (tracing is still target-state)
 
-Every service (per scaffold, or retrofit with `/add-observability`):
+`docs/observability-runbook.md` is the day-to-day guide to using all of this to diagnose a
+running stack. What is implemented today:
 
-- Emits **one structured access-log line per request** with a `request_id` (inbound
-  `X-Request-Id` reused or a fresh UUID, echoed back and put on the context) — not just
-  process start/stop. Never logs the `Authorization` header, a raw JWT, or a PII/payment body.
-- Runs an **OTel server span that continues the inbound W3C `traceparent`** (Kong/the client
-  started the trace), plus spans per use case and per repo call, exported over OTLP.
-- Carries **trace context across the saga**: the publishing use case writes the current
-  `traceparent` into the outbox row's `tracecontext` column; the Debezium SMT maps it to a
-  Kafka header; the consumer extracts it and starts its processing span from that remote
-  context. Without this, a client action is two disconnected traces, not one.
-- Exposes Prometheus `/metrics` (RED on HTTP; processed/retried/dead-lettered counters and
-  lag for consumers), separate from `/healthz` and `/readyz`.
+- **One structured JSON access-log line per request** with `request_id`, `method`, `path`,
+  `status`, `duration_ms` — not just process start/stop. An inbound `X-Request-Id` is reused
+  (Rust and Node only when it matches `[A-Za-z0-9._-]{1,128}`), otherwise a UUID is generated,
+  and it is echoed on the response. Go: `adapter/http/middleware.go`. Node: `nestjs-pino`
+  (`platform/logger`). Rust: `adapter/http/request_log.rs`, a hand-rolled axum middleware that
+  also puts `request_id` on a `request` span so handler logs carry it (`span.request_id`) and
+  that skips `/healthz`, `/readyz`, `/metrics`. Never logs the `Authorization` header, a raw
+  JWT, or a PII/payment body.
+- **Kong stamps every request with an `X-Request-Id`** (global `correlation-id` plugin,
+  generator `uuid`, reuses an inbound value, echoed downstream, exposed through CORS), so the id
+  the client sees is the id in every service's log line for that request.
+- **Consumers log per message with the event identity.** Go consumers add `event_id` + the
+  domain id (`LogFields`) and the offset; the Rust consumer (`booking-service`) runs each
+  message under a `consume` span carrying `group`, `topic`, `partition`, `offset`, `event_id`
+  (the Debezium `event_id` header) and `aggregate_id` (the Kafka key).
+- **Prometheus `/metrics` on all five services**: RED — `http_requests_total` /
+  `http_requests_duration_seconds` labeled `method`/`path`/`status` with the same names and
+  labels on every stack (Go: `prometheus/client_golang`; Rust: `metrics` +
+  `metrics-exporter-prometheus`, hand-rolled rather than `axum-prometheus`, which pins axum 0.8
+  and would conflict with the axum 0.7 these services are on; Node: the Prometheus client) —
+  plus `db_pool_*` gauges and, in `booking-service`, the invariant gauges
+  `bookings_oversold_seats` and `bookings_stuck_pending`.
+- **`kafka-exporter` and `blackbox-exporter`** report consumer-group lag, DLQ depth and each
+  Debezium connector's status. Prometheus + Grafana OSS run in the dev `docker-compose.yml`
+  (config under `monitoring/`) with the provisioned "Service RED Metrics" dashboard and eight
+  Grafana alert rules (`monitoring/grafana/provisioning/alerting/`: 5xx and p95 on the booking
+  and login routes, DB pool saturation, DLQ depth, consumer lag, oversold seats, stuck pending
+  bookings, Debezium connector down). Kong doesn't front either; they're reached directly on
+  their own host ports (`${PROMETHEUS_HOST_PORT:-9090}`, `${GRAFANA_HOST_PORT:-3000}`).
 
-All four services (`user-service`, `event-service`, `booking-service`, `analytics-service`)
-now expose HTTP RED metrics on `/metrics` — `http_requests_total` /
-`http_requests_duration_seconds`, labeled `method`/`path`/`status` with the same names and
-labels on both stacks (Go: `prometheus/client_golang`; Rust: `metrics` +
-`metrics-exporter-prometheus`, hand-rolled rather than `axum-prometheus`, which pins axum 0.8
-and would conflict with the axum 0.7 these services are on). Consumer processed/retried/
-dead-lettered/lag metrics are still open. A Prometheus + Grafana OSS pair runs in the dev
-`docker-compose.yml` (config under `monitoring/`) scraping every service and rendering the
-provisioned "Service RED Metrics" dashboard — Kong doesn't front either, they're reached
-directly on their own host ports (`${PROMETHEUS_HOST_PORT:-9090}`, `${GRAFANA_HOST_PORT:-3000}`).
+**Not implemented — do not describe these as done:**
+
+- **OpenTelemetry tracing.** No service has an OTel SDK or exporter, compose has no collector
+  or trace backend, and `outbox_events` has no `tracecontext` column. `/add-observability`
+  describes the target (server span continuing `traceparent`, spans per use case and repo call,
+  trace context carried outbox → Debezium → Kafka → consumer).
+- **A request id across the Kafka hop.** The id stops at the service that wrote the outbox row;
+  follow a saga by `aggregate_id` / `event_id`, not by request id.
+- **Log aggregation.** Logs are per-container `docker logs`; there is no Loki or ELK.
+- **Consumer processed / retried / dead-lettered counters.** Lag and DLQ depth come from
+  `kafka-exporter`, not from the consumers.
 
 ## Cross-service communication: choreography saga over Kafka
 
@@ -317,10 +339,10 @@ order and stock change, and reacts to `BookingConfirmed` / `BookingCancelled` (m
 `cancelled` always wins). analytics-service consumes the two order events with one group per event type and
 a commutative upsert, so either arrival order converges.
 
-Sketched next (design it with `/design-saga seat-reservation` before wiring): `booking-service`
-publishes `BookingRequested` → `event-service` reserves the seat and publishes
+The seat-reservation saga (`docs/sagas/seat-reservation.md`): `booking-service` publishes
+`BookingRequested` → `event-service` reserves the seat and publishes
 `SeatReserved`/`SeatReservationFailed` → `booking-service` confirms or compensates (cancels)
-the booking → `analytics-service` consumes the final outcome as a read model only.
+the booking and publishes `BookingConfirmed`/`BookingCancelled`.
 
 ## Claude Code tooling set up for this repo
 

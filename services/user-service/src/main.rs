@@ -8,7 +8,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use user_service::adapter::email::{HttpEmailGateway, StubEmailGateway};
-use user_service::adapter::http::{build_router, metrics, ApiDoc};
+use user_service::adapter::http::{build_router, metrics, request_log, ApiDoc};
 use user_service::adapter::payment::{HttpPaymentGateway, StubOutcome, StubPaymentGateway};
 use user_service::app::{self, run_renewal_batch, App, AppConfig, Gateways};
 use user_service::domain::{EmailGateway, PaymentGateway, RenewalPolicy};
@@ -201,6 +201,7 @@ async fn main() {
             }),
         )
         .layer(from_fn(metrics::track_metrics))
+        .layer(from_fn(request_log::log_requests))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let port: u16 = env_parse("PORT", 8081);

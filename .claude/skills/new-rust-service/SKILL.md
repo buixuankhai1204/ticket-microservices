@@ -63,8 +63,7 @@ declares itself.
   process lifecycle. No business logic.
 - **`Cargo.toml`** — `axum`, `tokio` (full), `sqlx` (postgres, `runtime-tokio-rustls`,
   `migrate`), `async-trait`, `serde`, `uuid` (v4), `tracing` + `tracing-subscriber`,
-  `tracing-opentelemetry` + `opentelemetry-otlp`, `metrics` + `metrics-exporter-prometheus`,
-  `tower-http` (trace, request-id).
+  `tracing-opentelemetry` + `opentelemetry-otlp`, `metrics` + `metrics-exporter-prometheus`.
 
 ### 3. Wire the platform baseline
 
@@ -79,10 +78,17 @@ declares itself.
 - **Graceful shutdown** — `axum::serve(...).with_graceful_shutdown(shutdown_signal())`
   awaiting `ctrl_c()` and SIGTERM; flush the tracer before exit.
 - **Structured logging + request id** — `tracing_subscriber::fmt().json()` in
-  `src/platform/logging.rs`. `tower_http::request_id` to read/generate `x-request-id` and
-  echo it, plus a `tower_http::trace::TraceLayer` (or a small middleware) that records
-  `request_id, method, path, status, latency` as one JSON line per request for **every**
-  route — never the `authorization` header or body.
+  `src/platform/logging.rs`, plus `src/adapter/http/request_log.rs`: copy it from
+  `services/user-service` (identical in `booking-service`). It is a hand-rolled
+  `axum::middleware::from_fn` that reuses a valid inbound `x-request-id` (else a UUID), echoes
+  it, runs the request inside a `request` span carrying `request_id`, and writes one
+  `request completed` / `request failed` (5xx) JSON line with `request_id, method, path,
+  status, duration_ms` — skipping `/healthz`, `/readyz`, `/metrics`, never the `authorization`
+  header or body. Layer it **outermost** in `main.rs`
+  (`.layer(from_fn(metrics::track_metrics)).layer(from_fn(request_log::log_requests))`). A
+  Kafka consumer runs each message under a `consume` span with `group`, `topic`, `partition`,
+  `offset`, `event_id` (the Debezium `event_id` header) and `aggregate_id` (the message key) —
+  copy `message_span` from `booking-service`'s `adapter/messaging/kafka/consumer.rs`.
 - **Tracing** — `src/platform/observability.rs`: an OTLP exporter + `tracing-opentelemetry`
   layer from env (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`). The HTTP server span
   **continues the inbound W3C `traceparent`**. Deeper spans and cross-Kafka propagation are

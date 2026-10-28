@@ -8,7 +8,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use booking_service::adapter::health_reporter::run_booking_health_reporter;
-use booking_service::adapter::http::{build_router, metrics, ApiDoc};
+use booking_service::adapter::http::{build_router, metrics, request_log, ApiDoc};
 use booking_service::app::{self, App, AppConfig};
 use booking_service::platform::{self, db};
 
@@ -89,6 +89,7 @@ async fn main() {
             }),
         )
         .layer(from_fn(metrics::track_metrics))
+        .layer(from_fn(request_log::log_requests))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let port: u16 = env_parse("PORT", 8083);

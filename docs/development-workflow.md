@@ -132,7 +132,7 @@ This is the highest-risk change type. Do not skip the design step.
 |---|---|---|
 | `/add-caching <svc> <ReadUseCase>` | A hot read path can't serve from Postgres under its `kong.yml` rate limit; `scalability-review` flags it | Cache-aside Redis behind a `domain` port — TTL+jitter, fail-open, per-user keys for JWT routes, invalidation in the write path |
 | `/add-resilience <svc> <PortName>` | A service gains its first synchronous outbound call (payment, email, third-party) | Timeout + capped retry-with-jitter + circuit breaker + bulkhead on the adapter impl; explicit fail-open/closed |
-| `/add-observability <svc>` | A service predates the logging baseline (`user-service`), or a saga needs one trace end to end | Request-ID access logs, OTel spans, `traceparent` carried through the outbox → Kafka header → consumer span, RED + consumer-lag metrics |
+| `/add-observability <svc>` | A service needs OTel tracing (no service has it yet), or a saga needs one trace end to end | Request-ID access logs, OTel spans, `traceparent` carried through the outbox → Kafka header → consumer span, RED + consumer-lag metrics |
 
 Each ends at the relevant §7 reviewers (`scalability-review` for caching, `security-reviewer`
 for observability PII, `saga-consistency-reviewer` if the outbox shape changed).
