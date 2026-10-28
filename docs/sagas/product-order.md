@@ -244,12 +244,14 @@ from `earliest` with auto-commit off and commit `offset + 1` only after the mess
   `debezium/product-service-outbox.json` (copy of `event-service-outbox.json`: `postgres-product`,
   `slot.name=product_service_outbox`, `publication.name=dbz_product_outbox`, `topic.prefix=productdb`,
   `table.include.list=public.outbox_events`, same `EventRouter` mapping). Register it in `connect-init`,
+  add the product database to `outbox-ready`'s `OUTBOX_DATABASES` (the connector must register only
+  after product-service has migrated `outbox_events`),
   add `postgres-product` to `kafka-connect`'s `depends_on`, and add its status URL to the blackbox
   connector probes in `monitoring/prometheus/prometheus.yml`. `postgres-product` already runs with
   `wal_level=logical`.
 - **product-service compose env/deps**: `KAFKA_BROKERS`, `KAFKA_BOOKING_EVENTS_TOPIC`,
-  `KAFKA_PRODUCT_ORDER_EVENTS_TOPIC`, `KAFKA_CONSUMER_MAX_ATTEMPTS`; `depends_on` kafka, `kafka-init`,
-  `connect-init`.
+  `KAFKA_PRODUCT_ORDER_EVENTS_TOPIC`, `KAFKA_CONSUMER_MAX_ATTEMPTS`; `depends_on` kafka, `kafka-init`
+  (not `connect-init`, which waits for this service's own migration).
 - **Kong**: a `product-order-routes` route on `/api/v1/product-orders` — `GET`, `POST`, `DELETE`,
   `OPTIONS`, JWT (`exp` verified), 300 req/min. `DELETE` is already allowed by the global CORS config.
 - **Migrations — product-service** (TypeORM migration classes, additive, one deploy):

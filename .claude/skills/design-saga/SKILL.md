@@ -129,7 +129,9 @@ Exactly what changes outside the service code:
   routes automatically — nothing to do. A service publishing for the first time needs a new
   `debezium/<service>-outbox.json` (copy `debezium/user-service-outbox.json`, repoint
   `database.*`, give it a unique `slot.name` / `publication.name`) registered in the
-  `connect-init` step, and its Postgres needs `wal_level=logical` in compose.
+  `connect-init` step, its database added to `outbox-ready`'s `OUTBOX_DATABASES` (so the
+  connector registers only after the service has migrated `outbox_events`), and its Postgres
+  needs `wal_level=logical` in compose. The service must not `depends_on` `connect-init`.
 - **Migrations** each service needs (new `outbox_events` / `processed_events` table, new
   columns, new status enum values) — list them; they get created with `/new-migration`.
 

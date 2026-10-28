@@ -1,0 +1,4 @@
+services:
+  kong:
+    volumes:
+      - ${KONG_STRESS_CONFIG:?run this through scripts/run-stress.sh}:/kong/kong.yml:ro

@@ -130,7 +130,10 @@ producer code.
   `publication.name`, `table.include.list=public.outbox_events`, `skipped.operations=u,d,t`,
   the `EventRouter` transform (`route.by.field=aggregate_type`,
   `route.topic.replacement=${routedByValue}.events`, `aggregate_id`→key, `event_type`/`id`→
-  headers, `table.expand.json.payload=true`). Register it in the `connect-init` step; the
+  headers, `table.expand.json.payload=true`). Register it in the `connect-init` step and add
+  the service's database to `outbox-ready`'s `OUTBOX_DATABASES` (the connector must register
+  only after the service has migrated `outbox_events`; the service itself must not
+  `depends_on` `connect-init`, which would deadlock); the
   service's Postgres needs `wal_level=logical`. If the connector exists, a new
   `aggregate_type` routes automatically — nothing to do.
 - Add `<aggregate_type>.events` and `<aggregate_type>.events.dlq` to the `kafka-init` step.

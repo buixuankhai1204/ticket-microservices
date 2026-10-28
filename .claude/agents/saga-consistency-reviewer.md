@@ -29,7 +29,9 @@ transaction; a Debezium connector tails the WAL and the Outbox Event Router SMT 
    and `.dlq`.
 4. **Connectors** — list `debezium/*.json`; for each, the source DB, `table.include.list`,
    `route.by.field`, and which service's Postgres it points at. Cross-check the
-   `connect-init` step registers each one.
+   `connect-init` step registers each one, that each publishing service's database is in
+   `outbox-ready`'s `OUTBOX_DATABASES`, and that no publishing service `depends_on`
+   `connect-init` (it would deadlock waiting on its own migration).
 5. **Saga designs** — if `docs/sagas/*.md` exist, use the compensation map and event catalog
    as the expected graph; flag code that diverges from an approved design.
 
@@ -49,7 +51,9 @@ transaction; a Debezium connector tails the WAL and the Outbox Event Router SMT 
 4. **Missing / mispointed Debezium connector** — a service writes `outbox_events` but has no
    `debezium/<service>-outbox.json`, or the connector's `database.hostname` /
    `slot.name` / `publication.name` collides with another service's, or it isn't in
-   `connect-init`. Consequence: events are written to the DB and never reach Kafka.
+   `connect-init`, or its database isn't in `outbox-ready`'s `OUTBOX_DATABASES` (the
+   connector can start before `outbox_events` exists and its task fails for good).
+   Consequence: events are written to the DB and never reach Kafka.
 5. **Compensation gap** — a forward step that commits a state change (not a pure read) whose
    downstream-failure signal (`*Failed`, `*Rejected`) has **no** consumer in the originating
    service that runs a compensating use case. Verify the compensation is a *forward*
