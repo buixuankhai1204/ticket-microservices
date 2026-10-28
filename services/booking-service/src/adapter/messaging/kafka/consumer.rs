@@ -8,6 +8,7 @@ use rdkafka::message::{BorrowedMessage, Header, Headers, Message, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::domain::{BookingError, SeatReservationFailed, SeatReserved};
 use crate::usecase::{CancelBookingUseCase, ConfirmBookingUseCase};
@@ -131,11 +132,13 @@ impl<H: SagaHandler> SagaConsumer<H> {
                 },
             };
 
+            let span = self.message_span(&msg);
+
             loop {
-                match self.process(&msg).await {
+                match self.process(&msg).instrument(span.clone()).await {
                     Ok(()) => break,
                     Err(e) => {
-                        tracing::error!(err = %e, "message not processed; retrying in place");
+                        tracing::error!(parent: &span, err = %e, "message not processed; retrying in place");
                         tokio::select! {
                             _ = shutdown.cancelled() => {
                                 tracing::info!(group = self.handler.group_id(), "kafka consumer stopping");
@@ -148,9 +151,24 @@ impl<H: SagaHandler> SagaConsumer<H> {
             }
 
             if let Err(e) = self.consumer.commit_message(&msg, CommitMode::Sync) {
-                tracing::error!(err = %e, "offset commit failed; message may be redelivered");
+                tracing::error!(parent: &span, err = %e, "offset commit failed; message may be redelivered");
             }
         }
+    }
+
+    fn message_span(&self, msg: &BorrowedMessage<'_>) -> tracing::Span {
+        tracing::info_span!(
+            "consume",
+            group = self.handler.group_id(),
+            topic = msg.topic(),
+            partition = msg.partition(),
+            offset = msg.offset(),
+            event_id = header_str(msg, "event_id").unwrap_or(""),
+            aggregate_id = msg
+                .key()
+                .and_then(|key| std::str::from_utf8(key).ok())
+                .unwrap_or(""),
+        )
     }
 
     async fn process(&self, msg: &BorrowedMessage<'_>) -> Result<(), String> {

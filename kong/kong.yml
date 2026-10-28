@@ -178,6 +178,11 @@ consumers:
 # GLOBAL PLUGINS (CORS, Security)
 # ==============================================================================
 plugins:
+  - name: correlation-id
+    config:
+      header_name: X-Request-Id
+      generator: uuid
+      echo_downstream: true
   - name: cors
     config:
       origins:
@@ -196,7 +201,9 @@ plugins:
         - Content-Type
         - Date
         - Authorization
+        - X-Request-Id
       exposed_headers:
         - Authorization
+        - X-Request-Id
       credentials: true
       max_age: 3600

@@ -1,6 +1,6 @@
 ---
 name: add-observability
-description: Give one service the repo's full observability baseline — per-request structured access logs with an X-Request-Id generated/propagated on every request, OpenTelemetry traces (HTTP server span continuing the inbound W3C traceparent, spans per use case and repo call), W3C trace context carried across the outbox→Debezium→Kafka→consumer boundary so a client action is one trace end to end, and RED + consumer-lag/DLQ metrics on a Prometheus /metrics endpoint. Use to retrofit a service that predates this baseline (user-service has no per-request logging) or to add the cross-Kafka trace link a plain scaffold doesn't wire.
+description: Give one service the repo's full observability baseline — per-request structured access logs with an X-Request-Id generated/propagated on every request, OpenTelemetry traces (HTTP server span continuing the inbound W3C traceparent, spans per use case and repo call), W3C trace context carried across the outbox→Debezium→Kafka→consumer boundary so a client action is one trace end to end, and RED + consumer-lag/DLQ metrics on a Prometheus /metrics endpoint. Use to retrofit a service that predates this baseline or to add what no service has yet: OTel tracing and the cross-Kafka trace link a plain scaffold doesn't wire.
 argument-hint: "<service-name>"
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
@@ -9,7 +9,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 ## Context
 - Project conventions: @CLAUDE.md
-- Reference request-ID + access-log middleware (Go): `services/analytics-service/internal/adapter/http/middleware.go`
+- Reference request-ID + access-log middleware: Go `services/analytics-service/internal/adapter/http/middleware.go`, Rust `services/user-service/src/adapter/http/request_log.rs`, Node `services/product-service/src/platform/logger/logger.options.ts`
 - Target service: !`ls -R services/$1/internal services/$1/src 2>/dev/null | head -60`
 - Does it publish/consume Kafka?: !`grep -rln "outbox_events\|kafka\|rdkafka" services/$1 2>/dev/null | head`
 - Debezium connector for it: !`ls debezium/$1-outbox.json 2>/dev/null || echo "(none)"`
@@ -32,12 +32,13 @@ An HTTP middleware pair, applied to **all** routes:
   `RequestID()` + `AccessLog()` pattern from `analytics-service`'s `middleware.go` into the
   target's `internal/adapter/http/middleware.go` and chain it in `NewRouter(...)`. If the
   service already has it, just confirm it's wired for every route group.
-- **Rust / axum** (`user-service`): add a `tower_http::trace::TraceLayer` **plus** a small
-  middleware that does the `x-request-id` read/generate/echo and puts it in a `tracing::Span`
-  field, so the existing `tracing_subscriber` JSON output carries `request_id`, `method`,
-  `path`, `status`, `latency` for `/api/v1/auth/*` and `/api/v1/users/*`. `user-service`
-  currently logs only at startup/shutdown — this is the retrofit called out in the repo's
-  logging convention.
+- **Rust / axum** (`user-service`, `booking-service`): copy `src/adapter/http/request_log.rs`
+  from `user-service`, add `pub mod request_log;` to `adapter/http/mod.rs` and layer
+  `from_fn(request_log::log_requests)` outermost in `main.rs`. It does the `x-request-id`
+  read/validate/generate/echo, wraps the request in a `request` span so handler logs carry
+  `request_id`, and writes the one access-log line. Both Rust services already have it.
+- **Gateway**: Kong's global `correlation-id` plugin (`kong/kong.yml`) stamps every request
+  that has no `X-Request-Id`, so a service only ever needs to reuse the inbound value.
 
 ### 2. OpenTelemetry tracing  (every service)
 - Deps: Go — `go.opentelemetry.io/otel`, `otel/sdk`, `otel/exporters/otlp/otlptrace/otlptracehttp`,
@@ -69,7 +70,9 @@ trace context as **event metadata in a header**, not in the business payload:
   `transforms.outbox.table.fields.additional.placement` to also map the column to a header:
   `event_type:header:event_type,id:header:event_id,tracecontext:header:traceparent`. A new
   `aggregate_type` still auto-routes; this just adds the header on every routed message.
-- **Consume side** — in the consumer, before calling the use case, read the `traceparent`
+- **Consume side** — the consumer already runs each message under a `consume` span with
+  `event_id` and `aggregate_id` (see `booking-service`'s `message_span`); attach the extracted
+  remote context to that span. In the consumer, before calling the use case, read the `traceparent`
   Kafka message header and **extract** it into the context, then start the "process event"
   span as a child of (or link to) that remote context. Now Kong→booking→Kafka→event→Kafka→
   booking is one trace.
@@ -82,7 +85,7 @@ trace context as **event metadata in a header**, not in the business payload:
   services are on; a hand-rolled `axum::middleware::from_fn` reading `MatchedPath` works with
   either version), **separate** from `/healthz` and `/readyz`, unauthenticated but bound to
   the service port (Kong doesn't route to it).
-- **RED on HTTP is already done for all four services** — `http_requests_total` /
+- **RED on HTTP is already done for all five services** — `http_requests_total` /
   `http_requests_duration_seconds`, labels `method`/`path`/`status` (the registered route
   pattern, e.g. `/api/v1/events/{eventID}`, never a raw path with real ids — low cardinality).
   Same metric/label names on both stacks so one Grafana query covers every service. Reference
